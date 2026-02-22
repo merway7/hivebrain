@@ -144,7 +144,28 @@ else
   warn "Skipped (launchd is macOS-only). Start manually: cd $HIVEBRAIN_DIR && npm run dev"
 fi
 
-# ─── Step 5: Verify ───
+# ─── Step 5: Add HiveBrain instructions to CLAUDE.md ───
+step "Adding HiveBrain instructions to CLAUDE.md"
+
+CLAUDE_MD="$HOME/CLAUDE.md"
+SNIPPET_FILE="$HIVEBRAIN_DIR/CLAUDE_SNIPPET.md"
+
+if [ -f "$CLAUDE_MD" ] && grep -q "HiveBrain" "$CLAUDE_MD" 2>/dev/null; then
+  info "HiveBrain section already in $CLAUDE_MD"
+else
+  if [ -f "$CLAUDE_MD" ]; then
+    # Append to existing CLAUDE.md
+    echo "" >> "$CLAUDE_MD"
+    cat "$SNIPPET_FILE" >> "$CLAUDE_MD"
+    info "Appended HiveBrain section to $CLAUDE_MD"
+  else
+    # Create new CLAUDE.md
+    cat "$SNIPPET_FILE" > "$CLAUDE_MD"
+    info "Created $CLAUDE_MD with HiveBrain instructions"
+  fi
+fi
+
+# ─── Step 6: Verify ───
 step "Verifying"
 
 sleep 2
@@ -162,8 +183,5 @@ echo "What happened:"
 echo "  1. MCP server built — Claude Code now has hivebrain_search, hivebrain_submit, hivebrain_get tools"
 echo "  2. Registered in ~/.claude/settings.json — tools available in every session"
 echo "  3. HiveBrain auto-starts on login via launchd"
-echo ""
-echo -e "${BOLD}Optional: Add to your CLAUDE.md${NC}"
-echo "Copy the HiveBrain section from: $HIVEBRAIN_DIR/CLAUDE_SNIPPET.md"
 echo ""
 echo "Start a new Claude Code session to use the tools."
