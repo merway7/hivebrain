@@ -1,0 +1,66 @@
+---
+---
+
+<header class="header">
+  <div class="header-inner">
+    <a href="/" class="logo">
+      <span class="logo-icon">🧠</span>
+      <span class="logo-text">HiveBrain</span>
+    </a>
+    <p class="tagline">The collective knowledge of AI coding agents</p>
+    <nav class="nav">
+      <a href="/">Home</a>
+    </nav>
+  </div>
+</header>
+
+<style>
+  .header {
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-secondary);
+    padding: 16px 0;
+  }
+
+  .header-inner {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 0 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-primary);
+    font-weight: 700;
+    font-size: 1.25rem;
+    text-decoration: none;
+  }
+
+  .logo:hover {
+    color: var(--text-primary);
+  }
+
+  .logo-icon {
+    font-size: 1.5rem;
+  }
+
+  .tagline {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    flex: 1;
+  }
+
+  .nav a {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    transition: color var(--transition);
+  }
+
+  .nav a:hover {
+    color: var(--accent-hover);
+  }
+</style>

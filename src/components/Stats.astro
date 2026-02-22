@@ -1,0 +1,106 @@
+---
+interface Props {
+  total: number;
+  byCategory: { name: string; count: number }[];
+  languageCounts?: Record<string, number>;
+  severityCounts?: Record<string, number>;
+}
+
+const { total, byCategory, languageCounts = {}, severityCounts = {} } = Astro.props;
+
+const topLanguages = Object.entries(languageCounts)
+  .sort((a, b) => b[1] - a[1])
+  .slice(0, 5);
+
+const severityOrder = ['critical', 'major', 'moderate', 'minor', 'tip'];
+const severityItems = Object.entries(severityCounts)
+  .sort((a, b) => severityOrder.indexOf(a[0]) - severityOrder.indexOf(b[0]));
+---
+
+<div class="stats-bar">
+  <span class="stats-total">{total} entries</span>
+  <span class="stats-divider">|</span>
+  {byCategory.map((item) => (
+    <span class="stats-item">
+      <span class={`category-badge ${item.name.toLowerCase()}`}>
+        {item.name}
+      </span>
+      <span class="stats-count">{item.count}</span>
+    </span>
+  ))}
+  {topLanguages.length > 0 && (
+    <>
+      <span class="stats-divider">|</span>
+      {topLanguages.map(([lang, count]) => (
+        <span class="stats-item">
+          <span class="stats-lang">{lang}</span>
+          <span class="stats-count">{count}</span>
+        </span>
+      ))}
+    </>
+  )}
+  {severityItems.length > 0 && (
+    <>
+      <span class="stats-divider">|</span>
+      {severityItems.map(([sev, count]) => (
+        <span class="stats-item">
+          <span class={`stats-sev-dot sev-${sev}`}></span>
+          <span class="stats-count">{count}</span>
+        </span>
+      ))}
+    </>
+  )}
+</div>
+
+<style>
+  .stats-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 0.8rem;
+    flex-wrap: wrap;
+  }
+
+  .stats-total {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+  .stats-divider {
+    color: var(--border);
+  }
+
+  .stats-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .stats-count {
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+  }
+
+  .stats-lang {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: #5eddd4;
+  }
+
+  .stats-sev-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
+
+  .sev-critical { background: #ff4444; }
+  .sev-major { background: #ff8c00; }
+  .sev-moderate { background: #ffd93d; }
+  .sev-minor { background: #4ecdc4; }
+  .sev-tip { background: #7c5cbf; }
+</style>

@@ -1,0 +1,95 @@
+---
+interface Props {
+  query?: string;
+}
+
+const { query = '' } = Astro.props;
+---
+
+<form class="search-form" action="/" method="GET">
+  <div class="search-wrapper">
+    <svg class="search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="11" cy="11" r="8"></circle>
+      <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+    </svg>
+    <input
+      type="text"
+      name="q"
+      class="search-input"
+      placeholder="Search entries..."
+      value={query}
+      autocomplete="off"
+      id="search-input"
+    />
+    <kbd class="shortcut-hint">/</kbd>
+  </div>
+</form>
+
+<script>
+  document.addEventListener('keydown', (e) => {
+    const input = document.getElementById('search-input') as HTMLInputElement;
+    if (!input) return;
+    if (e.key === '/' && document.activeElement !== input) {
+      e.preventDefault();
+      input.focus();
+    }
+  });
+</script>
+
+<style>
+  .search-form {
+    width: 100%;
+  }
+
+  .search-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .search-icon {
+    position: absolute;
+    left: 14px;
+    color: var(--text-muted);
+    pointer-events: none;
+  }
+
+  .search-input {
+    width: 100%;
+    padding: 12px 48px 12px 44px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+    font-size: 0.95rem;
+    font-family: var(--font-sans);
+    transition: all var(--transition);
+    outline: none;
+  }
+
+  .search-input::placeholder {
+    color: var(--text-muted);
+  }
+
+  .search-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-glow);
+  }
+
+  .shortcut-hint {
+    position: absolute;
+    right: 14px;
+    padding: 2px 8px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    font-family: var(--font-mono);
+    pointer-events: none;
+  }
+
+  .search-input:focus ~ .shortcut-hint {
+    display: none;
+  }
+</style>

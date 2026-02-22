@@ -1,0 +1,531 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import Header from '../../components/Header.astro';
+import { getEntry } from '../../lib/db';
+
+const { id } = Astro.params;
+const entry = getEntry(Number(id));
+
+if (!entry) {
+  return Astro.redirect('/');
+}
+
+const tags = JSON.parse(entry.tags || '[]') as string[];
+const gotchas = JSON.parse(entry.gotchas || '[]') as string[];
+const errorMessages: string[] = (() => {
+  try { return JSON.parse(entry.error_messages || '[]'); }
+  catch { return []; }
+})();
+const environments: string[] = (() => {
+  try { return JSON.parse(entry.environment || '[]'); }
+  catch { return []; }
+})();
+const keywords: string[] = (() => {
+  try { return JSON.parse(entry.keywords || '[]'); }
+  catch { return []; }
+})();
+const codeSnippets: { language?: string; code: string; description?: string }[] = (() => {
+  try { return JSON.parse(entry.code_snippets || '[]'); }
+  catch { return []; }
+})();
+
+const severity = entry.severity || 'minor';
+const severityLabels: Record<string, string> = {
+  critical: 'Critical',
+  major: 'Major',
+  moderate: 'Moderate',
+  minor: 'Minor',
+  tip: 'Tip',
+};
+
+/** Simple markdown-to-HTML converter (no external deps) */
+function mdToHtml(text: string): string {
+  if (!text) return '';
+
+  // Escape HTML entities first
+  let html = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  // 1. Extract and protect code blocks (triple backtick)
+  const codeBlocks: string[] = [];
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, _lang, code) => {
+    const placeholder = `%%CODEBLOCK_${codeBlocks.length}%%`;
+    codeBlocks.push(`<pre class="code-block"><code>${code.replace(/\n$/, '')}</code></pre>`);
+    return placeholder;
+  });
+
+  // 2. Bold: **text** → <strong>text</strong>
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+  // 3. Italic: *text* → <em>text</em> (single asterisks not inside bold)
+  html = html.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>');
+
+  // 4. Inline code (single backtick)
+  html = html.replace(/`([^`]+)`/g, (_match, code) => `<code class="inline-code">${code}</code>`);
+
+  // 5. Links: [text](url) → <a href="url" ...>text</a>
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+  // 6. Unordered lists: consecutive lines starting with "- "
+  html = html.replace(/((?:^|\n)- .+(?:\n- .+)*)/g, (block) => {
+    const items = block.trim().split('\n').map(line => {
+      return '<li>' + line.replace(/^- /, '') + '</li>';
+    });
+    return '\n<ul>' + items.join('') + '</ul>\n';
+  });
+
+  // 7. Ordered lists: consecutive lines starting with "N. "
+  html = html.replace(/((?:^|\n)\d+\.\s.+(?:\n\d+\.\s.+)*)/g, (block) => {
+    const items = block.trim().split('\n').map(line => {
+      return '<li>' + line.replace(/^\d+\.\s/, '') + '</li>';
+    });
+    return '\n<ol>' + items.join('') + '</ol>\n';
+  });
+
+  // 8. Convert remaining newlines to <br> (but not inside block elements)
+  const parts = html.split(/(<pre class="code-block">[\s\S]*?<\/pre>|<ol>[\s\S]*?<\/ol>|<ul>[\s\S]*?<\/ul>|%%CODEBLOCK_\d+%%)/g);
+  html = parts.map(part => {
+    if (part.startsWith('<pre') || part.startsWith('<ol>') || part.startsWith('<ul>') || part.startsWith('%%CODEBLOCK_')) return part;
+    return part.replace(/\n/g, '<br>');
+  }).join('');
+
+  // 9. Restore code blocks
+  for (let i = 0; i < codeBlocks.length; i++) {
+    html = html.replace(`%%CODEBLOCK_${i}%%`, codeBlocks[i]);
+  }
+
+  return html;
+}
+---
+
+<Layout title={`${entry.title} — HiveBrain`} description={entry.problem}>
+  <Header />
+  <main class="container">
+    <a href="/" class="back-link">&larr; Back to all entries</a>
+
+    <article class="entry">
+      <header class="entry-header">
+        <div class="header-badges">
+          <span class={`category-badge ${entry.category}`}>{entry.category}</span>
+          {entry.language && (
+            <span class="lang-badge">{entry.language}</span>
+          )}
+          {entry.framework && (
+            <span class="framework-badge">{entry.framework}</span>
+          )}
+          <span class={`severity-badge severity-${severity}`}>
+            {severityLabels[severity] || severity}
+          </span>
+        </div>
+        <h1>{entry.title}</h1>
+        <div class="meta">
+          <span>by <strong>{entry.submitted_by}</strong></span>
+          <span>&middot;</span>
+          <time>{new Date(entry.created_at * 1000).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</time>
+          {entry.upvotes > 0 && (
+            <>
+              <span>&middot;</span>
+              <span>{entry.upvotes} upvote{entry.upvotes !== 1 ? 's' : ''}</span>
+            </>
+          )}
+        </div>
+        {entry.version_info && (
+          <p class="version-info">{entry.version_info}</p>
+        )}
+        {tags.length > 0 && (
+          <div class="tags">
+            {tags.map(t => <a href={`/?tag=${encodeURIComponent(t)}`} class="tag">{t}</a>)}
+          </div>
+        )}
+        {keywords.length > 0 && (
+          <div class="keywords">
+            {keywords.map(k => <span class="keyword-pill">{k}</span>)}
+          </div>
+        )}
+        {environments.length > 0 && (
+          <div class="env-pills-row">
+            {environments.map(env => <span class="env-pill">{env}</span>)}
+          </div>
+        )}
+      </header>
+
+      {errorMessages.length > 0 && (
+        <section class="section error-section">
+          <h2>Error Messages</h2>
+          <div class="error-messages">
+            {errorMessages.map(e => (
+              <pre class="error-block"><code>{e}</code></pre>
+            ))}
+          </div>
+        </section>
+      )}
+
+      <section class="section">
+        <h2>Problem</h2>
+        <div class="section-body" set:html={mdToHtml(entry.problem)} />
+      </section>
+
+      <section class="section">
+        <h2>Solution</h2>
+        <div class="section-body" set:html={mdToHtml(entry.solution)} />
+      </section>
+
+      {entry.why && (
+        <section class="section">
+          <h2>Why</h2>
+          <div class="section-body" set:html={mdToHtml(entry.why)} />
+        </section>
+      )}
+
+      {gotchas.length > 0 && (
+        <section class="section gotchas-section">
+          <h2>Gotchas</h2>
+          <ul>
+            {gotchas.map(g => <li set:html={mdToHtml(g)} />)}
+          </ul>
+        </section>
+      )}
+
+      {codeSnippets.length > 0 && (
+        <section class="section code-section">
+          <h2>Code Snippets</h2>
+          {codeSnippets.map(snippet => (
+            <div class="snippet">
+              {snippet.description && <p class="snippet-desc">{snippet.description}</p>}
+              <pre class="snippet-code"><code class={snippet.language ? `language-${snippet.language}` : ''}>{snippet.code}</code></pre>
+            </div>
+          ))}
+        </section>
+      )}
+
+      {entry.context && (
+        <section class="section">
+          <h2>Context</h2>
+          <div class="section-body" set:html={mdToHtml(entry.context)} />
+        </section>
+      )}
+
+      {entry.learned_from && (
+        <section class="section learned">
+          <h2>Learned From</h2>
+          <p>{entry.learned_from}</p>
+        </section>
+      )}
+    </article>
+  </main>
+</Layout>
+
+<style>
+  .back-link {
+    display: inline-block;
+    margin: 24px 0 16px;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    transition: color var(--transition);
+  }
+
+  .back-link:hover {
+    color: var(--accent-hover);
+  }
+
+  .entry {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 32px;
+    margin-bottom: 48px;
+  }
+
+  .entry-header {
+    margin-bottom: 28px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .header-badges {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 4px;
+  }
+
+  .lang-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    background: rgba(78, 205, 196, 0.15);
+    color: #5eddd4;
+  }
+
+  .framework-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    background: rgba(255, 140, 0, 0.15);
+    color: #ffaa44;
+  }
+
+  .severity-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .severity-critical { background: rgba(255, 68, 68, 0.2); color: #ff4444; }
+  .severity-major { background: rgba(255, 140, 0, 0.2); color: #ff8c00; }
+  .severity-moderate { background: rgba(255, 217, 61, 0.2); color: #ffd93d; }
+  .severity-minor { background: rgba(78, 205, 196, 0.2); color: #4ecdc4; }
+  .severity-tip { background: rgba(124, 92, 191, 0.2); color: #9370db; }
+
+  .entry-header h1 {
+    font-size: 1.75rem;
+    font-weight: 700;
+    margin: 12px 0 8px;
+    line-height: 1.3;
+  }
+
+  .meta {
+    display: flex;
+    gap: 8px;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+  }
+
+  .meta strong {
+    color: var(--text-secondary);
+  }
+
+  .version-info {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    font-family: var(--font-mono);
+    margin-top: 8px;
+  }
+
+  .tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 12px;
+  }
+
+  .keywords {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 8px;
+  }
+
+  .keyword-pill {
+    display: inline-block;
+    padding: 1px 7px;
+    background: rgba(160, 160, 176, 0.1);
+    color: var(--text-muted);
+    border-radius: 3px;
+    font-size: 0.7rem;
+    font-family: var(--font-mono);
+  }
+
+  .env-pills-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  .env-pill {
+    display: inline-block;
+    padding: 2px 8px;
+    background: rgba(124, 92, 191, 0.12);
+    color: var(--text-muted);
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-family: var(--font-mono);
+  }
+
+  .section {
+    margin-bottom: 24px;
+  }
+
+  .section h2 {
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+  }
+
+  .section p,
+  .section-body {
+    color: var(--text-primary);
+    line-height: 1.7;
+  }
+
+  .section-body :global(.code-block) {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    margin: 10px 0;
+  }
+
+  .section-body :global(.code-block code) {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    color: var(--text-primary);
+    white-space: pre;
+  }
+
+  .section-body :global(.inline-code) {
+    background: rgba(160, 160, 176, 0.15);
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: var(--text-primary);
+  }
+
+  .section-body :global(strong) {
+    color: #e8e8f0;
+    font-weight: 600;
+  }
+
+  .section-body :global(em) {
+    color: #c0b8d8;
+    font-style: italic;
+  }
+
+  .section-body :global(a) {
+    color: var(--accent);
+    text-decoration: none;
+    transition: color var(--transition);
+  }
+
+  .section-body :global(a:hover) {
+    color: var(--accent-hover);
+    text-decoration: underline;
+  }
+
+  .section-body :global(ul) {
+    padding-left: 24px;
+    margin: 8px 0;
+    list-style: disc;
+  }
+
+  .section-body :global(ul li) {
+    color: var(--text-primary);
+    line-height: 1.7;
+    margin-bottom: 4px;
+  }
+
+  .section-body :global(ol) {
+    padding-left: 24px;
+    margin: 8px 0;
+  }
+
+  .section-body :global(ol li) {
+    color: var(--text-primary);
+    line-height: 1.7;
+    margin-bottom: 4px;
+  }
+
+  .gotchas-section ul {
+    list-style: none;
+    padding: 0;
+  }
+
+  .gotchas-section li {
+    position: relative;
+    padding-left: 20px;
+    margin-bottom: 8px;
+    color: var(--text-primary);
+    line-height: 1.6;
+  }
+
+  .gotchas-section li::before {
+    content: '!';
+    position: absolute;
+    left: 0;
+    color: var(--category-gotcha);
+    font-weight: 700;
+  }
+
+  /* Error messages - prominent, searchable */
+  .error-section h2 {
+    color: #f08080;
+  }
+
+  .error-messages {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .error-block {
+    background: rgba(20, 10, 10, 0.7);
+    border: 1px solid rgba(255, 68, 68, 0.25);
+    border-left: 3px solid rgba(255, 68, 68, 0.5);
+    border-radius: 6px;
+    padding: 12px 16px;
+    overflow-x: auto;
+  }
+
+  .error-block code {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    color: #f0a0a0;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  /* Code snippets */
+  .code-section .snippet {
+    margin-bottom: 16px;
+  }
+
+  .snippet-desc {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    margin-bottom: 6px;
+  }
+
+  .snippet-code {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 16px;
+    overflow-x: auto;
+  }
+
+  .snippet-code code {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    color: var(--text-primary);
+    white-space: pre;
+  }
+
+  .learned {
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+  }
+
+  .learned p {
+    color: var(--text-secondary);
+    font-style: italic;
+  }
+</style>

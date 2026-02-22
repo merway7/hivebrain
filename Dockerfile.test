@@ -1,0 +1,19 @@
+FROM node:22-slim
+
+# Start from nothing but Node + curl
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
+# Install Claude Code globally (like a real user would)
+RUN npm install -g @anthropic-ai/claude-code
+
+# Fresh user, no config, no plugins, no settings
+RUN useradd -m newuser
+USER newuser
+WORKDIR /home/newuser
+
+# Simulate: user clones the hivebrain repo (fresh, no node_modules)
+COPY --chown=newuser:newuser . /home/newuser/hivebrain
+RUN rm -rf /home/newuser/hivebrain/node_modules /home/newuser/hivebrain/mcp-server/node_modules /home/newuser/hivebrain/mcp-server/dist
+
+# Verify: no .claude directory exists yet
+RUN test ! -d /home/newuser/.claude

@@ -1,0 +1,150 @@
+:root {
+  --bg-primary: #1a1a2e;
+  --bg-secondary: #16213e;
+  --bg-card: #1e2a4a;
+  --bg-card-hover: #243154;
+  --bg-input: #0f1629;
+  --border: #2a3a5e;
+  --border-hover: #3d5a8a;
+  --text-primary: #e8e6e3;
+  --text-secondary: #a0a0b0;
+  --text-muted: #6a6a7a;
+  --accent: #7c5cbf;
+  --accent-hover: #9370db;
+  --accent-glow: rgba(124, 92, 191, 0.15);
+  --tag-bg: rgba(124, 92, 191, 0.15);
+  --tag-text: #b8a0e0;
+  --category-pattern: #4ecdc4;
+  --category-gotcha: #ff6b6b;
+  --category-principle: #ffd93d;
+  --category-snippet: #64b4ff;
+  --category-debug: #ff7864;
+  --mark-bg: rgba(124, 92, 191, 0.3);
+  --mark-text: #d4bfff;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.4);
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --transition: 200ms ease;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  font-family: var(--font-sans);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(ellipse at 20% 50%, rgba(124, 92, 191, 0.05) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 20%, rgba(78, 205, 196, 0.03) 0%, transparent 50%),
+    var(--bg-primary);
+}
+
+a {
+  color: var(--accent-hover);
+  text-decoration: none;
+  transition: color var(--transition);
+}
+
+a:hover {
+  color: var(--tag-text);
+}
+
+mark {
+  background: var(--mark-bg);
+  color: var(--mark-text);
+  padding: 0.1em 0.2em;
+  border-radius: 3px;
+}
+
+.container {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+/* Category badges */
+.category-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.category-badge.pattern {
+  background: rgba(78, 205, 196, 0.15);
+  color: var(--category-pattern);
+}
+
+.category-badge.gotcha {
+  background: rgba(255, 107, 107, 0.15);
+  color: var(--category-gotcha);
+}
+
+.category-badge.principle {
+  background: rgba(255, 217, 61, 0.15);
+  color: var(--category-principle);
+}
+
+.category-badge.snippet {
+  background: rgba(100, 180, 255, 0.15);
+  color: #64b4ff;
+}
+
+.category-badge.debug {
+  background: rgba(255, 120, 100, 0.15);
+  color: #ff7864;
+}
+
+/* Tags */
+.tag {
+  display: inline-block;
+  padding: 2px 8px;
+  background: var(--tag-bg);
+  color: var(--tag-text);
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+}
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.btn:hover {
+  border-color: var(--border-hover);
+  background: var(--bg-card-hover);
+}
+
+.btn.active {
+  border-color: var(--accent);
+  background: var(--accent-glow);
+  color: var(--accent-hover);
+}

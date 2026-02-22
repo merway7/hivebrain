@@ -1,0 +1,258 @@
+---
+interface Props {
+  categories: { name: string; count: number }[];
+  tags: Record<string, number>;
+  languages: Record<string, number>;
+  severities: Record<string, number>;
+  environments?: Record<string, number>;
+  activeCategory?: string;
+  activeTag?: string;
+  activeLanguage?: string;
+  activeSeverity?: string;
+  activeEnvironment?: string;
+}
+
+const { categories, tags, languages, severities, environments = {}, activeCategory, activeTag, activeLanguage, activeSeverity, activeEnvironment } = Astro.props;
+
+const tagEntries = Object.entries(tags)
+  .sort((a, b) => b[1] - a[1])
+  .slice(0, 10);
+
+const languageEntries = Object.entries(languages)
+  .sort((a, b) => b[1] - a[1])
+  .slice(0, 10);
+
+const severityOrder = ['critical', 'major', 'moderate', 'minor', 'tip'];
+const severityEntries = Object.entries(severities)
+  .sort((a, b) => severityOrder.indexOf(a[0]) - severityOrder.indexOf(b[0]));
+
+const environmentEntries = Object.entries(environments)
+  .sort((a, b) => b[1] - a[1])
+  .slice(0, 10);
+
+const totalCount = categories.reduce((sum, c) => sum + c.count, 0);
+const hasAnyFilter = activeCategory || activeTag || activeLanguage || activeSeverity || activeEnvironment;
+---
+
+<div class="filter-bar">
+  <div class="filter-section">
+    <span class="filter-label">Category</span>
+    <div class="filter-buttons">
+      <a href="/" class:list={['btn', { active: !hasAnyFilter }]}>
+        All ({totalCount})
+      </a>
+      {categories.map((cat) => (
+        <a
+          href={`/?category=${cat.name.toLowerCase()}`}
+          class:list={['btn', { active: activeCategory === cat.name.toLowerCase() }]}
+        >
+          {cat.name} ({cat.count})
+        </a>
+      ))}
+    </div>
+  </div>
+
+  {languageEntries.length > 0 && (
+    <div class="filter-section">
+      <span class="filter-label">Language</span>
+      <div class="filter-tags">
+        {languageEntries.map(([name, count]) => (
+          <a
+            href={`/?language=${encodeURIComponent(name)}`}
+            class:list={['lang-filter', { 'lang-active': activeLanguage === name }]}
+          >
+            {name} ({count})
+          </a>
+        ))}
+      </div>
+    </div>
+  )}
+
+  {severityEntries.length > 0 && (
+    <div class="filter-section">
+      <span class="filter-label">Severity</span>
+      <div class="filter-tags">
+        {severityEntries.map(([name, count]) => (
+          <a
+            href={`/?severity=${encodeURIComponent(name)}`}
+            class:list={[`sev-filter sev-${name}`, { 'sev-active': activeSeverity === name }]}
+          >
+            <span class={`sev-dot sev-dot-${name}`}></span>
+            {name} ({count})
+          </a>
+        ))}
+      </div>
+    </div>
+  )}
+
+  {environmentEntries.length > 0 && (
+    <div class="filter-section">
+      <span class="filter-label">Environment</span>
+      <div class="filter-tags">
+        {environmentEntries.map(([name, count]) => (
+          <a
+            href={`/?environment=${encodeURIComponent(name)}`}
+            class:list={['env-filter', { 'env-active': activeEnvironment === name }]}
+          >
+            {name} ({count})
+          </a>
+        ))}
+      </div>
+    </div>
+  )}
+
+  {tagEntries.length > 0 && (
+    <div class="filter-section">
+      <span class="filter-label">Tags</span>
+      <div class="filter-tags">
+        {tagEntries.map(([name, count]) => (
+          <a
+            href={`/?tag=${encodeURIComponent(name)}`}
+            class:list={['tag', 'tag-filter', { 'tag-active': activeTag === name }]}
+          >
+            {name} ({count})
+          </a>
+        ))}
+      </div>
+    </div>
+  )}
+</div>
+
+<style>
+  .filter-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .filter-section {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .filter-label {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    min-width: 64px;
+  }
+
+  .filter-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .filter-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  /* Language filters */
+  .lang-filter {
+    display: inline-block;
+    padding: 2px 8px;
+    background: rgba(78, 205, 196, 0.1);
+    color: #5eddd4;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    transition: all var(--transition);
+    text-decoration: none;
+  }
+
+  .lang-filter:hover {
+    background: rgba(78, 205, 196, 0.25);
+    color: #7eeee6;
+  }
+
+  .lang-active {
+    background: rgba(78, 205, 196, 0.3);
+    outline: 1px solid rgba(78, 205, 196, 0.5);
+  }
+
+  /* Severity filters */
+  .sev-filter {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    background: rgba(160, 160, 176, 0.08);
+    color: var(--text-secondary);
+    border-radius: 4px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: all var(--transition);
+    text-decoration: none;
+  }
+
+  .sev-filter:hover {
+    background: rgba(160, 160, 176, 0.18);
+  }
+
+  .sev-active {
+    outline: 1px solid var(--border-hover);
+    background: rgba(160, 160, 176, 0.15);
+  }
+
+  .sev-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .sev-dot-critical { background: #ff4444; }
+  .sev-dot-major { background: #ff8c00; }
+  .sev-dot-moderate { background: #ffd93d; }
+  .sev-dot-minor { background: #4ecdc4; }
+  .sev-dot-tip { background: #7c5cbf; }
+
+  /* Environment filters */
+  .env-filter {
+    display: inline-block;
+    padding: 2px 8px;
+    background: rgba(124, 92, 191, 0.12);
+    color: #b8a0e0;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    transition: all var(--transition);
+    text-decoration: none;
+  }
+
+  .env-filter:hover {
+    background: rgba(124, 92, 191, 0.25);
+    color: #d0bff0;
+  }
+
+  .env-active {
+    background: rgba(124, 92, 191, 0.3);
+    outline: 1px solid rgba(124, 92, 191, 0.5);
+  }
+
+  /* Tag filters */
+  .tag-filter {
+    cursor: pointer;
+    transition: all var(--transition);
+    text-decoration: none;
+  }
+
+  .tag-filter:hover {
+    background: rgba(124, 92, 191, 0.25);
+    color: var(--accent-hover);
+  }
+
+  .tag-active {
+    background: rgba(124, 92, 191, 0.3);
+    color: var(--accent-hover);
+    outline: 1px solid var(--accent);
+  }
+</style>
