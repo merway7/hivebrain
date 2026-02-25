@@ -2,257 +2,385 @@
 interface Props {
   categories: { name: string; count: number }[];
   tags: Record<string, number>;
-  languages: Record<string, number>;
   severities: Record<string, number>;
-  environments?: Record<string, number>;
-  activeCategory?: string;
-  activeTag?: string;
-  activeLanguage?: string;
-  activeSeverity?: string;
-  activeEnvironment?: string;
+  dailyActivity?: { date: string; views: number; searches: number }[];
 }
 
-const { categories, tags, languages, severities, environments = {}, activeCategory, activeTag, activeLanguage, activeSeverity, activeEnvironment } = Astro.props;
+const { categories, tags, severities, dailyActivity } = Astro.props;
+
+const totalCount = categories.reduce((sum, c) => sum + c.count, 0);
+const maxCatCount = Math.max(...categories.map(c => c.count), 1);
+
+const catColors: Record<string, string> = {
+  debug: 'var(--red)',
+  pattern: 'var(--blue)',
+  gotcha: 'var(--amber)',
+  snippet: 'var(--green)',
+  principle: 'var(--purple)',
+};
+
+const sortedCategories = [...categories].sort((a, b) => b.count - a.count);
 
 const tagEntries = Object.entries(tags)
   .sort((a, b) => b[1] - a[1])
-  .slice(0, 10);
+  .slice(0, 20);
 
-const languageEntries = Object.entries(languages)
-  .sort((a, b) => b[1] - a[1])
-  .slice(0, 10);
+const maxTagCount = tagEntries.length > 0 ? tagEntries[0][1] : 1;
 
-const severityOrder = ['critical', 'major', 'moderate', 'minor', 'tip'];
-const severityEntries = Object.entries(severities)
-  .sort((a, b) => severityOrder.indexOf(a[0]) - severityOrder.indexOf(b[0]));
+function tagSize(count: number): string {
+  const ratio = count / maxTagCount;
+  if (ratio > 0.7) return 'size-lg';
+  if (ratio > 0.4) return 'size-md';
+  if (ratio > 0.2) return 'size-sm';
+  return 'size-xs';
+}
 
-const environmentEntries = Object.entries(environments)
-  .sort((a, b) => b[1] - a[1])
-  .slice(0, 10);
-
-const totalCount = categories.reduce((sum, c) => sum + c.count, 0);
-const hasAnyFilter = activeCategory || activeTag || activeLanguage || activeSeverity || activeEnvironment;
+const sevLow = severities['low'] || severities['tip'] || severities['minor'] || 0;
+const sevMed = severities['medium'] || severities['moderate'] || 0;
+const sevHigh = (severities['high'] || 0) + (severities['critical'] || severities['major'] || 0);
 ---
 
-<div class="filter-bar">
-  <div class="filter-section">
-    <span class="filter-label">Category</span>
-    <div class="filter-buttons">
-      <a href="/" class:list={['btn', { active: !hasAnyFilter }]}>
-        All ({totalCount})
-      </a>
-      {categories.map((cat) => (
-        <a
-          href={`/?category=${cat.name.toLowerCase()}`}
-          class:list={['btn', { active: activeCategory === cat.name.toLowerCase() }]}
-        >
-          {cat.name} ({cat.count})
-        </a>
+<div class="sidebar-stack">
+  <!-- Activity Heatmap -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Activity</span>
+      <span class="panel-badge">30 days</span>
+    </div>
+    <div class="panel-body">
+      <div class="activity-row" id="activity-grid" data-activity={JSON.stringify(dailyActivity || [])}></div>
+      <div class="activity-legend">
+        <span>Less</span>
+        <div class="legend-cell activity-cell"></div>
+        <div class="legend-cell activity-cell l1"></div>
+        <div class="legend-cell activity-cell l2"></div>
+        <div class="legend-cell activity-cell l3"></div>
+        <div class="legend-cell activity-cell l4"></div>
+        <span>More</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Category Distribution -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Categories</span>
+      <span class="panel-badge">{categories.length} types</span>
+    </div>
+    <div class="panel-body">
+      {sortedCategories.map((cat) => (
+        <div class="cat-row">
+          <div class="cat-dot" style={`background: ${catColors[cat.name] || 'var(--text-dim)'};`}></div>
+          <a href={`/?category=${cat.name.toLowerCase()}`} class="cat-name">{cat.name}</a>
+          <span class="cat-count">{cat.count}</span>
+          <div class="cat-bar-wrap">
+            <div class="cat-bar" style={`width: ${Math.round((cat.count / maxCatCount) * 100)}%; background: ${catColors[cat.name] || 'var(--text-dim)'};`}></div>
+          </div>
+        </div>
       ))}
     </div>
   </div>
 
-  {languageEntries.length > 0 && (
-    <div class="filter-section">
-      <span class="filter-label">Language</span>
-      <div class="filter-tags">
-        {languageEntries.map(([name, count]) => (
-          <a
-            href={`/?language=${encodeURIComponent(name)}`}
-            class:list={['lang-filter', { 'lang-active': activeLanguage === name }]}
-          >
-            {name} ({count})
-          </a>
-        ))}
+  <!-- Severity Breakdown -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Severity</span>
+      <span class="panel-badge">breakdown</span>
+    </div>
+    <div class="panel-body">
+      <div class="severity-grid">
+        <div class="severity-card sev-low">
+          <div class="severity-count">{sevLow}</div>
+          <div class="severity-label">Low</div>
+        </div>
+        <div class="severity-card sev-medium">
+          <div class="severity-count">{sevMed}</div>
+          <div class="severity-label">Medium</div>
+        </div>
+        <div class="severity-card sev-high">
+          <div class="severity-count">{sevHigh}</div>
+          <div class="severity-label">High</div>
+        </div>
       </div>
     </div>
-  )}
+  </div>
 
-  {severityEntries.length > 0 && (
-    <div class="filter-section">
-      <span class="filter-label">Severity</span>
-      <div class="filter-tags">
-        {severityEntries.map(([name, count]) => (
-          <a
-            href={`/?severity=${encodeURIComponent(name)}`}
-            class:list={[`sev-filter sev-${name}`, { 'sev-active': activeSeverity === name }]}
-          >
-            <span class={`sev-dot sev-dot-${name}`}></span>
-            {name} ({count})
-          </a>
-        ))}
-      </div>
-    </div>
-  )}
-
-  {environmentEntries.length > 0 && (
-    <div class="filter-section">
-      <span class="filter-label">Environment</span>
-      <div class="filter-tags">
-        {environmentEntries.map(([name, count]) => (
-          <a
-            href={`/?environment=${encodeURIComponent(name)}`}
-            class:list={['env-filter', { 'env-active': activeEnvironment === name }]}
-          >
-            {name} ({count})
-          </a>
-        ))}
-      </div>
-    </div>
-  )}
-
+  <!-- Tag Cloud -->
   {tagEntries.length > 0 && (
-    <div class="filter-section">
-      <span class="filter-label">Tags</span>
-      <div class="filter-tags">
-        {tagEntries.map(([name, count]) => (
-          <a
-            href={`/?tag=${encodeURIComponent(name)}`}
-            class:list={['tag', 'tag-filter', { 'tag-active': activeTag === name }]}
-          >
-            {name} ({count})
-          </a>
-        ))}
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Top Tags</span>
+        <span class="panel-badge">{tagEntries.length} tags</span>
+      </div>
+      <div class="panel-body">
+        <div class="tag-cloud">
+          {tagEntries.map(([name, count]) => (
+            <a href={`/?tag=${encodeURIComponent(name)}`} class={`cloud-tag ${tagSize(count)}`}>
+              {name}<span class="tag-count">{count}</span>
+            </a>
+          ))}
+        </div>
       </div>
     </div>
   )}
 </div>
 
-<style>
-  .filter-bar {
+<script>
+  // Activity heatmap from real analytics data
+  (function() {
+    const grid = document.getElementById('activity-grid');
+    if (!grid) return;
+
+    let data: number[] = [];
+    try {
+      const raw = JSON.parse(grid.dataset.activity || '[]');
+      data = raw.map((d: any) => (d.views || 0) + (d.searches || 0));
+    } catch { /* fallback to empty */ }
+
+    // Pad to 30 days if needed
+    while (data.length < 30) data.unshift(0);
+
+    // Compute max for scaling to levels 0-4
+    const max = Math.max(...data, 1);
+
+    for (let i = 0; i < data.length; i++) {
+      const cell = document.createElement('div');
+      const val = data[i];
+      let level = 0;
+      if (val > 0) {
+        const ratio = val / max;
+        if (ratio > 0.75) level = 4;
+        else if (ratio > 0.5) level = 3;
+        else if (ratio > 0.25) level = 2;
+        else level = 1;
+      }
+      cell.className = 'activity-cell' + (level > 0 ? ' l' + level : '');
+      cell.title = val + ' actions';
+      grid.appendChild(cell);
+    }
+  })();
+</script>
+
+<style is:global>
+  .sidebar-stack {
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 16px;
   }
 
-  .filter-section {
+  .panel {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+  }
+
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .panel-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: -0.01em;
+  }
+
+  .panel-badge {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    background: var(--bg-overlay);
+    border: 1px solid var(--border);
+    padding: 1px 7px;
+    border-radius: 99px;
+  }
+
+  .panel-body {
+    padding: 14px 18px;
+  }
+
+  /* Category rows */
+  .cat-row {
     display: flex;
     align-items: center;
     gap: 10px;
-    flex-wrap: wrap;
+    padding: 6px 0;
   }
 
-  .filter-label {
-    color: var(--text-muted);
-    font-size: 0.75rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    min-width: 64px;
+  .cat-row + .cat-row {
+    border-top: 1px solid rgba(39,39,42,0.5);
+    padding-top: 8px;
   }
 
-  .filter-buttons {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-
-  .filter-tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-
-  /* Language filters */
-  .lang-filter {
-    display: inline-block;
-    padding: 2px 8px;
-    background: rgba(78, 205, 196, 0.1);
-    color: #5eddd4;
-    border-radius: 4px;
-    font-size: 0.75rem;
-    font-family: var(--font-mono);
-    cursor: pointer;
-    transition: all var(--transition);
-    text-decoration: none;
-  }
-
-  .lang-filter:hover {
-    background: rgba(78, 205, 196, 0.25);
-    color: #7eeee6;
-  }
-
-  .lang-active {
-    background: rgba(78, 205, 196, 0.3);
-    outline: 1px solid rgba(78, 205, 196, 0.5);
-  }
-
-  /* Severity filters */
-  .sev-filter {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 2px 8px;
-    background: rgba(160, 160, 176, 0.08);
-    color: var(--text-secondary);
-    border-radius: 4px;
-    font-size: 0.75rem;
-    cursor: pointer;
-    transition: all var(--transition);
-    text-decoration: none;
-  }
-
-  .sev-filter:hover {
-    background: rgba(160, 160, 176, 0.18);
-  }
-
-  .sev-active {
-    outline: 1px solid var(--border-hover);
-    background: rgba(160, 160, 176, 0.15);
-  }
-
-  .sev-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
+  .cat-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
     flex-shrink: 0;
   }
 
-  .sev-dot-critical { background: #ff4444; }
-  .sev-dot-major { background: #ff8c00; }
-  .sev-dot-moderate { background: #ffd93d; }
-  .sev-dot-minor { background: #4ecdc4; }
-  .sev-dot-tip { background: #7c5cbf; }
-
-  /* Environment filters */
-  .env-filter {
-    display: inline-block;
-    padding: 2px 8px;
-    background: rgba(124, 92, 191, 0.12);
-    color: #b8a0e0;
-    border-radius: 4px;
-    font-size: 0.75rem;
+  .cat-name {
     font-family: var(--font-mono);
-    cursor: pointer;
-    transition: all var(--transition);
+    font-size: 12px;
+    color: var(--text-secondary);
+    flex: 1;
     text-decoration: none;
   }
 
-  .env-filter:hover {
-    background: rgba(124, 92, 191, 0.25);
-    color: #d0bff0;
+  .cat-name:hover {
+    color: var(--text-primary);
   }
 
-  .env-active {
-    background: rgba(124, 92, 191, 0.3);
-    outline: 1px solid rgba(124, 92, 191, 0.5);
+  .cat-count {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-muted);
+    min-width: 24px;
+    text-align: right;
   }
 
-  /* Tag filters */
-  .tag-filter {
+  .cat-bar-wrap {
+    width: 80px;
+    height: 4px;
+    background: var(--bg-overlay);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .cat-bar {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.4s ease;
+  }
+
+  /* Severity grid */
+  .severity-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+  }
+
+  .severity-card {
+    text-align: center;
+    padding: 14px 8px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: var(--bg-primary);
+  }
+
+  .severity-count {
+    font-family: var(--font-mono);
+    font-size: 22px;
+    font-weight: 600;
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+
+  .severity-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 500;
+  }
+
+  .sev-low .severity-count    { color: var(--green); }
+  .sev-low .severity-label    { color: var(--green); }
+  .sev-medium .severity-count { color: var(--amber); }
+  .sev-medium .severity-label { color: var(--amber); }
+  .sev-high .severity-count   { color: var(--red);   }
+  .sev-high .severity-label   { color: var(--red);   }
+
+  /* Tag cloud */
+  .tag-cloud {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .cloud-tag {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    padding: 4px 10px;
+    border-radius: 3px;
     cursor: pointer;
-    transition: all var(--transition);
+    transition: all 0.15s ease;
+    white-space: nowrap;
     text-decoration: none;
   }
 
-  .tag-filter:hover {
-    background: rgba(124, 92, 191, 0.25);
-    color: var(--accent-hover);
+  .cloud-tag:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: var(--accent-subtle);
   }
 
-  .tag-active {
-    background: rgba(124, 92, 191, 0.3);
-    color: var(--accent-hover);
-    outline: 1px solid var(--accent);
+  .cloud-tag .tag-count {
+    color: var(--text-dim);
+    margin-left: 4px;
+  }
+
+  .cloud-tag.size-lg  { font-size: 13px; font-weight: 500; }
+  .cloud-tag.size-md  { font-size: 12px; }
+  .cloud-tag.size-sm  { font-size: 11px; }
+  .cloud-tag.size-xs  { font-size: 10px; color: var(--text-muted); }
+
+  /* Activity heatmap */
+  .activity-row {
+    display: flex;
+    gap: 3px;
+    padding: 4px 0;
+    flex-wrap: wrap;
+  }
+
+  .activity-cell {
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+    background: var(--bg-overlay);
+    border: 1px solid rgba(39,39,42,0.4);
+    transition: all 0.1s ease;
+  }
+
+  .activity-cell:hover {
+    border-color: var(--border-hover);
+    transform: scale(1.2);
+  }
+
+  .activity-cell.l1 { background: rgba(129,140,248,0.15); border-color: rgba(129,140,248,0.1); }
+  .activity-cell.l2 { background: rgba(129,140,248,0.30); border-color: rgba(129,140,248,0.15); }
+  .activity-cell.l3 { background: rgba(129,140,248,0.50); border-color: rgba(129,140,248,0.25); }
+  .activity-cell.l4 { background: rgba(129,140,248,0.75); border-color: rgba(129,140,248,0.4); }
+
+  .activity-legend {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 8px;
+    justify-content: flex-end;
+  }
+
+  .activity-legend span {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+
+  .legend-cell {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+  }
+
+  @media (max-width: 520px) {
+    .severity-grid { grid-template-columns: 1fr; }
   }
 </style>

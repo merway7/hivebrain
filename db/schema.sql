@@ -57,3 +57,24 @@ CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
   INSERT INTO entries_fts(entries_fts, rowid, title, problem, solution, why, error_messages, keywords, context, tags, language, framework)
   VALUES ('delete', old.id, old.title, old.problem, old.solution, old.why, old.error_messages, old.keywords, old.context, old.tags, old.language, old.framework);
 END;
+
+-- Analytics: track individual views
+CREATE TABLE IF NOT EXISTS analytics_views (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entry_id INTEGER NOT NULL REFERENCES entries(id),
+  source TEXT DEFAULT 'web',  -- 'web', 'mcp', 'api'
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+-- Analytics: track searches
+CREATE TABLE IF NOT EXISTS analytics_searches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  query TEXT NOT NULL,
+  result_count INTEGER DEFAULT 0,
+  source TEXT DEFAULT 'web',  -- 'web', 'mcp', 'api'
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_analytics_views_entry ON analytics_views(entry_id);
+CREATE INDEX IF NOT EXISTS idx_analytics_views_created ON analytics_views(created_at);
+CREATE INDEX IF NOT EXISTS idx_analytics_searches_created ON analytics_searches(created_at);

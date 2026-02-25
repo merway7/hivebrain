@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HiveBrain -- Knowledge Graph</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0a0e17;
+    color: #c8d0e0;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    overflow: hidden;
+    height: 100vh;
+    width: 100vw;
+  }
+
+  canvas {
+    display: block;
+    cursor: grab;
+  }
+  canvas:active { cursor: grabbing; }
+
+  #tooltip {
+    position: fixed;
+    pointer-events: none;
+    background: rgba(10, 14, 23, 0.92);
+    border: 1px solid rgba(100, 120, 160, 0.3);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 13px;
+    line-height: 1.5;
+    max-width: 300px;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    z-index: 100;
+    backdrop-filter: blur(8px);
+  }
+  #tooltip.visible { opacity: 1; }
+
+  #tt-title {
+    font-weight: 600;
+    color: #e8ecf4;
+    margin-bottom: 4px;
+    font-size: 14px;
+  }
+  #tt-category {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+  }
+  #tt-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  #legend {
+    position: fixed;
+    bottom: 20px;
+    left: 20px;
+    background: rgba(10, 14, 23, 0.85);
+    border: 1px solid rgba(100, 120, 160, 0.2);
+    border-radius: 10px;
+    padding: 14px 18px;
+    font-size: 12px;
+    backdrop-filter: blur(8px);
+    z-index: 50;
+  }
+  #legend h3 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #6878a0;
+    margin-bottom: 10px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .legend-item:last-child { margin-bottom: 0; }
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .legend-label {
+    color: #8898b8;
+    font-size: 12px;
+  }
+
+  #header {
+    position: fixed;
+    top: 20px;
+    left: 20px;
+    z-index: 50;
+  }
+  #header h1 {
+    font-size: 18px;
+    font-weight: 700;
+    color: #e0e6f0;
+    letter-spacing: -0.3px;
+  }
+  #header p {
+    font-size: 12px;
+    color: #5868a0;
+    margin-top: 2px;
+  }
+
+  #controls {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    display: flex;
+    gap: 8px;
+    z-index: 50;
+  }
+  .ctrl-btn {
+    background: rgba(10, 14, 23, 0.85);
+    border: 1px solid rgba(100, 120, 160, 0.2);
+    border-radius: 8px;
+    color: #8898b8;
+    padding: 6px 12px;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    backdrop-filter: blur(8px);
+    transition: border-color 0.2s, color 0.2s;
+  }
+  .ctrl-btn:hover {
+    border-color: rgba(100, 120, 160, 0.5);
+    color: #c8d0e0;
+  }
+
+  #stats {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    font-size: 11px;
+    color: #3a4870;
+    z-index: 50;
+  }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <h1>HiveBrain</h1>
+  <p>Knowledge Graph</p>
+</div>
+
+<div id="controls">
+  <button class="ctrl-btn" onclick="resetView()">Reset View</button>
+  <button class="ctrl-btn" onclick="toggleLabels()">Labels</button>
+</div>
+
+<canvas id="graph"></canvas>
+
+<div id="tooltip">
+  <div id="tt-title"></div>
+  <div id="tt-category"></div>
+  <div id="tt-tags"></div>
+</div>
+
+<div id="legend">
+  <h3>Categories</h3>
+  <div class="legend-item"><div class="legend-dot" style="background:#4a8fe7;box-shadow:0 0 6px #4a8fe7aa"></div><span class="legend-label">Pattern</span></div>
+  <div class="legend-item"><div class="legend-dot" style="background:#e0a030;box-shadow:0 0 6px #e0a030aa"></div><span class="legend-label">Gotcha</span></div>
+  <div class="legend-item"><div class="legend-dot" style="background:#e04848;box-shadow:0 0 6px #e04848aa"></div><span class="legend-label">Debug</span></div>
+  <div class="legend-item"><div class="legend-dot" style="background:#40b878;box-shadow:0 0 6px #40b878aa"></div><span class="legend-label">Snippet</span></div>
+  <div class="legend-item"><div class="legend-dot" style="background:#a064e0;box-shadow:0 0 6px #a064e0aa"></div><span class="legend-label">Principle</span></div>
+  <div style="margin-top:10px;border-top:1px solid rgba(100,120,160,0.15);padding-top:8px">
+    <h3 style="margin-bottom:6px">Size = Severity</h3>
+    <div class="legend-item"><div class="legend-dot" style="width:16px;height:16px;background:#888;box-shadow:0 0 4px #888a"></div><span class="legend-label">Critical</span></div>
+    <div class="legend-item"><div class="legend-dot" style="width:12px;height:12px;background:#888;box-shadow:0 0 4px #888a"></div><span class="legend-label">High</span></div>
+    <div class="legend-item"><div class="legend-dot" style="width:9px;height:9px;background:#888;box-shadow:0 0 4px #888a"></div><span class="legend-label">Medium / Low</span></div>
+  </div>
+</div>
+
+<div id="stats"></div>
+
+<script>
+// --- DATA ---
+var CATEGORIES = {
+  pattern:   { color: '#4a8fe7', glow: '#4a8fe740' },
+  gotcha:    { color: '#e0a030', glow: '#e0a03040' },
+  debug:     { color: '#e04848', glow: '#e0484840' },
+  snippet:   { color: '#40b878', glow: '#40b87840' },
+  principle: { color: '#a064e0', glow: '#a064e040' },
+};
+
+var SEVERITY_RADIUS = { critical: 18, high: 13, medium: 10, low: 8 };
+
+var entries = [
+  { id: 1,  title: "React useEffect Cleanup Pattern",         category: "pattern",   severity: "medium", tags: ["react", "hooks", "memory-leak", "cleanup"] },
+  { id: 2,  title: "Stale Closure in setTimeout",             category: "gotcha",    severity: "high",   tags: ["react", "hooks", "closures", "javascript"] },
+  { id: 3,  title: "Next.js Hydration Mismatch Debug",        category: "debug",     severity: "critical",tags: ["react", "nextjs", "ssr", "hydration"] },
+  { id: 4,  title: "TypeScript Discriminated Union Pattern",   category: "pattern",   severity: "medium", tags: ["typescript", "types", "pattern-matching"] },
+  { id: 5,  title: "Prisma N+1 Query Detection",              category: "debug",     severity: "high",   tags: ["prisma", "database", "performance", "sql"] },
+  { id: 6,  title: "Tailwind Dynamic Class Gotcha",           category: "gotcha",    severity: "medium", tags: ["tailwind", "css", "dynamic-classes"] },
+  { id: 7,  title: "Zod Schema Composition Snippet",          category: "snippet",   severity: "low",    tags: ["zod", "typescript", "validation"] },
+  { id: 8,  title: "Single Responsibility in React Components",category: "principle", severity: "medium", tags: ["react", "architecture", "components", "solid"] },
+  { id: 9,  title: "Edge Runtime Crypto API Missing",         category: "debug",     severity: "critical",tags: ["nextjs", "edge-runtime", "crypto", "node"] },
+  { id: 10, title: "Optimistic UI Update Pattern",            category: "pattern",   severity: "high",   tags: ["react", "ux", "state-management", "mutations"] },
+  { id: 11, title: "PostgreSQL Index on JSONB Fields",        category: "snippet",   severity: "medium", tags: ["database", "postgresql", "performance", "jsonb"] },
+  { id: 12, title: "Avoid Prop Drilling with Context",        category: "principle", severity: "low",    tags: ["react", "architecture", "context", "state-management"] },
+  { id: 13, title: "Docker Layer Caching for Node",           category: "pattern",   severity: "medium", tags: ["docker", "node", "ci-cd", "performance"] },
+  { id: 14, title: "ESLint Rule Conflict with Prettier",      category: "gotcha",    severity: "low",    tags: ["eslint", "prettier", "tooling", "config"] },
+  { id: 15, title: "Race Condition in Concurrent State Updates",category: "debug",   severity: "high",   tags: ["react", "state-management", "concurrency", "hooks"] },
+];
+
+// Explicit related entries (bidirectional)
+var relatedPairs = [
+  [1, 2],   // useEffect cleanup <-> stale closures
+  [3, 9],   // hydration <-> edge runtime (both Next.js issues)
+  [5, 11],  // prisma N+1 <-> postgres indexes (database perf)
+  [8, 12],  // SRP <-> avoid prop drilling (architecture)
+  [2, 15],  // stale closure <-> race conditions
+  [10, 15], // optimistic UI <-> race conditions
+];
+
+// --- BUILD GRAPH ---
+function buildEdges() {
+  var edgeList = [];
+  var edgeSet = {};
+  function key(a, b) { return Math.min(a, b) + ':' + Math.max(a, b); }
+
+  // Related pairs
+  for (var p = 0; p < relatedPairs.length; p++) {
+    var a = relatedPairs[p][0], b = relatedPairs[p][1];
+    var k = key(a, b);
+    if (!edgeSet[k]) {
+      edgeSet[k] = true;
+      edgeList.push({ source: a, target: b, type: 'related' });
+    }
+  }
+
+  // Shared tags (2+ shared tags)
+  for (var i = 0; i < entries.length; i++) {
+    for (var j = i + 1; j < entries.length; j++) {
+      var shared = entries[i].tags.filter(function(t) { return entries[j].tags.indexOf(t) >= 0; });
+      if (shared.length >= 2) {
+        var ek = key(entries[i].id, entries[j].id);
+        if (!edgeSet[ek]) {
+          edgeSet[ek] = true;
+          edgeList.push({ source: entries[i].id, target: entries[j].id, type: 'tags', sharedTags: shared });
+        }
+      }
+    }
+  }
+  return edgeList;
+}
+
+var edges = buildEdges();
+
+// --- SIMULATION ---
+var canvas = document.getElementById('graph');
+var ctx = canvas.getContext('2d');
+var tooltip = document.getElementById('tooltip');
+var ttTitle = document.getElementById('tt-title');
+var ttCategory = document.getElementById('tt-category');
+var ttTags = document.getElementById('tt-tags');
+var statsEl = document.getElementById('stats');
+
+var W, H;
+var showLabels = false;
+
+function resize() {
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W * devicePixelRatio;
+  canvas.height = H * devicePixelRatio;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+}
+resize();
+window.addEventListener('resize', resize);
+
+// Node state
+var nodes = entries.map(function(e, i) {
+  var angle = (i / entries.length) * Math.PI * 2;
+  var spread = Math.min(W, H) * 0.25;
+  return {
+    id: e.id,
+    title: e.title,
+    category: e.category,
+    severity: e.severity,
+    tags: e.tags,
+    x: W / 2 + Math.cos(angle) * spread + (Math.random() - 0.5) * 80,
+    y: H / 2 + Math.sin(angle) * spread + (Math.random() - 0.5) * 80,
+    vx: 0,
+    vy: 0,
+    radius: SEVERITY_RADIUS[e.severity],
+  };
+});
+
+var nodeMap = {};
+nodes.forEach(function(n) { nodeMap[n.id] = n; });
+
+// Camera
+var cam = { x: 0, y: 0, zoom: 1 };
+
+function screenToWorld(sx, sy) {
+  return {
+    x: (sx - W / 2) / cam.zoom + W / 2 - cam.x,
+    y: (sy - H / 2) / cam.zoom + H / 2 - cam.y,
+  };
+}
+
+// Interaction state
+var hoveredNode = null;
+var selectedNode = null;
+var dragNode = null;
+var isPanning = false;
+var panStart = { x: 0, y: 0, camX: 0, camY: 0 };
+
+function getConnected(nodeId) {
+  var ids = {};
+  for (var i = 0; i < edges.length; i++) {
+    if (edges[i].source === nodeId) ids[edges[i].target] = true;
+    if (edges[i].target === nodeId) ids[edges[i].source] = true;
+  }
+  return ids;
+}
+
+// --- PHYSICS ---
+var SPRING_LENGTH = 160;
+var SPRING_STRENGTH = 0.004;
+var REPULSION = 3000;
+var DAMPING = 0.88;
+var CENTER_GRAVITY = 0.0003;
+
+function simulate() {
+  var i, j, a, b, dx, dy, dist, force, fx, fy, displacement;
+
+  // Repulsion between all nodes
+  for (i = 0; i < nodes.length; i++) {
+    for (j = i + 1; j < nodes.length; j++) {
+      a = nodes[i]; b = nodes[j];
+      dx = b.x - a.x;
+      dy = b.y - a.y;
+      dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      force = REPULSION / (dist * dist);
+      fx = (dx / dist) * force;
+      fy = (dy / dist) * force;
+      a.vx -= fx; a.vy -= fy;
+      b.vx += fx; b.vy += fy;
+    }
+  }
+
+  // Spring forces on edges
+  for (i = 0; i < edges.length; i++) {
+    a = nodeMap[edges[i].source]; b = nodeMap[edges[i].target];
+    dx = b.x - a.x;
+    dy = b.y - a.y;
+    dist = Math.sqrt(dx * dx + dy * dy) || 1;
+    displacement = dist - SPRING_LENGTH;
+    force = displacement * SPRING_STRENGTH;
+    fx = (dx / dist) * force;
+    fy = (dy / dist) * force;
+    a.vx += fx; a.vy += fy;
+    b.vx -= fx; b.vy -= fy;
+  }
+
+  // Center gravity
+  var cx = W / 2, cy = H / 2;
+  for (i = 0; i < nodes.length; i++) {
+    nodes[i].vx += (cx - nodes[i].x) * CENTER_GRAVITY;
+    nodes[i].vy += (cy - nodes[i].y) * CENTER_GRAVITY;
+  }
+
+  // Integrate
+  for (i = 0; i < nodes.length; i++) {
+    if (nodes[i] === dragNode) continue;
+    nodes[i].vx *= DAMPING;
+    nodes[i].vy *= DAMPING;
+    nodes[i].x += nodes[i].vx;
+    nodes[i].y += nodes[i].vy;
+  }
+}
+
+// --- STARS (generated once) ---
+var stars = [];
+function generateStars() {
+  stars = [];
+  for (var i = 0; i < 120; i++) {
+    stars.push({
+      x: Math.random() * 3000,
+      y: Math.random() * 2000,
+      r: Math.random() * 1.2 + 0.3,
+      a: Math.random() * 0.3 + 0.05,
+    });
+  }
+}
+generateStars();
+
+// --- RENDER ---
+function hexAlpha(hex, alpha) {
+  var a = Math.round(alpha * 255).toString(16);
+  if (a.length === 1) a = '0' + a;
+  return hex + a;
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  // Background gradient
+  var bg = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.max(W, H) * 0.6);
+  bg.addColorStop(0, '#0f1524');
+  bg.addColorStop(1, '#080c14');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // Faint star dots
+  for (var s = 0; s < stars.length; s++) {
+    ctx.beginPath();
+    ctx.arc(stars[s].x % W, stars[s].y % H, stars[s].r, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(140,160,200,' + stars[s].a + ')';
+    ctx.fill();
+  }
+
+  ctx.save();
+  ctx.translate(W / 2, H / 2);
+  ctx.scale(cam.zoom, cam.zoom);
+  ctx.translate(-W / 2 + cam.x, -H / 2 + cam.y);
+
+  var activeId = selectedNode ? selectedNode.id : (hoveredNode ? hoveredNode.id : null);
+  var connectedIds = activeId ? getConnected(activeId) : null;
+
+  var i, e, a, b, n, cat, isHighlighted, isDimmed, isActive, isConnected;
+  var alpha, pulseScale, r, glowSize, grad, nodeGrad, lighten;
+  var time = Date.now() * 0.001;
+
+  // Draw edges
+  for (i = 0; i < edges.length; i++) {
+    e = edges[i];
+    a = nodeMap[e.source]; b = nodeMap[e.target];
+    isHighlighted = activeId && (e.source === activeId || e.target === activeId);
+    isDimmed = activeId && !isHighlighted;
+
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+
+    if (isHighlighted) {
+      ctx.strokeStyle = e.type === 'related' ? 'rgba(160,180,220,0.6)' : 'rgba(100,130,180,0.4)';
+      ctx.lineWidth = e.type === 'related' ? 2 : 1.5;
+    } else if (isDimmed) {
+      ctx.strokeStyle = 'rgba(60,70,100,0.08)';
+      ctx.lineWidth = 0.5;
+    } else {
+      ctx.strokeStyle = e.type === 'related' ? 'rgba(100,120,160,0.18)' : 'rgba(70,90,130,0.12)';
+      ctx.lineWidth = e.type === 'related' ? 1.2 : 0.8;
+    }
+    ctx.stroke();
+  }
+
+  // Draw nodes
+  for (i = 0; i < nodes.length; i++) {
+    n = nodes[i];
+    cat = CATEGORIES[n.category];
+    isActive = activeId === n.id;
+    isConnected = connectedIds && connectedIds[n.id];
+    isDimmed = activeId && !isActive && !isConnected;
+
+    pulseScale = isActive ? 1 + Math.sin(time * 3) * 0.08 : 1;
+    r = n.radius * pulseScale;
+
+    // Outer glow
+    if (!isDimmed) {
+      glowSize = isActive ? r * 3.5 : (isConnected ? r * 2.5 : r * 2);
+      grad = ctx.createRadialGradient(n.x, n.y, r * 0.5, n.x, n.y, glowSize);
+      var glowAlpha = isActive ? 0.25 : (isConnected ? 0.15 : 0.08);
+      grad.addColorStop(0, hexAlpha(cat.color, glowAlpha));
+      grad.addColorStop(1, hexAlpha(cat.color, 0));
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, glowSize, 0, Math.PI * 2);
+      ctx.fillStyle = grad;
+      ctx.fill();
+    }
+
+    // Node circle
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+
+    nodeGrad = ctx.createRadialGradient(n.x - r * 0.3, n.y - r * 0.3, 0, n.x, n.y, r);
+    if (isActive) {
+      nodeGrad.addColorStop(0, hexAlpha(cat.color, 0.87));
+      nodeGrad.addColorStop(1, hexAlpha(cat.color, 0.44));
+    } else if (isDimmed) {
+      nodeGrad.addColorStop(0, hexAlpha(cat.color, 0.19));
+      nodeGrad.addColorStop(1, hexAlpha(cat.color, 0.09));
+    } else {
+      nodeGrad.addColorStop(0, hexAlpha(cat.color, 0.67));
+      nodeGrad.addColorStop(1, hexAlpha(cat.color, 0.44));
+    }
+    ctx.fillStyle = nodeGrad;
+    ctx.fill();
+
+    if (!isDimmed) {
+      ctx.strokeStyle = hexAlpha(cat.color, isActive ? 0.8 : 0.3);
+      ctx.lineWidth = isActive ? 2 : 1;
+      ctx.stroke();
+    }
+
+    // Labels
+    if (showLabels && !isDimmed) {
+      ctx.font = '10px SF Mono, Fira Code, monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = 'rgba(200,210,230,' + (isActive ? '0.9' : '0.5') + ')';
+      var label = n.title.length > 28 ? n.title.slice(0, 26) + '..' : n.title;
+      ctx.fillText(label, n.x, n.y + r + 14);
+    }
+  }
+
+  ctx.restore();
+}
+
+// --- LOOP ---
+function tick() {
+  simulate();
+  draw();
+  statsEl.textContent = nodes.length + ' entries  |  ' + edges.length + ' connections';
+  requestAnimationFrame(tick);
+}
+tick();
+
+// --- TOOLTIP (safe DOM methods, no innerHTML) ---
+function showTooltip(node, mx, my) {
+  var cat = CATEGORIES[node.category];
+
+  // Title
+  ttTitle.textContent = node.title;
+
+  // Category + severity
+  ttCategory.textContent = node.category + ' \u00B7 ' + node.severity;
+  ttCategory.style.color = cat.color;
+
+  // Tags -- clear and rebuild
+  while (ttTags.firstChild) { ttTags.removeChild(ttTags.firstChild); }
+  for (var t = 0; t < node.tags.length; t++) {
+    var span = document.createElement('span');
+    span.textContent = node.tags[t];
+    span.style.cssText = 'background:rgba(100,120,160,0.15);border:1px solid rgba(100,120,160,0.2);border-radius:4px;padding:1px 6px;font-size:11px;color:#8898b8;';
+    ttTags.appendChild(span);
+  }
+
+  tooltip.classList.add('visible');
+
+  // Position
+  var tx = mx + 16, ty = my - 10;
+  var rect = tooltip.getBoundingClientRect();
+  if (tx + rect.width > W - 10) tx = mx - rect.width - 16;
+  if (ty + rect.height > H - 10) ty = H - rect.height - 10;
+  if (ty < 10) ty = 10;
+  tooltip.style.left = tx + 'px';
+  tooltip.style.top = ty + 'px';
+}
+
+function hideTooltip() {
+  tooltip.classList.remove('visible');
+}
+
+// --- HIT TEST ---
+function hitTest(mx, my) {
+  var world = screenToWorld(mx, my);
+  for (var i = nodes.length - 1; i >= 0; i--) {
+    var n = nodes[i];
+    var dx = world.x - n.x;
+    var dy = world.y - n.y;
+    if (dx * dx + dy * dy < (n.radius + 4) * (n.radius + 4)) {
+      return n;
+    }
+  }
+  return null;
+}
+
+// --- INTERACTION ---
+canvas.addEventListener('mousemove', function(e) {
+  var mx = e.clientX, my = e.clientY;
+
+  if (isPanning) {
+    cam.x = panStart.camX + (mx - panStart.x) / cam.zoom;
+    cam.y = panStart.camY + (my - panStart.y) / cam.zoom;
+    hideTooltip();
+    return;
+  }
+
+  if (dragNode) {
+    var world = screenToWorld(mx, my);
+    dragNode.x = world.x;
+    dragNode.y = world.y;
+    dragNode.vx = 0;
+    dragNode.vy = 0;
+    return;
+  }
+
+  var hit = hitTest(mx, my);
+  hoveredNode = hit;
+  canvas.style.cursor = hit ? 'pointer' : 'grab';
+
+  if (hit) {
+    showTooltip(hit, mx, my);
+  } else {
+    hideTooltip();
+  }
+});
+
+canvas.addEventListener('mousedown', function(e) {
+  var hit = hitTest(e.clientX, e.clientY);
+
+  if (hit) {
+    if (e.button === 0) {
+      dragNode = hit;
+      selectedNode = (selectedNode === hit) ? null : hit;
+    }
+  } else {
+    selectedNode = null;
+    isPanning = true;
+    panStart = { x: e.clientX, y: e.clientY, camX: cam.x, camY: cam.y };
+    canvas.style.cursor = 'grabbing';
+  }
+});
+
+canvas.addEventListener('mouseup', function() {
+  dragNode = null;
+  isPanning = false;
+  canvas.style.cursor = hoveredNode ? 'pointer' : 'grab';
+});
+
+canvas.addEventListener('mouseleave', function() {
+  hoveredNode = null;
+  dragNode = null;
+  isPanning = false;
+  hideTooltip();
+});
+
+canvas.addEventListener('wheel', function(e) {
+  e.preventDefault();
+  var delta = e.deltaY > 0 ? 0.92 : 1.08;
+  var newZoom = Math.max(0.2, Math.min(5, cam.zoom * delta));
+
+  // Zoom toward cursor
+  var mx = e.clientX, my = e.clientY;
+  var beforeWorld = screenToWorld(mx, my);
+  cam.zoom = newZoom;
+  var afterWorld = screenToWorld(mx, my);
+  cam.x += afterWorld.x - beforeWorld.x;
+  cam.y += afterWorld.y - beforeWorld.y;
+}, { passive: false });
+
+// --- CONTROLS ---
+function resetView() {
+  cam = { x: 0, y: 0, zoom: 1 };
+  selectedNode = null;
+}
+
+function toggleLabels() {
+  showLabels = !showLabels;
+}
+
+// --- TOUCH SUPPORT ---
+var lastTouchDist = null;
+
+canvas.addEventListener('touchstart', function(e) {
+  if (e.touches.length === 1) {
+    var t = e.touches[0];
+    var hit = hitTest(t.clientX, t.clientY);
+    if (hit) {
+      dragNode = hit;
+      selectedNode = hit;
+    } else {
+      isPanning = true;
+      panStart = { x: t.clientX, y: t.clientY, camX: cam.x, camY: cam.y };
+    }
+  }
+  if (e.touches.length === 2) {
+    var dx = e.touches[0].clientX - e.touches[1].clientX;
+    var dy = e.touches[0].clientY - e.touches[1].clientY;
+    lastTouchDist = Math.sqrt(dx * dx + dy * dy);
+  }
+  e.preventDefault();
+}, { passive: false });
+
+canvas.addEventListener('touchmove', function(e) {
+  if (e.touches.length === 1) {
+    var t = e.touches[0];
+    if (dragNode) {
+      var world = screenToWorld(t.clientX, t.clientY);
+      dragNode.x = world.x;
+      dragNode.y = world.y;
+      dragNode.vx = 0;
+      dragNode.vy = 0;
+    } else if (isPanning) {
+      cam.x = panStart.camX + (t.clientX - panStart.x) / cam.zoom;
+      cam.y = panStart.camY + (t.clientY - panStart.y) / cam.zoom;
+    }
+  }
+  if (e.touches.length === 2 && lastTouchDist) {
+    var dx = e.touches[0].clientX - e.touches[1].clientX;
+    var dy = e.touches[0].clientY - e.touches[1].clientY;
+    var dist = Math.sqrt(dx * dx + dy * dy);
+    var scale = dist / lastTouchDist;
+    cam.zoom = Math.max(0.2, Math.min(5, cam.zoom * scale));
+    lastTouchDist = dist;
+  }
+  e.preventDefault();
+}, { passive: false });
+
+canvas.addEventListener('touchend', function() {
+  dragNode = null;
+  isPanning = false;
+  lastTouchDist = null;
+});
+</script>
+</body>
+</html>

@@ -1,26 +1,20 @@
+
+# --- HiveBrain Integration ---
+# DO NOT REMOVE — Auto-added by HiveBrain setup
+
 ## HiveBrain — Collective Knowledge Base
-HiveBrain is a local knowledge base with patterns, gotchas, and debug solutions. It runs at `localhost:4321` and is available via MCP tools.
+HiveBrain is a local knowledge base with patterns, gotchas, and debug solutions. It runs at `localhost:4321` and is available via MCP tools (`hivebrain_search`, `hivebrain_submit`, `hivebrain_get`, `hivebrain_stats`).
 
-**IMPORTANT: These are not suggestions — they are automatic behaviors. Do them without being asked.**
+### Rule: `hivebrain_search` is ALWAYS your first tool call
+Before you call Read, Grep, Glob, Bash, or ANY other tool — call `hivebrain_search` first.
+This is not optional. There are no exceptions. "I already know the answer" is not an excuse.
 
-### Auto-Pull: ALWAYS Search First (`hivebrain_search`)
-Before debugging or investigating any issue, **automatically** search HiveBrain. This is mandatory, not optional:
-- **Any error message** → search it immediately before investigating manually
-- **Any debugging session** → search the symptom/error before reading code
-- **Starting work in unfamiliar code** → search for known gotchas about that area
-- **Before spending >2 minutes on a problem** → search, it might already be solved
-- **Framework/library issues** → search the library name + symptom
+### Rule: `hivebrain_submit` after solving problems
+Submit to HiveBrain when EITHER condition is true:
+- You fixed something that took more than 2 minutes or involved real debugging
+- Your `hivebrain_search` returned no relevant results AND you provided a technical solution (code fix, architecture pattern, config explanation, debugging steps)
 
-Do NOT ask the user "should I search HiveBrain?" — just do it. If nothing is found, proceed normally.
-
-### Auto-Push: Submit After Solving (`hivebrain_submit`)
-After solving a non-trivial problem, **automatically** submit it. This is mandatory:
-- **After fixing a bug that took real debugging** → submit the problem + solution
-- **After discovering surprising behavior** → submit the gotcha
-- **After establishing a reusable pattern** → submit the pattern
-- **After finding a framework/library workaround** → submit it
-
-Do NOT ask the user "should I submit this to HiveBrain?" — just do it after the fix is confirmed working.
+If HiveBrain didn't have it, and the answer wasn't trivially obvious, future instances need it — submit it. Don't ask.
 
 ### When NOT to Submit
 - Trivial fixes (typos, missing imports, obvious syntax errors)
@@ -28,5 +22,10 @@ Do NOT ask the user "should I submit this to HiveBrain?" — just do it after th
 - Solutions that are the first Google result
 - Anything already in HiveBrain (search first!)
 
-### Get Full Entry (`hivebrain_get`)
-- Use to read complete details of an entry found via search
+### Available Tools
+- `hivebrain_search` — Search for existing solutions (ALWAYS use first)
+- `hivebrain_submit` — Submit new patterns, gotchas, debug solutions
+- `hivebrain_get` — Get full details of an entry by ID
+- `hivebrain_stats` — View knowledge base analytics
+
+# --- End HiveBrain ---

@@ -5,15 +5,14 @@ import SearchBar from '../components/SearchBar.astro';
 import EntryCard from '../components/EntryCard.astro';
 import FilterBar from '../components/FilterBar.astro';
 import Stats from '../components/Stats.astro';
-import { getAllEntries, searchEntries, getStats } from '../lib/db';
+import GraphView from '../components/GraphView.astro';
+import { getAllEntries, searchEntries, getStats, getAnalytics } from '../lib/db';
 
 const url = new URL(Astro.request.url);
 const q = url.searchParams.get('q')?.trim() || '';
 const category = url.searchParams.get('category') || '';
 const tag = url.searchParams.get('tag') || '';
-const language = url.searchParams.get('language') || '';
 const severity = url.searchParams.get('severity') || '';
-const environment = url.searchParams.get('environment') || '';
 
 let entries;
 if (q) {
@@ -22,141 +21,229 @@ if (q) {
   entries = getAllEntries({
     category: category || undefined,
     tag: tag || undefined,
-    language: language || undefined,
     severity: severity || undefined,
-    environment: environment || undefined,
-    limit: 50,
+    limit: 10,
   });
 }
 
 const stats = getStats();
 const categories = stats.byCategory.map(c => ({ name: c.category, count: c.count }));
+
+// Count entries from this week and calculate deltas
+const now = Math.floor(Date.now() / 1000);
+const oneWeekAgo = now - 7 * 86400;
+const twoWeeksAgo = now - 14 * 86400;
+const thirtyDaysAgo = now - 30 * 86400;
+const allRecent = getAllEntries({});
+const recentCount = allRecent.filter((e: any) => e.created_at > oneWeekAgo).length;
+const monthlyEntries = allRecent.filter((e: any) => e.created_at > thirtyDaysAgo).length;
+const lastWeekEntries = allRecent.filter((e: any) => e.created_at > twoWeeksAgo && e.created_at <= oneWeekAgo).length;
+const weeklyDelta = recentCount - lastWeekEntries;
+const analytics = getAnalytics();
 ---
 
-<Layout title={q ? `Search: ${q} — HiveBrain` : 'HiveBrain — AI Agent Knowledge Base'}>
-  <Header />
-  <main class="container">
-    <section class="hero">
-      <h1>The Hive Mind</h1>
-      <p class="subtitle">Solutions discovered by AI coding agents, shared with the swarm.</p>
+<Layout title={q ? `Search: ${q} — HiveBrain` : 'HiveBrain — Knowledge Dashboard'}>
+  <!-- Dashboard View -->
+  <div class="dashboard-view" id="dashboard-view">
+    <div class="app">
+      <Header />
       <SearchBar query={q} />
-    </section>
 
-    <div style="margin-bottom: 16px;">
-      <Stats
-        total={stats.total}
-        byCategory={categories}
-        languageCounts={stats.languageCounts}
-        severityCounts={stats.severityCounts}
-      />
-    </div>
-    <div style="margin-bottom: 24px;">
-    <FilterBar
-      categories={categories}
-      tags={stats.tagCounts}
-      languages={stats.languageCounts}
-      severities={stats.severityCounts}
-      environments={stats.environmentCounts}
-      activeCategory={category}
-      activeTag={tag}
-      activeLanguage={language}
-      activeSeverity={severity}
-      activeEnvironment={environment}
-    />
-    </div>
-
-    {q && (
-      <p class="search-info">
-        Found <strong>{entries.length}</strong> result{entries.length !== 1 ? 's' : ''} for "<em>{q}</em>"
-      </p>
-    )}
-
-    <section class="entries">
-      {entries.length === 0 ? (
-        <div class="empty">
-          <p>No entries found{q ? ` for "${q}"` : ''}.</p>
-          <p class="text-muted">Try a different search or browse all entries.</p>
-        </div>
+      {q ? (
+        <p class="search-info">
+          Found <strong>{entries.length}</strong> result{entries.length !== 1 ? 's' : ''} for "<em>{q}</em>"
+        </p>
       ) : (
-        entries.map((entry) => <EntryCard entry={entry} />)
+        <Stats
+          total={stats.total}
+          byCategory={categories}
+          severityCounts={stats.severityCounts}
+          recentCount={recentCount}
+          monthlyEntries={monthlyEntries}
+          weeklyDelta={weeklyDelta}
+        />
       )}
-    </section>
 
-    <footer class="site-footer">
-      <p>HiveBrain — Built by AI agents, for AI agents</p>
-      <p class="text-muted">Push knowledge: <code>POST /api/submit</code> · Search: <code>GET /api/search?q=...</code></p>
-    </footer>
-  </main>
+      <div class="main-grid">
+        <!-- Left: Recent Entries -->
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">{q ? 'Search Results' : 'Recent Entries'}</span>
+            <span class="panel-badge">{entries.length}</span>
+          </div>
+          {entries.length === 0 ? (
+            <div class="empty-state">
+              <p>No entries found{q ? ` for "${q}"` : ''}.</p>
+            </div>
+          ) : (
+            <ul class="entry-list">
+              {entries.map((entry) => <EntryCard entry={entry} />)}
+            </ul>
+          )}
+        </div>
+
+        <!-- Right: Sidebar -->
+        <FilterBar
+          categories={categories}
+          tags={stats.tagCounts}
+          severities={stats.severityCounts}
+          dailyActivity={analytics.dailyActivity}
+        />
+      </div>
+
+      <footer class="footer">
+        <div><span class="status-dot"></span>Local instance running on :4321</div>
+        <div>
+          <a href="#" class="footer-link">Docs</a> &middot; <a href="#" class="footer-link">GitHub</a> &middot; <a href="#" class="footer-link">Settings</a>
+        </div>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Graph View (hidden by default) -->
+  <div class="graph-wrapper" id="graph-wrapper">
+    <GraphView />
+  </div>
 </Layout>
 
-<style>
-  .hero {
-    text-align: center;
-    padding: 48px 0 32px;
-  }
+<script>
+  // View toggle logic
+  const toggleBtn = document.getElementById('view-toggle');
+  const body = document.body;
 
-  .hero h1 {
-    font-size: 2.5rem;
-    font-weight: 700;
-    background: linear-gradient(135deg, var(--accent-hover), var(--category-pattern));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-    margin-bottom: 8px;
-  }
+  toggleBtn?.addEventListener('click', () => {
+    body.classList.toggle('graph-active');
 
-  .subtitle {
-    color: var(--text-secondary);
-    font-size: 1.1rem;
-    margin-bottom: 24px;
+    if (body.classList.contains('graph-active')) {
+      // Lazy init graph on first show
+      if (typeof (window as any).__initGraph === 'function') {
+        (window as any).__initGraph();
+      }
+    }
+  });
+</script>
+
+<style is:global>
+  .app {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 32px 40px 64px;
   }
 
   .search-info {
     color: var(--text-secondary);
-    margin-bottom: 16px;
-    font-size: 0.9rem;
+    margin-bottom: 24px;
+    font-size: 13px;
   }
 
   .search-info strong {
-    color: var(--accent-hover);
+    color: var(--accent);
   }
 
-  .entries {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    padding-bottom: 48px;
+  .main-grid {
+    display: grid;
+    grid-template-columns: 1fr 340px;
+    gap: 16px;
   }
 
-  .empty {
-    text-align: center;
-    padding: 48px 0;
-    color: var(--text-secondary);
-  }
-
-  .empty .text-muted {
-    color: var(--text-muted);
-    margin-top: 8px;
-  }
-
-  .site-footer {
-    text-align: center;
-    padding: 32px 0;
-    border-top: 1px solid var(--border);
-    color: var(--text-secondary);
-    font-size: 0.85rem;
-  }
-
-  .site-footer .text-muted {
-    color: var(--text-muted);
-    margin-top: 4px;
-  }
-
-  .site-footer code {
-    font-family: var(--font-mono);
-    font-size: 0.8rem;
+  .panel {
     background: var(--bg-card);
-    padding: 2px 6px;
-    border-radius: 4px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+  }
+
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .panel-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: -0.01em;
+  }
+
+  .panel-badge {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    background: var(--bg-overlay);
+    border: 1px solid var(--border);
+    padding: 1px 7px;
+    border-radius: 99px;
+  }
+
+  .entry-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  .empty-state {
+    padding: 48px 18px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+
+  .footer {
+    margin-top: 40px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  .footer-link {
+    color: var(--text-muted);
+    text-decoration: none;
+    transition: color 0.15s;
+  }
+
+  .footer-link:hover {
+    color: var(--accent);
+  }
+
+  .status-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--green);
+    margin-right: 6px;
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.4; }
+  }
+
+  /* Graph wrapper hidden by default, shown when body.graph-active */
+  .graph-wrapper {
+    display: none;
+  }
+
+  :global(body.graph-active) .dashboard-view {
+    display: none;
+  }
+
+  :global(body.graph-active) .graph-wrapper {
+    display: block;
+    padding-top: 56px; /* account for fixed header */
+  }
+
+  @media (max-width: 900px) {
+    .app { padding: 20px 16px 48px; }
+    .main-grid { grid-template-columns: 1fr; }
   }
 </style>

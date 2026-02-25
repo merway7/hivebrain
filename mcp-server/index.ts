@@ -49,7 +49,7 @@ server.tool(
   "Search HiveBrain knowledge base for patterns, gotchas, debug solutions, and code snippets. Use when encountering unfamiliar errors, debugging, or checking for known solutions.",
   { query: z.string().describe("Search query — error messages, concepts, tool names, etc.") },
   async ({ query }) => {
-    const result = await hiveFetch(`/api/search?q=${encodeURIComponent(query)}&full=true`);
+    const result = await hiveFetch(`/api/search?q=${encodeURIComponent(query)}&full=true&source=mcp`);
 
     if (result.error) {
       return { content: [{ type: "text" as const, text: result.error }] };
@@ -144,7 +144,7 @@ server.tool(
   "Get a full HiveBrain entry by ID. Use to read detailed solutions found via search.",
   { id: z.number().int().positive().describe("Entry ID") },
   async ({ id }) => {
-    const result = await hiveFetch(`/api/entry/${id}`);
+    const result = await hiveFetch(`/api/entry/${id}?source=mcp`);
 
     if (result.error) {
       return { content: [{ type: "text" as const, text: result.error }] };
@@ -176,6 +176,50 @@ server.tool(
     ].filter(Boolean).join("\n");
 
     return { content: [{ type: "text" as const, text: wrapUntrusted(text) }] };
+  }
+);
+
+// ── hivebrain_stats ──
+server.tool(
+  "hivebrain_stats",
+  "Get HiveBrain usage analytics: total views, searches, top viewed entries, activity by source (web/mcp/api).",
+  {},
+  async () => {
+    const result = await hiveFetch("/api/analytics");
+
+    if (result.error) {
+      return { content: [{ type: "text" as const, text: result.error }] };
+    }
+
+    if (!result.ok) {
+      return { content: [{ type: "text" as const, text: `Failed (${result.status}): ${JSON.stringify(result.data)}` }] };
+    }
+
+    const a = result.data;
+    const lines = [
+      `# HiveBrain Analytics`,
+      `**Total views:** ${a.totalViews} | **Total searches:** ${a.totalSearches}`,
+      `\n## Views by source`,
+      ...Object.entries(a.viewsBySource || {}).map(([k, v]) => `- ${k}: ${v}`),
+      `\n## Searches by source`,
+      ...Object.entries(a.searchesBySource || {}).map(([k, v]) => `- ${k}: ${v}`),
+    ];
+
+    if (a.topViewed?.length) {
+      lines.push(`\n## Top viewed entries`);
+      for (const e of a.topViewed) {
+        lines.push(`- [${e.id}] ${e.title} (${e.view_count} views)`);
+      }
+    }
+
+    if (a.recentSearches?.length) {
+      lines.push(`\n## Recent searches`);
+      for (const s of a.recentSearches.slice(0, 10)) {
+        lines.push(`- "${s.query}" → ${s.result_count} results (${s.source})`);
+      }
+    }
+
+    return { content: [{ type: "text" as const, text: lines.join("\n") }] };
   }
 );
 

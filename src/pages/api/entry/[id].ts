@@ -1,5 +1,5 @@
 import type { APIRoute } from 'astro';
-import { getEntry } from '../../../lib/db';
+import { getEntry, trackView } from '../../../lib/db';
 import { jsonResponse, requestId, parseJsonField, stripEmpty, pickFields } from '../../../lib/api-utils';
 
 export const GET: APIRoute = async ({ params, request }) => {
@@ -16,6 +16,11 @@ export const GET: APIRoute = async ({ params, request }) => {
       return jsonResponse({ error: `Entry ${id} not found.` }, 404);
     }
 
+    // Track view
+    const url = new URL(request.url);
+    const source = url.searchParams.get('source') || 'api';
+    trackView(id, source);
+
     const parsed = stripEmpty({
       ...entry,
       tags: parseJsonField(entry.tags),
@@ -28,7 +33,6 @@ export const GET: APIRoute = async ({ params, request }) => {
     });
 
     // Optional field filtering: ?fields=solution,gotchas,error_messages
-    const url = new URL(request.url);
     const fieldsParam = url.searchParams.get('fields');
     if (fieldsParam) {
       const fields = fieldsParam.split(',').map(f => f.trim()).filter(Boolean);

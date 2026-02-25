@@ -1,5 +1,5 @@
 import type { APIRoute } from 'astro';
-import { searchEntries } from '../../lib/db';
+import { searchEntries, trackSearch } from '../../lib/db';
 import { jsonResponse, requestId, parseJsonField, truncate, stripEmpty } from '../../lib/api-utils';
 
 export const GET: APIRoute = async ({ request }) => {
@@ -14,6 +14,8 @@ export const GET: APIRoute = async ({ request }) => {
 
   try {
     const results = searchEntries(q.trim());
+    const source = url.searchParams.get('source') || 'api';
+    trackSearch(q.trim(), results.length, source);
 
     if (full) {
       const parsed = results.map(({ _score, bm25_score, ...entry }: any) => stripEmpty({

@@ -16,6 +16,12 @@ export function getDb(): Database.Database {
   const schema = readFileSync(join(process.cwd(), 'db', 'schema.sql'), 'utf-8');
   db.exec(schema);
 
+  // Migration: add view_count column if missing
+  const cols = db.prepare("PRAGMA table_info(entries)").all() as { name: string }[];
+  if (!cols.some(c => c.name === 'view_count')) {
+    db.exec('ALTER TABLE entries ADD COLUMN view_count INTEGER DEFAULT 0');
+  }
+
   return db;
 }
 
@@ -392,6 +398,7 @@ export function searchEntries(query: string): (Entry & { title_hl?: string; prob
   }
 
   // Score by: how many distinct search terms matched AND across how many layers
+  // Term coverage is king — matching many layers for a single term should NOT inflate score
   for (const [id] of layerMatchCounts) {
     const layers = layerMatchCounts.get(id) || 0;
     const termsMatched = termMatchCounts.get(id)?.size || 0;
@@ -400,9 +407,9 @@ export function searchEntries(query: string): (Entry & { title_hl?: string; prob
     let layerScore: number;
     if (termRatio >= 0.8 && layers >= 2) layerScore = 80;      // most terms + multi-layer
     else if (termRatio >= 0.8) layerScore = 70;                  // most terms, single layer
-    else if (layers >= 2) layerScore = 55;                       // few terms but multi-layer
     else if (searchWords.length === 1) layerScore = 65;          // single-word query, any match is good
-    else layerScore = 30;                                         // multi-word query, matched only 1 term
+    else if (termRatio >= 0.5 && layers >= 2) layerScore = 40;  // half the terms, multi-layer — weak
+    else layerScore = 25;                                         // partial match — near noise floor
 
     addResults([layerRows.get(id)!], layerScore);
   }
@@ -468,11 +475,11 @@ export function searchEntries(query: string): (Entry & { title_hl?: string; prob
   // Sort by score (highest first)
   allResults.sort((a, b) => b._score - a._score);
 
-  // Drop noise: remove results scoring less than 40% of the top result
-  // This prevents weak OR/tag matches from cluttering results when strong AND matches exist
+  // Drop noise: remove results scoring less than 50% of the top result
+  // This prevents weak single-term tag/framework matches from cluttering results
   if (allResults.length > 1) {
     const topScore = allResults[0]._score;
-    const threshold = topScore * 0.4;
+    const threshold = topScore * 0.5;
     const filtered = allResults.filter(r => r._score >= threshold);
     return filtered.slice(0, 50);
   }
@@ -585,4 +592,83 @@ export function getStats() {
   }
 
   return { total, byCategory, tagCounts, languageCounts, frameworkCounts, severityCounts, environmentCounts };
+}
+
+// ── Analytics ──
+
+export function trackView(entryId: number, source: string = 'web'): void {
+  const db = getDb();
+  // Deduplicate: skip if same entry+source was tracked in the last 5 minutes
+  const recent = db.prepare(
+    'SELECT 1 FROM analytics_views WHERE entry_id = ? AND source = ? AND created_at > (unixepoch() - 300) LIMIT 1'
+  ).get(entryId, source);
+  if (recent) return;
+  db.prepare('INSERT INTO analytics_views (entry_id, source) VALUES (?, ?)').run(entryId, source);
+  db.prepare('UPDATE entries SET view_count = view_count + 1 WHERE id = ?').run(entryId);
+}
+
+export function trackSearch(query: string, resultCount: number, source: string = 'web'): void {
+  const db = getDb();
+  db.prepare('INSERT INTO analytics_searches (query, result_count, source) VALUES (?, ?, ?)').run(query, resultCount, source);
+}
+
+export function getAnalytics(): {
+  totalViews: number;
+  totalSearches: number;
+  viewsBySource: Record<string, number>;
+  searchesBySource: Record<string, number>;
+  recentSearches: { query: string; result_count: number; source: string; created_at: number }[];
+  topViewed: { id: number; title: string; view_count: number }[];
+  dailyActivity: { date: string; views: number; searches: number }[];
+} {
+  const db = getDb();
+
+  const totalViews = (db.prepare('SELECT COUNT(*) as c FROM analytics_views').get() as any).c;
+  const totalSearches = (db.prepare('SELECT COUNT(*) as c FROM analytics_searches').get() as any).c;
+
+  const viewsBySourceRows = db.prepare('SELECT source, COUNT(*) as c FROM analytics_views GROUP BY source').all() as { source: string; c: number }[];
+  const viewsBySource: Record<string, number> = {};
+  for (const row of viewsBySourceRows) viewsBySource[row.source] = row.c;
+
+  const searchesBySourceRows = db.prepare('SELECT source, COUNT(*) as c FROM analytics_searches GROUP BY source').all() as { source: string; c: number }[];
+  const searchesBySource: Record<string, number> = {};
+  for (const row of searchesBySourceRows) searchesBySource[row.source] = row.c;
+
+  const recentSearches = db.prepare(
+    'SELECT query, result_count, source, created_at FROM analytics_searches ORDER BY created_at DESC LIMIT 20'
+  ).all() as { query: string; result_count: number; source: string; created_at: number }[];
+
+  const topViewed = db.prepare(
+    'SELECT id, title, view_count FROM entries WHERE view_count > 0 ORDER BY view_count DESC LIMIT 10'
+  ).all() as { id: number; title: string; view_count: number }[];
+
+  // Daily activity for past 30 days
+  const thirtyDaysAgo = Math.floor(Date.now() / 1000) - 30 * 86400;
+  const dailyViewRows = db.prepare(`
+    SELECT date(created_at, 'unixepoch') as date, COUNT(*) as c
+    FROM analytics_views WHERE created_at >= ?
+    GROUP BY date(created_at, 'unixepoch')
+  `).all(thirtyDaysAgo) as { date: string; c: number }[];
+
+  const dailySearchRows = db.prepare(`
+    SELECT date(created_at, 'unixepoch') as date, COUNT(*) as c
+    FROM analytics_searches WHERE created_at >= ?
+    GROUP BY date(created_at, 'unixepoch')
+  `).all(thirtyDaysAgo) as { date: string; c: number }[];
+
+  const viewMap = new Map(dailyViewRows.map(r => [r.date, r.c]));
+  const searchMap = new Map(dailySearchRows.map(r => [r.date, r.c]));
+
+  const dailyActivity: { date: string; views: number; searches: number }[] = [];
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date(Date.now() - i * 86400000);
+    const dateStr = d.toISOString().split('T')[0];
+    dailyActivity.push({
+      date: dateStr,
+      views: viewMap.get(dateStr) || 0,
+      searches: searchMap.get(dateStr) || 0,
+    });
+  }
+
+  return { totalViews, totalSearches, viewsBySource, searchesBySource, recentSearches, topViewed, dailyActivity };
 }

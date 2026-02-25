@@ -1,0 +1,632 @@
+---
+---
+
+<div class="graph-view" id="graph-view">
+  <canvas id="graph-canvas"></canvas>
+
+  <div id="graph-tooltip">
+    <div id="gt-title"></div>
+    <div id="gt-category"></div>
+    <div id="gt-tags"></div>
+  </div>
+
+  <div id="graph-legend">
+    <h3>Categories</h3>
+    <div class="legend-item"><div class="legend-dot" style="background:#60a5fa;box-shadow:0 0 6px #60a5faaa"></div><span class="legend-label">Pattern</span></div>
+    <div class="legend-item"><div class="legend-dot" style="background:#fbbf24;box-shadow:0 0 6px #fbbf24aa"></div><span class="legend-label">Gotcha</span></div>
+    <div class="legend-item"><div class="legend-dot" style="background:#f87171;box-shadow:0 0 6px #f87171aa"></div><span class="legend-label">Debug</span></div>
+    <div class="legend-item"><div class="legend-dot" style="background:#34d399;box-shadow:0 0 6px #34d399aa"></div><span class="legend-label">Snippet</span></div>
+    <div class="legend-item"><div class="legend-dot" style="background:#c084fc;box-shadow:0 0 6px #c084fcaa"></div><span class="legend-label">Principle</span></div>
+    <div style="margin-top:10px;border-top:1px solid rgba(100,120,160,0.15);padding-top:8px">
+      <h3 style="margin-bottom:6px">Size = Severity</h3>
+      <div class="legend-item"><div class="legend-dot" style="width:16px;height:16px;background:#888;box-shadow:0 0 4px #888a"></div><span class="legend-label">Critical / High</span></div>
+      <div class="legend-item"><div class="legend-dot" style="width:10px;height:10px;background:#888;box-shadow:0 0 4px #888a"></div><span class="legend-label">Medium / Low</span></div>
+    </div>
+  </div>
+
+  <div id="graph-controls">
+    <button class="ctrl-btn" id="graph-reset">Reset View</button>
+    <button class="ctrl-btn" id="graph-labels">Labels</button>
+  </div>
+
+  <div id="graph-stats"></div>
+</div>
+
+<script>
+  // Lazy init: only start when graph becomes visible
+  let graphInitialized = false;
+
+  function initGraph() {
+    if (graphInitialized) return;
+    graphInitialized = true;
+
+    const CATEGORIES: Record<string, { color: string; glow: string }> = {
+      pattern:   { color: '#60a5fa', glow: '#60a5fa40' },
+      gotcha:    { color: '#fbbf24', glow: '#fbbf2440' },
+      debug:     { color: '#f87171', glow: '#f8717140' },
+      snippet:   { color: '#34d399', glow: '#34d39940' },
+      principle: { color: '#c084fc', glow: '#c084fc40' },
+    };
+
+    const SEVERITY_RADIUS: Record<string, number> = { critical: 18, high: 13, medium: 10, moderate: 10, low: 8, minor: 8, tip: 7, major: 14 };
+
+    interface GNode {
+      id: number; title: string; category: string; severity: string;
+      tags: string[]; x: number; y: number; vx: number; vy: number; radius: number;
+    }
+
+    let nodes: GNode[] = [];
+    let edges: { source: number; target: number; type: string }[] = [];
+    let nodeMap: Record<number, GNode> = {};
+
+    const canvas = document.getElementById('graph-canvas') as HTMLCanvasElement;
+    const ctx = canvas.getContext('2d')!;
+    const tooltip = document.getElementById('graph-tooltip')!;
+    const gtTitle = document.getElementById('gt-title')!;
+    const gtCategory = document.getElementById('gt-category')!;
+    const gtTags = document.getElementById('gt-tags')!;
+    const statsEl = document.getElementById('graph-stats')!;
+
+    let W = 0, H = 0;
+    let showLabels = false;
+    let hoveredNode: GNode | null = null;
+    let selectedNode: GNode | null = null;
+    let dragNode: GNode | null = null;
+    let isPanning = false;
+    let panStart = { x: 0, y: 0, camX: 0, camY: 0 };
+    let cam = { x: 0, y: 0, zoom: 1 };
+    let animId: number;
+
+    function resize() {
+      const container = document.getElementById('graph-view')!;
+      W = container.clientWidth;
+      H = container.clientHeight;
+      canvas.width = W * devicePixelRatio;
+      canvas.height = H * devicePixelRatio;
+      canvas.style.width = W + 'px';
+      canvas.style.height = H + 'px';
+      ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+    }
+
+    function screenToWorld(sx: number, sy: number) {
+      const rect = canvas.getBoundingClientRect();
+      const cx = sx - rect.left, cy = sy - rect.top;
+      return {
+        x: (cx - W / 2) / cam.zoom + W / 2 - cam.x,
+        y: (cy - H / 2) / cam.zoom + H / 2 - cam.y,
+      };
+    }
+
+    function getConnected(nodeId: number) {
+      const ids: Record<number, boolean> = {};
+      for (const e of edges) {
+        if (e.source === nodeId) ids[e.target] = true;
+        if (e.target === nodeId) ids[e.source] = true;
+      }
+      return ids;
+    }
+
+    // Physics constants
+    const SPRING_LENGTH = 160, SPRING_STRENGTH = 0.004, REPULSION = 3000, DAMPING = 0.88, CENTER_GRAVITY = 0.0003;
+
+    function simulate() {
+      for (let i = 0; i < nodes.length; i++) {
+        for (let j = i + 1; j < nodes.length; j++) {
+          const a = nodes[i], b = nodes[j];
+          const dx = b.x - a.x, dy = b.y - a.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+          const force = REPULSION / (dist * dist);
+          const fx = (dx / dist) * force, fy = (dy / dist) * force;
+          a.vx -= fx; a.vy -= fy;
+          b.vx += fx; b.vy += fy;
+        }
+      }
+
+      for (const e of edges) {
+        const a = nodeMap[e.source], b = nodeMap[e.target];
+        if (!a || !b) continue;
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const displacement = dist - SPRING_LENGTH;
+        const force = displacement * SPRING_STRENGTH;
+        const fx = (dx / dist) * force, fy = (dy / dist) * force;
+        a.vx += fx; a.vy += fy;
+        b.vx -= fx; b.vy -= fy;
+      }
+
+      const cx = W / 2, cy = H / 2;
+      for (const n of nodes) {
+        n.vx += (cx - n.x) * CENTER_GRAVITY;
+        n.vy += (cy - n.y) * CENTER_GRAVITY;
+      }
+
+      for (const n of nodes) {
+        if (n === dragNode) continue;
+        n.vx *= DAMPING;
+        n.vy *= DAMPING;
+        n.x += n.vx;
+        n.y += n.vy;
+      }
+    }
+
+    // Stars
+    const stars: { x: number; y: number; r: number; a: number }[] = [];
+    for (let i = 0; i < 120; i++) {
+      stars.push({ x: Math.random() * 3000, y: Math.random() * 2000, r: Math.random() * 1.2 + 0.3, a: Math.random() * 0.3 + 0.05 });
+    }
+
+    function hexAlpha(hex: string, alpha: number) {
+      const a = Math.round(alpha * 255).toString(16).padStart(2, '0');
+      return hex + a;
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+
+      const bg = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.max(W, H) * 0.6);
+      bg.addColorStop(0, '#0f1524');
+      bg.addColorStop(1, '#080c14');
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, W, H);
+
+      for (const s of stars) {
+        ctx.beginPath();
+        ctx.arc(s.x % W, s.y % H, s.r, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(140,160,200,' + s.a + ')';
+        ctx.fill();
+      }
+
+      ctx.save();
+      ctx.translate(W / 2, H / 2);
+      ctx.scale(cam.zoom, cam.zoom);
+      ctx.translate(-W / 2 + cam.x, -H / 2 + cam.y);
+
+      const activeId = selectedNode ? selectedNode.id : (hoveredNode ? hoveredNode.id : null);
+      const connectedIds = activeId ? getConnected(activeId) : null;
+      const time = Date.now() * 0.001;
+
+      // Draw edges
+      for (const e of edges) {
+        const a = nodeMap[e.source], b = nodeMap[e.target];
+        if (!a || !b) continue;
+        const isHighlighted = activeId !== null && (e.source === activeId || e.target === activeId);
+        const isDimmed = activeId !== null && !isHighlighted;
+
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+
+        if (isHighlighted) {
+          ctx.strokeStyle = e.type === 'related' ? 'rgba(160,180,220,0.6)' : 'rgba(100,130,180,0.4)';
+          ctx.lineWidth = e.type === 'related' ? 2 : 1.5;
+        } else if (isDimmed) {
+          ctx.strokeStyle = 'rgba(60,70,100,0.08)';
+          ctx.lineWidth = 0.5;
+        } else {
+          ctx.strokeStyle = e.type === 'related' ? 'rgba(100,120,160,0.18)' : 'rgba(70,90,130,0.12)';
+          ctx.lineWidth = e.type === 'related' ? 1.2 : 0.8;
+        }
+        ctx.stroke();
+      }
+
+      // Draw nodes
+      for (const n of nodes) {
+        const cat = CATEGORIES[n.category] || CATEGORIES.pattern;
+        const isActive = activeId === n.id;
+        const isConnected = connectedIds && connectedIds[n.id];
+        const isDimmed = activeId !== null && !isActive && !isConnected;
+
+        const pulseScale = isActive ? 1 + Math.sin(time * 3) * 0.08 : 1;
+        const r = n.radius * pulseScale;
+
+        if (!isDimmed) {
+          const glowSize = isActive ? r * 3.5 : (isConnected ? r * 2.5 : r * 2);
+          const grad = ctx.createRadialGradient(n.x, n.y, r * 0.5, n.x, n.y, glowSize);
+          const glowAlpha = isActive ? 0.25 : (isConnected ? 0.15 : 0.08);
+          grad.addColorStop(0, hexAlpha(cat.color, glowAlpha));
+          grad.addColorStop(1, hexAlpha(cat.color, 0));
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, glowSize, 0, Math.PI * 2);
+          ctx.fillStyle = grad;
+          ctx.fill();
+        }
+
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+        const nodeGrad = ctx.createRadialGradient(n.x - r * 0.3, n.y - r * 0.3, 0, n.x, n.y, r);
+        if (isActive) {
+          nodeGrad.addColorStop(0, hexAlpha(cat.color, 0.87));
+          nodeGrad.addColorStop(1, hexAlpha(cat.color, 0.44));
+        } else if (isDimmed) {
+          nodeGrad.addColorStop(0, hexAlpha(cat.color, 0.19));
+          nodeGrad.addColorStop(1, hexAlpha(cat.color, 0.09));
+        } else {
+          nodeGrad.addColorStop(0, hexAlpha(cat.color, 0.67));
+          nodeGrad.addColorStop(1, hexAlpha(cat.color, 0.44));
+        }
+        ctx.fillStyle = nodeGrad;
+        ctx.fill();
+
+        if (!isDimmed) {
+          ctx.strokeStyle = hexAlpha(cat.color, isActive ? 0.8 : 0.3);
+          ctx.lineWidth = isActive ? 2 : 1;
+          ctx.stroke();
+        }
+
+        if (showLabels && !isDimmed) {
+          ctx.font = '10px SF Mono, JetBrains Mono, monospace';
+          ctx.textAlign = 'center';
+          ctx.fillStyle = 'rgba(200,210,230,' + (isActive ? '0.9' : '0.5') + ')';
+          const label = n.title.length > 28 ? n.title.slice(0, 26) + '..' : n.title;
+          ctx.fillText(label, n.x, n.y + r + 14);
+        }
+      }
+
+      ctx.restore();
+    }
+
+    function tick() {
+      simulate();
+      draw();
+      statsEl.textContent = nodes.length + ' entries  |  ' + edges.length + ' connections';
+      animId = requestAnimationFrame(tick);
+    }
+
+    function showTooltipFn(node: GNode, mx: number, my: number) {
+      const cat = CATEGORIES[node.category] || CATEGORIES.pattern;
+      gtTitle.textContent = node.title;
+      gtCategory.textContent = node.category + ' \u00B7 ' + node.severity;
+      gtCategory.style.color = cat.color;
+      while (gtTags.firstChild) gtTags.removeChild(gtTags.firstChild);
+      for (const t of node.tags) {
+        const span = document.createElement('span');
+        span.textContent = t;
+        span.style.cssText = 'background:rgba(100,120,160,0.15);border:1px solid rgba(100,120,160,0.2);border-radius:4px;padding:1px 6px;font-size:11px;color:#8898b8;';
+        gtTags.appendChild(span);
+      }
+      tooltip.classList.add('visible');
+      let tx = mx + 16, ty = my - 10;
+      const rect = tooltip.getBoundingClientRect();
+      if (tx + rect.width > window.innerWidth - 10) tx = mx - rect.width - 16;
+      if (ty + rect.height > window.innerHeight - 10) ty = window.innerHeight - rect.height - 10;
+      if (ty < 10) ty = 10;
+      tooltip.style.left = tx + 'px';
+      tooltip.style.top = ty + 'px';
+    }
+
+    function hideTooltipFn() { tooltip.classList.remove('visible'); }
+
+    function hitTest(mx: number, my: number) {
+      const world = screenToWorld(mx, my);
+      for (let i = nodes.length - 1; i >= 0; i--) {
+        const n = nodes[i];
+        const dx = world.x - n.x, dy = world.y - n.y;
+        if (dx * dx + dy * dy < (n.radius + 4) * (n.radius + 4)) return n;
+      }
+      return null;
+    }
+
+    // Mouse interaction
+    canvas.addEventListener('mousemove', (e) => {
+      if (isPanning) {
+        cam.x = panStart.camX + (e.clientX - panStart.x) / cam.zoom;
+        cam.y = panStart.camY + (e.clientY - panStart.y) / cam.zoom;
+        hideTooltipFn();
+        return;
+      }
+      if (dragNode) {
+        const world = screenToWorld(e.clientX, e.clientY);
+        dragNode.x = world.x; dragNode.y = world.y;
+        dragNode.vx = 0; dragNode.vy = 0;
+        return;
+      }
+      const hit = hitTest(e.clientX, e.clientY);
+      hoveredNode = hit;
+      canvas.style.cursor = hit ? 'pointer' : 'grab';
+      if (hit) showTooltipFn(hit, e.clientX, e.clientY);
+      else hideTooltipFn();
+    });
+
+    canvas.addEventListener('mousedown', (e) => {
+      const hit = hitTest(e.clientX, e.clientY);
+      if (hit) {
+        if (e.button === 0) {
+          dragNode = hit;
+          selectedNode = (selectedNode === hit) ? null : hit;
+        }
+      } else {
+        selectedNode = null;
+        isPanning = true;
+        panStart = { x: e.clientX, y: e.clientY, camX: cam.x, camY: cam.y };
+        canvas.style.cursor = 'grabbing';
+      }
+    });
+
+    canvas.addEventListener('mouseup', () => {
+      dragNode = null;
+      isPanning = false;
+      canvas.style.cursor = hoveredNode ? 'pointer' : 'grab';
+    });
+
+    canvas.addEventListener('mouseleave', () => {
+      hoveredNode = null; dragNode = null; isPanning = false;
+      hideTooltipFn();
+    });
+
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? 0.92 : 1.08;
+      const newZoom = Math.max(0.2, Math.min(5, cam.zoom * delta));
+      const beforeWorld = screenToWorld(e.clientX, e.clientY);
+      cam.zoom = newZoom;
+      const afterWorld = screenToWorld(e.clientX, e.clientY);
+      cam.x += afterWorld.x - beforeWorld.x;
+      cam.y += afterWorld.y - beforeWorld.y;
+    }, { passive: false });
+
+    // Touch support
+    let lastTouchDist: number | null = null;
+
+    canvas.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 1) {
+        const t = e.touches[0];
+        const hit = hitTest(t.clientX, t.clientY);
+        if (hit) { dragNode = hit; selectedNode = hit; }
+        else { isPanning = true; panStart = { x: t.clientX, y: t.clientY, camX: cam.x, camY: cam.y }; }
+      }
+      if (e.touches.length === 2) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        lastTouchDist = Math.sqrt(dx * dx + dy * dy);
+      }
+      e.preventDefault();
+    }, { passive: false });
+
+    canvas.addEventListener('touchmove', (e) => {
+      if (e.touches.length === 1) {
+        const t = e.touches[0];
+        if (dragNode) {
+          const world = screenToWorld(t.clientX, t.clientY);
+          dragNode.x = world.x; dragNode.y = world.y;
+          dragNode.vx = 0; dragNode.vy = 0;
+        } else if (isPanning) {
+          cam.x = panStart.camX + (t.clientX - panStart.x) / cam.zoom;
+          cam.y = panStart.camY + (t.clientY - panStart.y) / cam.zoom;
+        }
+      }
+      if (e.touches.length === 2 && lastTouchDist) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        cam.zoom = Math.max(0.2, Math.min(5, cam.zoom * (dist / lastTouchDist)));
+        lastTouchDist = dist;
+      }
+      e.preventDefault();
+    }, { passive: false });
+
+    canvas.addEventListener('touchend', () => {
+      dragNode = null; isPanning = false; lastTouchDist = null;
+    });
+
+    // Controls
+    document.getElementById('graph-reset')?.addEventListener('click', () => {
+      cam = { x: 0, y: 0, zoom: 1 };
+      selectedNode = null;
+    });
+
+    document.getElementById('graph-labels')?.addEventListener('click', () => {
+      showLabels = !showLabels;
+    });
+
+    // Fetch data and start
+    async function loadData() {
+      try {
+        const res = await fetch('/api/entries?full=true&limit=200');
+        const data = await res.json();
+        const entries: { id: number; title: string; category: string; severity: string; tags: string[] | string; related_entries: number[] | string }[] = data.entries || data;
+
+        const spread = Math.min(window.innerWidth, window.innerHeight) * 0.25;
+
+        nodes = entries.map((e: any, i: number) => {
+          const angle = (i / entries.length) * Math.PI * 2;
+          let parsedTags: string[] = [];
+          if (Array.isArray(e.tags)) parsedTags = e.tags;
+          else try { parsedTags = JSON.parse(e.tags || '[]'); } catch {}
+          return {
+            id: e.id,
+            title: e.title,
+            category: e.category,
+            severity: e.severity || 'low',
+            tags: parsedTags,
+            x: W / 2 + Math.cos(angle) * spread + (Math.random() - 0.5) * 80,
+            y: H / 2 + Math.sin(angle) * spread + (Math.random() - 0.5) * 80,
+            vx: 0, vy: 0,
+            radius: SEVERITY_RADIUS[e.severity] || 8,
+          };
+        });
+
+        nodeMap = {};
+        nodes.forEach(n => { nodeMap[n.id] = n; });
+
+        // Build edges
+        const edgeSet: Record<string, boolean> = {};
+        edges = [];
+        function key(a: number, b: number) { return Math.min(a, b) + ':' + Math.max(a, b); }
+
+        // Related entries
+        for (const e of entries) {
+          let related: number[] = [];
+          if (Array.isArray(e.related_entries)) related = e.related_entries;
+          else try { related = JSON.parse(e.related_entries || '[]'); } catch {}
+          for (const rid of related) {
+            const k = key(e.id, rid);
+            if (!edgeSet[k] && nodeMap[rid]) {
+              edgeSet[k] = true;
+              edges.push({ source: e.id, target: rid, type: 'related' });
+            }
+          }
+        }
+
+        // Shared tags (2+)
+        for (let i = 0; i < nodes.length; i++) {
+          for (let j = i + 1; j < nodes.length; j++) {
+            const shared = nodes[i].tags.filter(t => nodes[j].tags.includes(t));
+            if (shared.length >= 2) {
+              const k = key(nodes[i].id, nodes[j].id);
+              if (!edgeSet[k]) {
+                edgeSet[k] = true;
+                edges.push({ source: nodes[i].id, target: nodes[j].id, type: 'tags' });
+              }
+            }
+          }
+        }
+
+        resize();
+        tick();
+      } catch (err) {
+        console.error('Failed to load graph data:', err);
+        statsEl.textContent = 'Failed to load entries';
+      }
+    }
+
+    resize();
+    window.addEventListener('resize', resize);
+    loadData();
+
+    // Cleanup when switching away
+    (window as any).__graphCleanup = () => {
+      if (animId) cancelAnimationFrame(animId);
+    };
+  }
+
+  // Expose for lazy init from index
+  (window as any).__initGraph = initGraph;
+</script>
+
+<style is:global>
+  .graph-view {
+    position: relative;
+    width: 100%;
+    height: calc(100vh - 56px);
+    overflow: hidden;
+    background: #080c14;
+  }
+
+  #graph-canvas {
+    display: block;
+    cursor: grab;
+    width: 100%;
+    height: 100%;
+  }
+  #graph-canvas:active { cursor: grabbing; }
+
+  #graph-tooltip {
+    position: fixed;
+    pointer-events: none;
+    background: rgba(10, 14, 23, 0.92);
+    border: 1px solid rgba(100, 120, 160, 0.3);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 13px;
+    line-height: 1.5;
+    max-width: 300px;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    z-index: 200;
+    backdrop-filter: blur(8px);
+    font-family: var(--font-mono);
+  }
+  #graph-tooltip.visible { opacity: 1; }
+
+  #gt-title {
+    font-weight: 600;
+    color: #e8ecf4;
+    margin-bottom: 4px;
+    font-size: 14px;
+  }
+  #gt-category {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+  }
+  #gt-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  #graph-legend {
+    position: absolute;
+    bottom: 20px;
+    left: 20px;
+    background: rgba(10, 14, 23, 0.85);
+    border: 1px solid rgba(100, 120, 160, 0.2);
+    border-radius: 10px;
+    padding: 14px 18px;
+    font-size: 12px;
+    backdrop-filter: blur(8px);
+    z-index: 50;
+    font-family: var(--font-mono);
+    color: #c8d0e0;
+  }
+  #graph-legend h3 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #6878a0;
+    margin-bottom: 10px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .legend-item:last-child { margin-bottom: 0; }
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .legend-label {
+    color: #8898b8;
+    font-size: 12px;
+  }
+
+  #graph-controls {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    display: flex;
+    gap: 8px;
+    z-index: 50;
+  }
+  .ctrl-btn {
+    background: rgba(10, 14, 23, 0.85);
+    border: 1px solid rgba(100, 120, 160, 0.2);
+    border-radius: 8px;
+    color: #8898b8;
+    padding: 6px 12px;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    backdrop-filter: blur(8px);
+    transition: border-color 0.2s, color 0.2s;
+  }
+  .ctrl-btn:hover {
+    border-color: rgba(100, 120, 160, 0.5);
+    color: #c8d0e0;
+  }
+
+  #graph-stats {
+    position: absolute;
+    bottom: 20px;
+    right: 20px;
+    font-size: 11px;
+    color: #3a4870;
+    z-index: 50;
+    font-family: var(--font-mono);
+  }
+</style>

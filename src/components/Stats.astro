@@ -4,103 +4,116 @@ interface Props {
   byCategory: { name: string; count: number }[];
   languageCounts?: Record<string, number>;
   severityCounts?: Record<string, number>;
+  recentCount?: number;
+  monthlyEntries?: number;
+  weeklyDelta?: number;
 }
 
-const { total, byCategory, languageCounts = {}, severityCounts = {} } = Astro.props;
+const { total, byCategory, severityCounts = {}, recentCount = 0, monthlyEntries = 0, weeklyDelta = 0 } = Astro.props;
 
-const topLanguages = Object.entries(languageCounts)
-  .sort((a, b) => b[1] - a[1])
-  .slice(0, 5);
+const topCategory = byCategory.length > 0
+  ? byCategory.reduce((a, b) => a.count > b.count ? a : b)
+  : null;
 
-const severityOrder = ['critical', 'major', 'moderate', 'minor', 'tip'];
-const severityItems = Object.entries(severityCounts)
-  .sort((a, b) => severityOrder.indexOf(a[0]) - severityOrder.indexOf(b[0]));
+const topCatPct = topCategory && total > 0
+  ? Math.round((topCategory.count / total) * 100)
+  : 0;
+
+const sevLow = severityCounts['low'] || severityCounts['tip'] || severityCounts['minor'] || 0;
+const sevMed = severityCounts['medium'] || severityCounts['moderate'] || 0;
+const sevHigh = (severityCounts['high'] || 0) + (severityCounts['critical'] || severityCounts['major'] || 0);
+const sevTotal = sevLow + sevMed + sevHigh;
+const medOrAbovePct = sevTotal > 0 ? Math.round(((sevMed + sevHigh) / sevTotal) * 100) : 0;
+
+const dominantSev = sevHigh >= sevMed && sevHigh >= sevLow ? 'high'
+  : sevMed >= sevLow ? 'med' : 'low';
+const sevColor = dominantSev === 'high' ? 'var(--red)' : dominantSev === 'med' ? 'var(--amber)' : 'var(--green)';
 ---
 
-<div class="stats-bar">
-  <span class="stats-total">{total} entries</span>
-  <span class="stats-divider">|</span>
-  {byCategory.map((item) => (
-    <span class="stats-item">
-      <span class={`category-badge ${item.name.toLowerCase()}`}>
-        {item.name}
-      </span>
-      <span class="stats-count">{item.count}</span>
-    </span>
-  ))}
-  {topLanguages.length > 0 && (
-    <>
-      <span class="stats-divider">|</span>
-      {topLanguages.map(([lang, count]) => (
-        <span class="stats-item">
-          <span class="stats-lang">{lang}</span>
-          <span class="stats-count">{count}</span>
-        </span>
-      ))}
-    </>
-  )}
-  {severityItems.length > 0 && (
-    <>
-      <span class="stats-divider">|</span>
-      {severityItems.map(([sev, count]) => (
-        <span class="stats-item">
-          <span class={`stats-sev-dot sev-${sev}`}></span>
-          <span class="stats-count">{count}</span>
-        </span>
-      ))}
-    </>
-  )}
+<div class="stats-row">
+  <div class="stat-card">
+    <div class="stat-label">Total Entries</div>
+    <div class="stat-value">{total}</div>
+    <div class="stat-sub"><span class="up">+{monthlyEntries}</span> this month</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">This Week</div>
+    <div class="stat-value">{recentCount}</div>
+    <div class="stat-sub"><span class={weeklyDelta >= 0 ? 'up' : 'down'}>{weeklyDelta >= 0 ? '+' : ''}{weeklyDelta}</span> vs last week</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Top Category</div>
+    <div class="stat-value" style="font-size: 22px;">{topCategory?.name || '—'}</div>
+    <div class="stat-sub">{topCategory ? `${topCategory.count} entries (${topCatPct}%)` : 'no data'}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Avg Severity</div>
+    <div class="stat-value" style={`color: ${sevColor};`}>{dominantSev}</div>
+    <div class="stat-sub">{medOrAbovePct}% medium or above</div>
+  </div>
 </div>
 
-<style>
-  .stats-bar {
+<style is:global>
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+
+  .stat-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 18px 20px;
+    transition: border-color 0.15s ease;
+  }
+
+  .stat-card:hover {
+    border-color: var(--border-hover);
+  }
+
+  .stat-label {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 500;
+  }
+
+  .stat-value {
+    font-family: var(--font-mono);
+    font-size: 28px;
+    font-weight: 600;
+    letter-spacing: -0.03em;
+    color: var(--text-primary);
+    line-height: 1;
+  }
+
+  .stat-sub {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 6px;
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 10px 16px;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    font-size: 0.8rem;
-    flex-wrap: wrap;
+    gap: 4px;
   }
 
-  .stats-total {
-    color: var(--text-primary);
-    font-weight: 600;
+  .stat-sub .up {
+    color: var(--green);
   }
 
-  .stats-divider {
-    color: var(--border);
+  .stat-sub .down {
+    color: var(--red);
   }
 
-  .stats-item {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
+  @media (max-width: 900px) {
+    .stats-row { grid-template-columns: repeat(2, 1fr); }
   }
 
-  .stats-count {
-    color: var(--text-secondary);
-    font-family: var(--font-mono);
-    font-size: 0.8rem;
+  @media (max-width: 520px) {
+    .stats-row { grid-template-columns: 1fr; }
   }
-
-  .stats-lang {
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
-    color: #5eddd4;
-  }
-
-  .stats-sev-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-  }
-
-  .sev-critical { background: #ff4444; }
-  .sev-major { background: #ff8c00; }
-  .sev-moderate { background: #ffd93d; }
-  .sev-minor { background: #4ecdc4; }
-  .sev-tip { background: #7c5cbf; }
 </style>

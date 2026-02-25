@@ -1,0 +1,6 @@
+[debug] [2026-02-25T02:52:38.283Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-02-25T02:52:38.286Z] > authorizing via signed-in user (merwan.djerbi@gmail.com)
+[debug] [2026-02-25T02:55:51.177Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-02-25T02:55:51.181Z] > authorizing via signed-in user (merwan.djerbi@gmail.com)
+[debug] [2026-02-25T03:02:56.101Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-02-25T03:02:56.105Z] > authorizing via signed-in user (merwan.djerbi@gmail.com)
