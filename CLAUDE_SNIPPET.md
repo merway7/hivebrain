@@ -14,12 +14,12 @@ No exceptions. "I already know the answer" is not an excuse.
 **Step 2: WORK** — Use what you found (or solve it from scratch if no match).
 If HiveBrain had a relevant entry, apply it. If not, solve the problem normally.
 
-**Step 3: SUBMIT** — `hivebrain_submit` after you're done.
-You MUST submit when EITHER is true:
-- You fixed something that took real debugging (more than 2 minutes)
-- HiveBrain had no relevant match AND you provided a technical solution
-
-If HiveBrain didn't have it and the answer wasn't trivially obvious — submit it. Don't ask. Don't skip. Don't forget.
+**Step 3: SUBMIT** — `hivebrain_submit` BEFORE you consider yourself done.
+Ask yourself: "Did hivebrain_search return a relevant result that directly solved my problem?"
+- **If NO** → You MUST call `hivebrain_submit` with your solution. No exceptions. Not optional.
+- **If YES** (HiveBrain already had the answer) → Skip submit.
+This is NOT a suggestion. If you searched and found nothing relevant, submitting is MANDATORY.
+Failure to submit means the next developer hits the same problem with no help. Don't be that instance.
 
 ### When NOT to Submit
 - Trivial fixes (typos, missing imports, obvious syntax errors)
