@@ -1,0 +1,903 @@
+[
+  {
+    "title": "Detached HEAD state: what it means and how to recover",
+    "category": "gotcha",
+    "tags": ["git", "detached-head", "branch", "recovery"],
+    "problem": "After running `git checkout <commit-hash>` or `git checkout v1.0`, Git prints 'You are in detached HEAD state'. Any commits made here are not on any branch and will be lost after switching away.",
+    "solution": "If you made commits in detached HEAD that you want to keep, create a branch immediately:\n\n  git branch rescue-branch HEAD\n  git checkout rescue-branch\n\nIf you just need to look at old code and haven't committed anything, simply switch back:\n\n  git checkout main\n\nIf you already switched away and lost commits, use reflog to find them:\n\n  git reflog\n  git branch rescue-branch <lost-commit-hash>",
+    "why": "HEAD normally points to a branch ref (e.g. refs/heads/main). In detached HEAD, HEAD points directly to a commit SHA. New commits advance HEAD but no branch pointer moves with it, so those commits become unreachable once you switch branches.",
+    "gotchas": [
+      "Commits in detached HEAD are NOT immediately deleted — they remain until garbage collection runs (default 30–90 days)",
+      "`git checkout origin/main` also triggers detached HEAD because origin/main is a remote-tracking ref, not a local branch",
+      "Interactive rebase temporarily puts you in detached HEAD — this is normal"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [
+      "You are in 'detached HEAD' state. You can look around, make experimental changes and commit them, and you can discard any commits you make in this state without impacting any branches by switching back to a branch.",
+      "HEAD detached at a1b2c3d"
+    ],
+    "keywords": ["detached head", "HEAD", "branch pointer", "lost commits", "checkout commit"],
+    "severity": "major",
+    "context": "When checking out a commit hash, tag, or remote-tracking branch directly",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Trigger detached HEAD\ngit checkout a1b2c3d\n\n# Make a commit — now it's orphaned if you leave\ngit commit -m \"experiment\"\n\n# Save it immediately\ngit branch save-my-work HEAD\ngit checkout save-my-work",
+        "description": "Creating a branch to rescue detached HEAD commits"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "git reset --soft vs --mixed vs --hard: know before you run",
+    "category": "pattern",
+    "tags": ["git", "reset", "soft", "mixed", "hard", "staging"],
+    "problem": "Running the wrong `git reset` mode discards work permanently. Many developers confuse the three modes and lose staged changes or working directory edits.",
+    "solution": "Three modes, three scopes:\n\n  --soft:  moves HEAD only. Index (staging) and working tree unchanged.\n           Use to: uncommit but keep all changes staged.\n           git reset --soft HEAD~1\n\n  --mixed: (default) moves HEAD + resets index. Working tree unchanged.\n           Use to: uncommit and unstage changes, keep files edited.\n           git reset HEAD~1\n\n  --hard:  moves HEAD + resets index + resets working tree.\n           Use to: completely discard commits AND local edits.\n           git reset --hard HEAD~1  ← DESTRUCTIVE",
+    "why": "Git maintains three trees: HEAD (last commit), Index (staging area), Working Tree (disk files). Each reset mode affects a different number of those trees.",
+    "gotchas": [
+      "--hard permanently discards uncommitted working tree changes with no undo (unless you have an IDE local history)",
+      "All three modes move branch pointer — use `git revert` instead if commit is already pushed to shared branch",
+      "`git reset <file>` only unstages the file (equivalent to --mixed for a single path)"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["git reset", "soft reset", "mixed reset", "hard reset", "uncommit", "unstage"],
+    "severity": "major",
+    "context": "Undoing commits or unstaging changes locally before pushing",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Undo last commit, keep changes staged (ready to recommit)\ngit reset --soft HEAD~1\n\n# Undo last commit, keep changes in working tree (unstaged)\ngit reset HEAD~1\n\n# Completely discard last commit and all its changes\ngit reset --hard HEAD~1\n\n# Unstage a single file without touching working tree\ngit reset HEAD path/to/file.js",
+        "description": "The three reset modes with practical use cases"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": ".gitignore does not untrack already-tracked files",
+    "category": "gotcha",
+    "tags": ["git", "gitignore", "tracked-files", "cache"],
+    "problem": "Adding a file pattern to .gitignore has no effect on files that Git is already tracking. The file continues to appear in `git status` and gets committed on every change.",
+    "solution": "Remove the file from Git's index (tracking) without deleting it from disk, then commit the removal:\n\n  # Single file\n  git rm --cached path/to/file.env\n\n  # Directory recursively\n  git rm -r --cached path/to/directory/\n\n  # Then commit\n  git commit -m \"stop tracking .env file\"\n\nAfter this, the .gitignore rule takes effect for future changes.",
+    "why": ".gitignore only prevents untracked files from being added to the index. Once a file is tracked (has an entry in the index), Git ignores the .gitignore rule for it.",
+    "gotchas": [
+      "`git rm --cached` removes the file from other collaborators' repos when they pull — warn the team",
+      "For secrets already committed: rotate the credentials, don't just untrack the file — the secret is in history",
+      "Use `git check-ignore -v path/to/file` to debug why a rule isn't working"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["gitignore not working", "untrack file", "git rm cached", "tracked files", "stop tracking"],
+    "severity": "major",
+    "context": "When .gitignore rules are added after files were already committed to the repo",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Check if file is tracked\ngit ls-files --error-unmatch path/to/.env\n\n# Untrack without deleting\ngit rm --cached path/to/.env\n\n# Verify gitignore rule works now\ngit check-ignore -v path/to/.env\n\n# Commit the untracking\ngit commit -m \"chore: untrack .env file\"",
+        "description": "Untracking a file that was committed before .gitignore rule was added"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Use --force-with-lease instead of --force when pushing",
+    "category": "pattern",
+    "tags": ["git", "force-push", "force-with-lease", "safety", "collaboration"],
+    "problem": "`git push --force` overwrites the remote branch regardless of what others have pushed since your last fetch. This silently destroys teammates' commits.",
+    "solution": "Always use `--force-with-lease` when force-pushing:\n\n  git push --force-with-lease\n\nThis only allows the force push if the remote tip matches what you last fetched. If someone else pushed in the meantime, Git refuses and you must fetch first.\n\nFor extra safety, also specify the expected commit:\n  git push --force-with-lease=main:<expected-sha>",
+    "why": "`--force-with-lease` checks your local remote-tracking ref (e.g. origin/main) against the actual remote. If they differ, a collaborator pushed after your last fetch and the command aborts.",
+    "gotchas": [
+      "If you ran `git fetch` right before pushing, --force-with-lease gives the same false safety as --force because your tracking ref is now up-to-date",
+      "Some CI/CD pipelines require --force for automated rebases — ensure only bots do this on protected branches",
+      "Create an alias: `git config --global alias.pushf 'push --force-with-lease'`"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [
+      "error: failed to push some refs to 'origin'",
+      "hint: Updates were rejected because the tip of your current branch is behind its remote counterpart."
+    ],
+    "keywords": ["force push", "force-with-lease", "overwrite commits", "safe force push", "push rejected"],
+    "severity": "major",
+    "context": "After rebasing or amending commits that have already been pushed to a shared branch",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# UNSAFE: destroys teammates' commits silently\ngit push --force\n\n# SAFE: aborts if remote has new commits you haven't fetched\ngit push --force-with-lease\n\n# Add alias to git config\ngit config --global alias.pushf 'push --force-with-lease'",
+        "description": "Replacing --force with the safer --force-with-lease"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Resolving cherry-pick conflicts cleanly",
+    "category": "debug",
+    "tags": ["git", "cherry-pick", "conflicts", "merge-conflict"],
+    "problem": "During `git cherry-pick`, conflicts arise and the process halts. Developers are unsure how to resolve and continue without losing the cherry-picked commit metadata.",
+    "solution": "After cherry-pick halts with conflicts:\n\n  1. Open conflicted files and resolve markers (<<<<, ====, >>>>)\n  2. Stage the resolved files:\n       git add path/to/resolved-file.js\n  3. Continue the cherry-pick:\n       git cherry-pick --continue\n\n  To abort entirely and return to pre-cherry-pick state:\n       git cherry-pick --abort\n\n  To skip this commit and move to the next (when cherry-picking a range):\n       git cherry-pick --skip",
+    "why": "Cherry-pick replays a commit's diff onto the current branch. If the surrounding context differs, Git cannot automatically apply the patch and requires manual resolution.",
+    "gotchas": [
+      "After resolving conflicts and staging, do NOT run `git commit` — use `git cherry-pick --continue` which preserves original author and commit message",
+      "Cherry-picking merge commits requires `-m 1` to specify the mainline parent",
+      "Cherry-pick of a commit that was already applied silently creates an empty commit — use `git cherry` to check first"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [
+      "error: could not apply a1b2c3d... feat: add payment flow",
+      "hint: After resolving the conflicts, mark them with",
+      "hint: \"git add/rm <pathspec>\", then run",
+      "hint: \"git cherry-pick --continue\"."
+    ],
+    "keywords": ["cherry-pick conflict", "resolve conflict", "cherry-pick continue", "cherry-pick abort", "apply commit"],
+    "severity": "moderate",
+    "context": "Backporting a specific commit from one branch to another when the codebases have diverged",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Start cherry-pick\ngit cherry-pick a1b2c3d\n\n# Conflicts? Resolve them, then:\ngit add src/payments.js\ngit cherry-pick --continue\n\n# Or abort completely\ngit cherry-pick --abort\n\n# Cherry-pick a range of commits\ngit cherry-pick abc123..def456",
+        "description": "Cherry-pick workflow with conflict resolution"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Rebase vs merge: choosing the right integration strategy",
+    "category": "principle",
+    "tags": ["git", "rebase", "merge", "history", "workflow"],
+    "problem": "Teams use merge and rebase interchangeably without understanding the tradeoffs, resulting in messy history or unexpected SHA changes that break collaborators' branches.",
+    "solution": "Merge preserves history as it happened — use for integrating shared/public branches:\n  git checkout main && git merge feature/my-feature\n\nRebase rewrites history for a linear timeline — use for local cleanup before merging:\n  git checkout feature/my-feature && git rebase main\n\nGolden rule: never rebase commits that exist on a remote shared branch. Only rebase your local unshared work.",
+    "why": "Merge creates a new merge commit tying two histories together. Rebase replays your commits on top of another branch, rewriting their SHAs. Rebasing shared commits causes divergence for everyone who has the old SHAs.",
+    "gotchas": [
+      "After rebasing a feature branch, you must force-push it — use --force-with-lease",
+      "`git pull --rebase` avoids merge commits when updating from remote — many teams prefer this for pull operations",
+      "Merge is safer in open-source contexts where you don't control other contributors' workflows"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["rebase vs merge", "linear history", "merge commit", "git rebase", "integration strategy"],
+    "severity": "tip",
+    "context": "Deciding how to integrate a feature branch back into main or keep it up to date",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Merge: preserves branch topology, creates merge commit\ngit checkout main\ngit merge feature/my-feature\n\n# Rebase: linear history, replays commits on top of main\ngit checkout feature/my-feature\ngit rebase main\n# Then fast-forward merge\ngit checkout main\ngit merge feature/my-feature\n\n# Pull with rebase (avoid merge commits on pull)\ngit pull --rebase origin main",
+        "description": "Merge vs rebase patterns"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Interactive rebase: squashing commits before merging",
+    "category": "pattern",
+    "tags": ["git", "rebase", "interactive", "squash", "clean-history"],
+    "problem": "A feature branch has many WIP, fixup, and typo commits that clutter the project history. These should be cleaned up before merging.",
+    "solution": "Use interactive rebase to squash commits:\n\n  # Squash last 5 commits\n  git rebase -i HEAD~5\n\nIn the editor, change 'pick' to 'squash' (or 's') for commits to fold into the previous one. The first commit in the list must remain 'pick'.\n\nAlternatively, use 'fixup' to squash and discard the commit message:\n  pick a1b2c3d feat: add login page\n  s  b2c3d4e fix: typo\n  f  c3d4e5f WIP changes",
+    "why": "Interactive rebase replays commits one by one, allowing you to reorder, edit, squash, or drop them. Squash combines a commit's changes with the previous pick commit and merges the commit messages.",
+    "gotchas": [
+      "Squashing already-pushed commits requires a force push afterward",
+      "If the editor exits with an empty file, the rebase aborts — don't save an empty todo list",
+      "`git rebase -i --autosquash` automatically reorders and marks commits prefixed with 'fixup!' or 'squash!'"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [
+      "error: nothing to squash",
+      "You asked to amend the most recent commit, but doing so would make it empty."
+    ],
+    "keywords": ["squash commits", "interactive rebase", "clean history", "fixup", "combine commits"],
+    "severity": "tip",
+    "context": "Before opening a PR or merging a feature branch when the commit history has many small incremental commits",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Open interactive rebase for last 4 commits\ngit rebase -i HEAD~4\n\n# In the editor:\n# pick a1b2c3d feat: user authentication\n# s   b2c3d4e fix: forgot to hash password\n# s   c3d4e5f WIP\n# f   d4e5f6a typo in comment\n\n# Use autosquash with fixup commits\ngit commit --fixup=a1b2c3d\ngit rebase -i --autosquash HEAD~5",
+        "description": "Squashing commits with interactive rebase"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "git bisect: binary search to find the commit that introduced a bug",
+    "category": "pattern",
+    "tags": ["git", "bisect", "debugging", "binary-search", "regression"],
+    "problem": "A bug exists in the current codebase but wasn't present months ago. Manually checking out commits to find the regression is tedious and slow.",
+    "solution": "Use git bisect to binary-search through history:\n\n  git bisect start\n  git bisect bad                    # current HEAD is broken\n  git bisect good v2.1.0            # last known good state\n\nGit checks out the midpoint commit. Test it, then mark:\n  git bisect good   # if this commit works\n  git bisect bad    # if this commit is broken\n\nRepeat until Git identifies the first bad commit. When done:\n  git bisect reset\n\nAutomate with a script:\n  git bisect run npm test -- --testNamePattern=\"payment flow\"",
+    "why": "Binary search finds the bad commit in O(log n) steps. For 1000 commits, that's at most 10 checkouts. Bisect manages the checkout logic automatically.",
+    "gotchas": [
+      "The test used in `git bisect run` must exit 0 for good, non-zero for bad (125 means 'skip this commit')",
+      "Use `git bisect skip` if a commit doesn't compile or is otherwise untestable",
+      "Bisect works on the working tree — ensure no local changes before starting with `git stash`"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [
+      "Bisecting: 12 revisions left to test after this (roughly 4 steps)",
+      "a1b2c3d4e5f6 is the first bad commit"
+    ],
+    "keywords": ["git bisect", "find regression", "binary search", "bug introduction", "bisect run"],
+    "severity": "tip",
+    "context": "When a regression was introduced at an unknown point in history and you need to find the exact commit",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Manual bisect\ngit bisect start\ngit bisect bad HEAD\ngit bisect good v3.0.0\n# Test and mark each checkout\ngit bisect good  # or: git bisect bad\n# When done\ngit bisect reset\n\n# Automated bisect with a test script\ngit bisect start\ngit bisect bad HEAD\ngit bisect good v3.0.0\ngit bisect run ./scripts/test-regression.sh",
+        "description": "Finding a regression with git bisect"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Recovering lost commits with git reflog",
+    "category": "debug",
+    "tags": ["git", "reflog", "recovery", "lost-commits", "reset"],
+    "problem": "After a `git reset --hard`, `git rebase`, or accidental branch deletion, commits appear to be permanently lost.",
+    "solution": "Git's reflog records every movement of HEAD for 90 days (by default). Use it to find and restore lost commits:\n\n  git reflog\n  # Shows: a1b2c3d HEAD@{2}: reset: moving to HEAD~3\n\n  # Restore the lost state\n  git reset --hard HEAD@{2}\n\n  # Or create a new branch at the lost point\n  git branch recovered-work HEAD@{2}\n\nFor a deleted branch:\n  git reflog | grep 'branch-name'\n  git checkout -b branch-name <found-sha>",
+    "why": "The reflog is a local log of all HEAD changes, including those that make commits unreachable from any branch. It is not shared with remotes — it is purely local to your machine.",
+    "gotchas": [
+      "Reflog entries expire after gc.reflogExpire (default 90 days) — don't wait too long",
+      "Reflog is per-worktree — check the correct worktree's reflog if using git worktree",
+      "Cloning a repo does not copy the original repo's reflog"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [
+      "HEAD is now at a1b2c3d Revert to previous state",
+      "fatal: ambiguous argument 'HEAD@{5}': unknown revision"
+    ],
+    "keywords": ["reflog", "recover commits", "lost commits", "undo reset", "deleted branch recovery"],
+    "severity": "major",
+    "context": "After accidental hard reset, rebase gone wrong, or branch deletion",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# See all recent HEAD movements\ngit reflog\n\n# Find a specific point\ngit reflog | grep 'before rebase'\n\n# Restore to that point\ngit reset --hard HEAD@{3}\n\n# Non-destructive: create a branch at the lost point\ngit branch rescue HEAD@{3}\n\n# Recover a deleted branch\ngit reflog --all | grep 'deleted-branch'\ngit checkout -b deleted-branch a1b2c3d",
+        "description": "Using reflog to recover lost commits and branches"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "git stash pop vs git stash apply: know the difference",
+    "category": "gotcha",
+    "tags": ["git", "stash", "stash-pop", "stash-apply"],
+    "problem": "Developers use `git stash pop` without understanding it removes the stash entry, leading to lost work when the pop causes a conflict and they don't realize the stash is gone.",
+    "solution": "Two commands, different behavior:\n\n  git stash apply   — restores stash, KEEPS the stash entry in the list\n  git stash pop     — restores stash, REMOVES the entry from the list\n\nSafe workflow:\n  1. Use `git stash apply` to restore changes\n  2. Verify everything is correct\n  3. Drop the stash manually: `git stash drop stash@{0}`\n\nIf stash pop caused a conflict:\n  git stash pop  ← conflicted, but stash entry IS removed\n  # Resolve conflicts\n  git add .\n  # Do NOT run git stash pop again — the stash is gone",
+    "why": "git stash pop is equivalent to `git stash apply && git stash drop`. On conflict, the drop still happens in some Git versions, leaving you without a stash safety net.",
+    "gotchas": [
+      "In Git < 2.32, a conflicted `git stash pop` still drops the stash entry in some versions — always use apply+drop for safety",
+      "Named stashes are easier to manage: `git stash save 'WIP: payment refactor'`",
+      "Stash doesn't track untracked files by default — use `git stash -u` to include them"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [
+      "CONFLICT (content): Merge conflict in src/app.js",
+      "The stash entry is kept in case you need it again."
+    ],
+    "keywords": ["git stash", "stash pop", "stash apply", "stash conflict", "lost stash"],
+    "severity": "moderate",
+    "context": "When switching contexts frequently and using stash to save work in progress",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Safe: apply keeps the stash\ngit stash apply stash@{0}\n# Verify it's correct, then drop\ngit stash drop stash@{0}\n\n# Risky: pop removes stash entry\ngit stash pop\n\n# List all stashes with messages\ngit stash list\n\n# Stash with a description and include untracked files\ngit stash push -u -m 'WIP: payment refactor'",
+        "description": "Safe stash workflow using apply instead of pop"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Git submodules: initialization and update gotchas",
+    "category": "gotcha",
+    "tags": ["git", "submodule", "init", "update", "nested-repos"],
+    "problem": "After cloning a repo with submodules, the submodule directories are empty. After a teammate adds a new submodule, existing clones don't get the submodule content automatically.",
+    "solution": "Initialize and populate submodules after cloning:\n\n  git submodule update --init --recursive\n\nOr clone with submodules from the start:\n  git clone --recurse-submodules <url>\n\nAfter a teammate adds a new submodule:\n  git pull\n  git submodule update --init --recursive\n\nUpdate a submodule to its latest remote commit:\n  git submodule update --remote --merge",
+    "why": "Submodules store only a pointer (commit SHA) to another repo. The actual submodule content is not part of the parent repo and must be fetched separately.",
+    "gotchas": [
+      "A submodule pointer commit SHA in the parent repo does NOT automatically update when the submodule repo gets new commits",
+      "Detached HEAD inside a submodule is normal and expected — commits must be made on a branch inside the submodule first",
+      "`git status` shows 'modified content' for submodules when their HEAD differs from the recorded SHA"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [
+      "fatal: not a git repository: 'vendor/lib/.git'",
+      "warning: LF will be replaced by CRLF",
+      "Submodule 'vendor/lib' (https://...) registered for path 'vendor/lib'"
+    ],
+    "keywords": ["submodule init", "submodule update", "empty submodule", "recurse submodules", "nested repository"],
+    "severity": "major",
+    "context": "Working with repos that use git submodules for dependency management",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Clone with submodules populated\ngit clone --recurse-submodules https://github.com/org/repo.git\n\n# Initialize submodules in an existing clone\ngit submodule update --init --recursive\n\n# Update submodule to latest commit on its tracked branch\ngit submodule update --remote --merge\n\n# Check submodule status\ngit submodule status",
+        "description": "Essential submodule commands"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "git worktree: check out multiple branches simultaneously",
+    "category": "pattern",
+    "tags": ["git", "worktree", "multiple-branches", "parallel-work"],
+    "problem": "Switching branches to review a PR or fix a hotfix interrupts active development work. Stashing and switching is slow and error-prone.",
+    "solution": "Use git worktree to check out a second branch in a separate directory without disturbing the current working tree:\n\n  # Create a new worktree for a hotfix\n  git worktree add ../repo-hotfix hotfix/critical-fix\n\n  # Work in the separate directory\n  cd ../repo-hotfix\n  # ... make changes, commit, push ...\n\n  # List active worktrees\n  git worktree list\n\n  # Remove the worktree when done\n  git worktree remove ../repo-hotfix",
+    "why": "Each worktree has its own working directory and index but shares the same .git directory and object store. Branches checked out in one worktree are locked and cannot be checked out in another.",
+    "gotchas": [
+      "A branch can only be checked out in one worktree at a time — attempting to check out an active worktree branch errors out",
+      "Worktrees created from bare repositories require a slightly different path convention",
+      "`git worktree prune` removes stale worktree metadata after manually deleting the directory"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [
+      "fatal: 'hotfix/critical-fix' is already checked out at '/path/to/original'",
+      "Removing worktrees/hotfix: gitdir file points to non-existent location"
+    ],
+    "keywords": ["worktree", "multiple branches", "parallel checkout", "worktree add", "worktree remove"],
+    "severity": "tip",
+    "context": "When context switching between features frequently or when reviewing PRs that require running code",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Add a worktree for a new branch\ngit worktree add ../my-repo-feature feature/new-ui\n\n# Add a worktree for an existing remote branch\ngit worktree add ../my-repo-hotfix -b hotfix/fix origin/hotfix/fix\n\n# List all worktrees\ngit worktree list\n\n# Clean up\ngit worktree remove ../my-repo-feature\ngit worktree prune",
+        "description": "Working with multiple branches via git worktree"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Sparse checkout: clone only specific directories of a large monorepo",
+    "category": "pattern",
+    "tags": ["git", "sparse-checkout", "monorepo", "performance", "partial-clone"],
+    "problem": "Cloning a large monorepo takes many minutes and gigabytes of disk space when you only need to work on one service or package.",
+    "solution": "Use sparse checkout combined with a partial clone to fetch only the files you need:\n\n  # Clone without checking out any files, blob-less for speed\n  git clone --filter=blob:none --no-checkout https://github.com/org/monorepo.git\n  cd monorepo\n\n  # Enable sparse checkout\n  git sparse-checkout init --cone\n\n  # Specify which directories to check out\n  git sparse-checkout set services/payments packages/shared\n\n  # Now checkout\n  git checkout main",
+    "why": "Sparse checkout keeps the full tree in the Git index but only materializes specified paths in the working tree. Combined with `--filter=blob:none`, blobs are fetched lazily on demand.",
+    "gotchas": [
+      "Cone mode (--cone) is faster and simpler but only supports full directory patterns, not arbitrary globs",
+      "Without --cone, pattern matching is slow on large repos",
+      "Some Git operations (grep, log --all) still operate on all objects even with sparse checkout"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["sparse checkout", "partial clone", "monorepo", "filter blob", "cone mode"],
+    "severity": "tip",
+    "context": "Working in large monorepos where you only need a subset of the codebase",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Partial clone + sparse checkout\ngit clone --filter=blob:none --no-checkout https://github.com/org/big-monorepo.git\ncd big-monorepo\ngit sparse-checkout init --cone\ngit sparse-checkout set apps/my-service packages/utils\ngit checkout main\n\n# Add more directories later\ngit sparse-checkout add apps/another-service\n\n# See what's currently included\ngit sparse-checkout list",
+        "description": "Setting up sparse checkout for a monorepo"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "git blame -L: annotate specific line ranges in a file",
+    "category": "pattern",
+    "tags": ["git", "blame", "line-range", "history", "annotation"],
+    "problem": "Running `git blame` on a large file produces hundreds of lines of output when you only care about who last modified a specific function or block.",
+    "solution": "Use the -L flag to restrict blame to a line range or a function name:\n\n  # By line range\n  git blame -L 42,68 src/auth/login.js\n\n  # By function name (Git searches for the function definition)\n  git blame -L :handleLogin src/auth/login.js\n\n  # Follow the blame into the parent commit (like git log --follow)\n  git blame -L 42,68 -C -C src/auth/login.js\n\n  # Show the blamed commit's full message\n  git blame -L 42,68 src/auth/login.js | cut -d' ' -f1 | sort -u | xargs git show",
+    "why": "The -L flag filters the blame output to only the specified lines or function. The function form (-L :funcname) uses the same heuristics as `git diff` to locate function boundaries.",
+    "gotchas": [
+      "Function name detection depends on the language's diff driver — may not work for all languages without .gitattributes configuration",
+      "Blame shows last modification only — a line reindented in a formatting commit will show that commit, not the logic author",
+      "Use `-w` to ignore whitespace changes: `git blame -w -L 42,68 file.js`"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["git blame", "line range", "blame -L", "function blame", "annotate lines"],
+    "severity": "tip",
+    "context": "Investigating the history of a specific function or block of code in a large file",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Blame specific line range\ngit blame -L 100,120 src/api/users.js\n\n# Blame a function by name\ngit blame -L :createUser src/api/users.js\n\n# Ignore whitespace changes\ngit blame -w -L 100,120 src/api/users.js\n\n# Follow copies and renames across files\ngit blame -C -C -L 100,120 src/api/users.js",
+        "description": "Targeted git blame with line range and function name"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Shallow clone limitations: missing history causes command failures",
+    "category": "gotcha",
+    "tags": ["git", "shallow-clone", "depth", "history", "CI"],
+    "problem": "A repo cloned with `--depth 1` in CI fails when running `git describe`, `git log --all`, or `git merge-base`. Commands that require full history silently return wrong results or error.",
+    "solution": "Fetch more history when needed:\n\n  # Deepen the shallow clone by N more commits\n  git fetch --deepen=50\n\n  # Fetch complete history\n  git fetch --unshallow\n\n  # For CI, configure shallow clone depth based on actual needs:\n  # For git describe (needs tags): fetch tags\n  git fetch --tags --unshallow\n\n  # For merge-base calculations (PRs):\n  git fetch --deepen=100 origin main",
+    "why": "A shallow clone only downloads up to the specified depth of commit history. Commits beyond that cutoff are represented as 'grafts' — they appear to have no parents, breaking any operation that traverses history.",
+    "gotchas": [
+      "`git log` in a shallow clone silently stops at the graft boundary — you won't know commits are missing",
+      "GitHub Actions `actions/checkout@v3+` uses `fetch-depth: 1` by default — set `fetch-depth: 0` for full history",
+      "git blame on old lines may fail or return wrong results in a shallow clone"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": ["CI/CD", "GitHub Actions", "GitLab CI"],
+    "error_messages": [
+      "fatal: No names found, cannot describe anything.",
+      "fatal: --unshallow on a complete repository does not make sense",
+      "warning: git-merge-base: --all: not supported in shallow repo"
+    ],
+    "keywords": ["shallow clone", "depth 1", "unshallow", "git describe", "merge-base", "CI clone"],
+    "severity": "moderate",
+    "context": "CI pipelines using shallow clones where certain git operations require full history",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Unshallow when you need full history\ngit fetch --unshallow\n\n# GitHub Actions: full history\n- uses: actions/checkout@v4\n  with:\n    fetch-depth: 0\n\n# Fetch just enough for git describe\ngit fetch --tags --deepen=200",
+        "description": "Fixing shallow clone limitations"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Git hooks: pre-commit and pre-push for local quality gates",
+    "category": "pattern",
+    "tags": ["git", "hooks", "pre-commit", "pre-push", "lint", "automation"],
+    "problem": "Developers commit broken code or push without running tests because there are no local guards. CI catches it, but only after the push.",
+    "solution": "Use Git hooks to enforce quality locally:\n\n  # Create a pre-commit hook\n  cat > .git/hooks/pre-commit << 'EOF'\n  #!/bin/sh\n  npm run lint --silent || exit 1\n  EOF\n  chmod +x .git/hooks/pre-commit\n\n  # Create a pre-push hook to run tests\n  cat > .git/hooks/pre-push << 'EOF'\n  #!/bin/sh\n  npm test || exit 1\n  EOF\n  chmod +x .git/hooks/pre-push\n\nFor team-wide hooks, use a tool like husky (Node) or pre-commit (Python) that commits hook config to the repo.",
+    "why": "Git hooks are shell scripts in .git/hooks/ that run at specific points in the git workflow. Exiting with non-zero code aborts the operation. They run locally before the operation completes.",
+    "gotchas": [
+      ".git/hooks/ is not committed to the repo — each developer must set them up, or use husky/pre-commit to manage this",
+      "Hooks can be bypassed with `git commit --no-verify` — this is a developer override, not a security mechanism",
+      "pre-push hooks receive remote and URL via stdin in a specific format — test carefully"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [
+      "error: hook 'pre-commit' returned non-zero status.",
+      "hint: The 'pre-commit' hook ran and exited with error code 1."
+    ],
+    "keywords": ["git hooks", "pre-commit hook", "pre-push hook", "husky", "local quality gate", "lint on commit"],
+    "severity": "tip",
+    "context": "Setting up local developer experience to catch issues before they reach CI",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Create and enable a pre-commit hook\ncat > .git/hooks/pre-commit << 'EOF'\n#!/bin/sh\nnpx eslint --ext .js,.ts src/ || exit 1\nEOF\nchmod +x .git/hooks/pre-commit\n\n# Using husky for team-wide hooks (Node projects)\nnpx husky init\necho 'npm test' > .husky/pre-push",
+        "description": "Setting up pre-commit and pre-push hooks"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "git diff --cached: see what's staged before committing",
+    "category": "pattern",
+    "tags": ["git", "diff", "staged", "cached", "review"],
+    "problem": "Developers commit without reviewing staged changes, accidentally including debug lines, console.logs, or unintended edits that were staged with `git add .`",
+    "solution": "Always review staged changes before committing:\n\n  git diff --cached           # same as: git diff --staged\n\nThis shows the diff between the index (staged area) and the last commit — exactly what will be in the next commit.\n\n  # Compare staged changes against a specific commit\n  git diff --cached main\n\n  # See only the file names that are staged\n  git diff --cached --name-only\n\n  # Stat summary of staged changes\n  git diff --cached --stat",
+    "why": "`git diff` without flags shows unstaged changes (working tree vs index). `git diff --cached` shows staged changes (index vs HEAD). They are complementary views of what's modified vs what's committed.",
+    "gotchas": [
+      "`git status` shows which files are staged but not the actual diffs — always run `git diff --cached` for a full review",
+      "In a large diff, pipe through a pager: `git diff --cached | less -R`",
+      "`git diff HEAD` shows all changes (staged + unstaged) compared to last commit"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["git diff cached", "staged diff", "diff staged", "review before commit", "what will be committed"],
+    "severity": "tip",
+    "context": "Before running git commit to verify exactly what will be included",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# See what's staged (what will be committed)\ngit diff --cached\n\n# Only file names\ngit diff --cached --name-only\n\n# Summary of additions/deletions\ngit diff --cached --stat\n\n# Everything changed (staged + unstaged) vs HEAD\ngit diff HEAD",
+        "description": "Reviewing staged changes before committing"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Reading and resolving merge conflict markers",
+    "category": "debug",
+    "tags": ["git", "merge-conflict", "conflict-markers", "resolution"],
+    "problem": "Developers unfamiliar with conflict markers (<<<<<<<, =======, >>>>>>>) edit them incorrectly, leaving marker text in the file and breaking builds.",
+    "solution": "A conflict block looks like this:\n\n  <<<<<<< HEAD\n  const timeout = 5000;\n  =======\n  const timeout = 3000;\n  >>>>>>> feature/reduce-timeout\n\n- Lines between <<<<<<< HEAD and ======= are YOUR changes (current branch)\n- Lines between ======= and >>>>>>> are THEIR changes (incoming branch)\n\nTo resolve: delete ALL three marker lines and keep the correct code:\n  const timeout = 3000;  // chose incoming change\n\nThen: git add <file> && git commit (or git merge --continue)\n\nFor three-way diffs, configure a merge tool:\n  git config --global merge.tool vimdiff",
+    "why": "Git inserts conflict markers to show both versions of a conflicting region. The markers are literal text in the file. You must remove them and choose the correct content before the file is valid.",
+    "gotchas": [
+      "Searching for '<<<<<<' in CI can catch accidentally committed conflict markers",
+      "Some editors (VS Code) highlight conflict markers with Accept Current/Accept Incoming buttons — use them",
+      "diff3 style shows the common ancestor too: `git config --global merge.conflictstyle diff3`"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [
+      "CONFLICT (content): Merge conflict in src/config.js",
+      "Automatic merge failed; fix conflicts and then commit the result.",
+      "error: Committing is not possible because you have unmerged files."
+    ],
+    "keywords": ["merge conflict", "conflict markers", "resolve conflict", "<<<<<<", "======", ">>>>>>"],
+    "severity": "moderate",
+    "context": "When merging or rebasing branches that modified the same lines",
+    "code_snippets": [
+      {
+        "lang": "text",
+        "code": "<<<<<<< HEAD\nconst timeout = 5000;  // your change\n=======\nconst timeout = 3000;  // their change\n>>>>>>> feature/reduce-timeout\n\n# After resolution (keep their change):\nconst timeout = 3000;",
+        "description": "Anatomy of a conflict marker and how to resolve it"
+      },
+      {
+        "lang": "bash",
+        "code": "# Show diff3 style (includes common ancestor)\ngit config --global merge.conflictstyle diff3\n\n# Check for leftover conflict markers\ngrep -r '<<<<<<<' src/\n\n# After resolving, mark as resolved\ngit add src/config.js\ngit merge --continue",
+        "description": "Conflict resolution commands"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": ".gitattributes: control line endings, diffs, and merge strategies",
+    "category": "pattern",
+    "tags": ["git", "gitattributes", "line-endings", "crlf", "merge-driver"],
+    "problem": "Cross-platform teams get noisy diffs due to line ending differences (CRLF vs LF), or binary files are diffed as text, producing unreadable output. Generated files cause merge conflicts that should always be regenerated.",
+    "solution": "Use .gitattributes to normalize behavior:\n\n  # .gitattributes\n  # Force LF for all text files\n  * text=auto eol=lf\n\n  # Treat specific files as binary\n  *.png binary\n  *.jpg binary\n  *.ico binary\n\n  # Always use ours strategy for generated lockfiles\n  package-lock.json merge=ours\n\n  # Improve diff readability for JavaScript functions\n  *.js diff=javascript",
+    "why": ".gitattributes is committed to the repo and applies uniformly to all clones. It overrides local git config for the affected paths, ensuring consistent behavior across Windows, macOS, and Linux.",
+    "gotchas": [
+      "After adding .gitattributes, re-normalize existing files: `git add --renormalize .`",
+      "The `merge=ours` strategy makes every conflict always pick your version — ensure this is intentional for the file type",
+      "Binary detection is heuristic — explicitly marking files as binary prevents false-positive text normalization"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [
+      "warning: LF will be replaced by CRLF in src/app.js.",
+      "warning: CRLF will be replaced by LF in src/app.js."
+    ],
+    "keywords": ["gitattributes", "line endings", "CRLF LF", "binary files", "merge strategy", "eol"],
+    "severity": "moderate",
+    "context": "Projects with cross-platform developers or with generated files that shouldn't be manually merged",
+    "code_snippets": [
+      {
+        "lang": "text",
+        "code": "# .gitattributes\n* text=auto eol=lf\n*.sh eol=lf\n*.bat eol=crlf\n*.png binary\n*.jpg binary\n*.gif binary\n*.ico binary\n*.woff2 binary\npackage-lock.json merge=ours\nyarn.lock merge=ours\n*.js diff=javascript\n*.ts diff=javascript",
+        "description": "Recommended .gitattributes for a cross-platform web project"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "git clean -fd: remove untracked files and directories safely",
+    "category": "pattern",
+    "tags": ["git", "clean", "untracked", "working-tree", "reset"],
+    "problem": "After a failed build, generated files, or a botched patch application, the working tree has many untracked files that `git reset --hard` doesn't remove (since reset only affects tracked files).",
+    "solution": "Use git clean to remove untracked files:\n\n  # Dry run first — ALWAYS do this first\n  git clean -fdn\n\n  # Remove untracked files\n  git clean -fd\n\n  # Also remove ignored files (e.g. build artifacts, node_modules)\n  git clean -fdx\n\n  # Interactive mode — choose what to delete\n  git clean -fdi\n\n  # Only remove files in a specific directory\n  git clean -fd src/generated/",
+    "why": "`git reset --hard` only resets tracked files to their last committed state. Untracked files (files Git has never seen) are untouched. git clean removes those untracked files.",
+    "gotchas": [
+      "git clean is DESTRUCTIVE and permanent — deleted files do not go to trash and cannot be recovered",
+      "Always run `git clean -fdn` (dry run, -n) before `git clean -fd` to preview what will be deleted",
+      "`-fdx` removes .gitignored files too (like node_modules, .env, build/) — very dangerous without a dry run"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["git clean", "untracked files", "remove untracked", "clean working tree", "build artifacts"],
+    "severity": "major",
+    "context": "After build failures, merge conflicts, or when resetting the working directory to a pristine state",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Step 1: ALWAYS preview first\ngit clean -fdn\n# Output: Would remove build/\n# Output: Would remove .env.local\n\n# Step 2: Execute if output looks correct\ngit clean -fd\n\n# Nuclear option: reset everything including ignored files\n# USE WITH EXTREME CAUTION\ngit reset --hard HEAD && git clean -fdx",
+        "description": "Safe git clean workflow with mandatory dry-run"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Branch naming conventions for team workflows",
+    "category": "principle",
+    "tags": ["git", "branching", "naming", "conventions", "workflow"],
+    "problem": "Inconsistent branch names make it impossible to understand the purpose of a branch at a glance, filter branches in CI, or enforce access control rules on branch patterns.",
+    "solution": "Adopt a prefix-based naming convention:\n\n  feature/   — new functionality\n  fix/       — bug fixes\n  hotfix/    — urgent production fixes\n  chore/     — maintenance, deps, config\n  docs/      — documentation only\n  refactor/  — code restructuring without behavior change\n  test/      — adding or fixing tests\n\nExamples:\n  feature/user-authentication\n  fix/payment-gateway-timeout\n  hotfix/xss-vulnerability\n  chore/upgrade-node-18\n\nInclude ticket numbers when applicable:\n  feature/PROJ-123-user-authentication\n  fix/BUG-456-payment-timeout",
+    "why": "Consistent prefixes enable: CI rules scoped to branch type, automatic PR template selection, branch protection rules (require reviews for release/*), and human-readable branch lists.",
+    "gotchas": [
+      "Avoid slashes beyond one level deep — some tools have issues with nested slashes in branch names",
+      "Branch names cannot contain spaces, ~, ^, :, ?, *, [, or begin with / or end with .lock",
+      "Keep branch names short enough to read in terminal output — under 50 characters is a good target"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [
+      "error: 'refs/heads/my bad branch name' is not a valid branch name."
+    ],
+    "keywords": ["branch naming", "git branch convention", "feature branch", "hotfix branch", "naming patterns"],
+    "severity": "tip",
+    "context": "Establishing or enforcing team git workflow standards",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Create branches with consistent naming\ngit checkout -b feature/PROJ-123-user-auth\ngit checkout -b fix/BUG-456-payment-timeout\ngit checkout -b hotfix/CVE-2024-security-patch\ngit checkout -b chore/upgrade-dependencies\n\n# List all feature branches\ngit branch -r | grep 'feature/'",
+        "description": "Branch naming convention examples"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Commit message conventions: Conventional Commits format",
+    "category": "principle",
+    "tags": ["git", "commit-message", "conventional-commits", "changelog", "semantic-versioning"],
+    "problem": "Inconsistent commit messages make changelogs unreadable, make it impossible to automate versioning, and make git log useless for understanding project history.",
+    "solution": "Follow the Conventional Commits specification:\n\n  <type>[optional scope]: <description>\n\n  [optional body]\n\n  [optional footer(s)]\n\nTypes: feat, fix, docs, style, refactor, test, chore, perf, ci\n\nExamples:\n  feat(auth): add OAuth2 Google login\n  fix(payments): handle timeout when gateway is unreachable\n  feat!: remove deprecated v1 API endpoints  ← BREAKING CHANGE\n  docs(readme): update setup instructions\n\nBreaking changes: append ! after type or add BREAKING CHANGE: in footer.",
+    "why": "Conventional Commits enables automated tooling: semantic-release can determine version bumps from commit types (feat→minor, fix→patch, BREAKING→major) and generate changelogs automatically.",
+    "gotchas": [
+      "The description must be in imperative mood: 'add feature' not 'added feature' or 'adds feature'",
+      "Keep the subject line under 72 characters for readability in git log and GitHub",
+      "Enforce with commitlint + husky to prevent non-compliant commits from being made"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["conventional commits", "commit message format", "semantic versioning", "changelog", "commitlint"],
+    "severity": "tip",
+    "context": "Teams using automated changelog generation or semantic versioning",
+    "code_snippets": [
+      {
+        "lang": "text",
+        "code": "# Good commit messages\nfeat(api): add rate limiting to /users endpoint\nfix(auth): correct JWT expiry calculation\nperf(db): add index on users.email column\nrefactor(payments): extract stripe client to separate module\n\n# Breaking change\nfeat!: require authentication on all API routes\n\n# With body and footer\nfix(auth): handle expired refresh tokens correctly\n\nPreviously, expired refresh tokens caused a 500 error.\nNow they return a 401 with a clear error message.\n\nCloses: #234",
+        "description": "Conventional commit message examples"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Annotated tags vs lightweight tags: use annotated for releases",
+    "category": "pattern",
+    "tags": ["git", "tags", "annotated", "lightweight", "releases", "versioning"],
+    "problem": "Developers create lightweight tags for releases, then find that `git describe` produces unexpected output and tag metadata (tagger, date, message) is missing.",
+    "solution": "Use annotated tags for releases; lightweight tags for temporary local markers:\n\n  # Annotated tag (recommended for releases)\n  git tag -a v2.1.0 -m \"Release v2.1.0: add payment integration\"\n\n  # Lightweight tag (local reference only)\n  git tag v2.1.0-test\n\n  # Push tags to remote (they are not pushed by default)\n  git push origin v2.1.0\n  git push origin --tags  # push all tags\n\n  # Verify an annotated tag\n  git show v2.1.0",
+    "why": "Annotated tags are stored as full Git objects with their own SHA, tagger identity, date, and GPG signature capability. Lightweight tags are just a pointer to a commit — equivalent to a named branch that doesn't move.",
+    "gotchas": [
+      "`git push` does NOT push tags by default — always push tags explicitly",
+      "`git describe` only considers annotated tags by default — lightweight tags require `--tags` flag",
+      "Deleting a remote tag: `git push origin --delete v2.1.0` then `git tag -d v2.1.0` locally"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [
+      "fatal: No annotated tags can describe 'a1b2c3d'.",
+      "fatal: No names found, cannot describe anything."
+    ],
+    "keywords": ["annotated tag", "lightweight tag", "git tag", "release tag", "git describe", "push tags"],
+    "severity": "moderate",
+    "context": "Creating release tags for versioned software deployments",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Create annotated release tag\ngit tag -a v2.1.0 -m \"Release v2.1.0\"\n\n# Push to remote\ngit push origin v2.1.0\n\n# List tags with annotations\ngit tag -n\n\n# Delete a tag locally and remotely\ngit tag -d v2.1.0-rc1\ngit push origin --delete v2.1.0-rc1\n\n# Verify tag object\ngit show v2.1.0",
+        "description": "Annotated tag workflow for releases"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "git log --graph: visualize branch topology in the terminal",
+    "category": "pattern",
+    "tags": ["git", "log", "graph", "history", "visualization"],
+    "problem": "Plain `git log` output doesn't show branch relationships, making it hard to understand when branches diverged or merged.",
+    "solution": "Use git log with graph and formatting flags:\n\n  git log --graph --oneline --decorate --all\n\nFor a prettier output, create an alias:\n  git config --global alias.graph 'log --graph --oneline --decorate --all'\n  git graph\n\nFull details with dates and author:\n  git log --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --all",
+    "why": "The --graph flag draws ASCII art representing the branch structure. Combined with --all, it shows all branches and their relationships. --decorate labels commits with branch/tag names.",
+    "gotchas": [
+      "Without --all, only the current branch's reachable commits are shown",
+      "On large repos, add a limit: `git log --graph --oneline --all -50` for last 50 commits",
+      "GUI tools (GitKraken, SourceTree, VS Code GitLens) provide richer graph visualization"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["git log graph", "branch visualization", "git history", "oneline graph", "branch topology"],
+    "severity": "tip",
+    "context": "Understanding project history, branch relationships, and merge points",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Quick graph view\ngit log --graph --oneline --decorate --all\n\n# Detailed graph with author and date\ngit log --graph --pretty=format:'%h %s (%an, %ar)' --decorate --all\n\n# Save as alias\ngit config --global alias.graph 'log --graph --oneline --decorate --all'\ngit graph",
+        "description": "Visualizing git history with log --graph"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "git remote prune: clean up stale remote-tracking branches",
+    "category": "pattern",
+    "tags": ["git", "remote", "prune", "stale-branches", "cleanup"],
+    "problem": "After remote branches are deleted (e.g. after PRs merge on GitHub), local remote-tracking refs like `origin/feature/old-feature` accumulate. `git branch -r` lists dozens of deleted branches.",
+    "solution": "Prune stale remote-tracking refs:\n\n  # Preview what will be pruned (dry run)\n  git remote prune origin --dry-run\n\n  # Prune stale refs for origin\n  git remote prune origin\n\n  # Prune while fetching (most common usage)\n  git fetch --prune\n  git fetch -p\n\n  # Configure auto-prune on every fetch\n  git config --global fetch.prune true",
+    "why": "Remote-tracking branches (origin/feature/x) are local snapshots of what the remote looked like. When the remote branch is deleted, the local tracking ref is not automatically removed — it becomes stale.",
+    "gotchas": [
+      "Pruning remote-tracking refs does NOT delete your local branches — only the `origin/` refs",
+      "To also delete local branches whose upstreams are gone: `git branch -vv | grep ': gone]' | awk '{print $1}' | xargs git branch -d`",
+      "Set `fetch.prune=true` globally so you never have to think about it"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [
+      "warning: 'refs/remotes/origin/feature/old-thing' has gone away"
+    ],
+    "keywords": ["git prune", "remote prune", "stale branches", "fetch prune", "cleanup branches"],
+    "severity": "tip",
+    "context": "After PRs are merged and remote branches are deleted on GitHub/GitLab",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Fetch and prune in one command\ngit fetch --prune\n\n# See which local branches track deleted remotes\ngit branch -vv | grep ': gone]'\n\n# Delete those local branches\ngit branch -vv | grep ': gone]' | awk '{print $1}' | xargs git branch -d\n\n# Auto-prune on every fetch\ngit config --global fetch.prune true",
+        "description": "Pruning stale remote-tracking branches"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "git rerere: reuse recorded conflict resolutions",
+    "category": "pattern",
+    "tags": ["git", "rerere", "conflict-resolution", "rebase", "automation"],
+    "problem": "When rebasing a long-lived feature branch onto main repeatedly, the same conflicts occur and require manual resolution each time.",
+    "solution": "Enable git rerere to record and automatically reuse conflict resolutions:\n\n  # Enable globally\n  git config --global rerere.enabled true\n\nOnce enabled:\n1. First time: resolve a conflict manually\n2. Git records the resolution in .git/rr-cache/\n3. Next time the same conflict occurs: Git applies it automatically\n\n  # See recorded resolutions\n  git rerere status\n  git rerere diff  # preview what rerere will apply\n\n  # Forget a bad resolution\n  git rerere forget path/to/file.js",
+    "why": "rerere = 'Reuse Recorded Resolution'. Git hashes the conflict region, stores your resolution, and replays it when the same conflict pattern appears. Especially powerful during iterative rebases.",
+    "gotchas": [
+      "rerere only activates for the same conflict context — if surrounding code changes significantly, the hash won't match",
+      "A bad resolution will be reused until you `git rerere forget` it — always verify auto-resolved conflicts",
+      "rr-cache is local and not shared with teammates — each developer builds their own cache"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["git rerere", "reuse resolution", "conflict resolution cache", "repeated conflicts", "rebase conflicts"],
+    "severity": "tip",
+    "context": "Long-lived feature branches that are repeatedly rebased onto an actively developed main branch",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Enable rerere globally\ngit config --global rerere.enabled true\n\n# Check recorded resolutions\ngit rerere status\n\n# See what rerere would apply\ngit rerere diff\n\n# Remove a bad remembered resolution\ngit rerere forget src/payments.js\n\n# After rerere auto-resolves, verify and stage\ngit add src/payments.js\ngit rebase --continue",
+        "description": "Setting up and using git rerere"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "git cherry: find commits not yet applied to another branch",
+    "category": "pattern",
+    "tags": ["git", "cherry", "cherry-pick", "backport", "compare-branches"],
+    "problem": "After cherry-picking several commits from one branch to another, it's unclear which commits have been applied and which still need to be backported.",
+    "solution": "Use `git cherry` to compare commits between branches:\n\n  # Show commits on feature that haven't been applied to main\n  git cherry -v main feature/my-feature\n\nOutput:\n  + a1b2c3d feat: add user roles    ← not yet in main (needs cherry-pick)\n  - b2c3d4e fix: typo              ← already applied to main (equivalent patch)\n\n+ means the commit patch is not in the upstream branch\n- means the equivalent patch exists in the upstream branch (already cherry-picked)",
+    "why": "`git cherry` uses patch-id (a hash of the diff content, not the commit SHA) to compare commits. Cherry-picked commits have different SHAs but identical patch-ids, so git cherry correctly identifies them as applied.",
+    "gotchas": [
+      "git cherry compares patch content, not SHAs — commits that are logically equivalent but differ in whitespace may not match",
+      "The argument order matters: `git cherry <upstream> <head>` shows what's in head but not in upstream",
+      "For a full diff: use `git log main..feature/my-feature --oneline` to see all diverging commits by SHA"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["git cherry", "patch-id", "cherry-pick status", "backport tracking", "applied commits"],
+    "severity": "tip",
+    "context": "Managing backports or tracking which commits from a feature branch have been applied to a release branch",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Find commits in feature not yet in main\ngit cherry -v main feature/my-feature\n# + a1b2c3d feat: user roles  ← needs cherry-pick\n# - b2c3d4e fix: typo         ← already applied\n\n# Cherry-pick only the + commits\ngit cherry main feature/my-feature | grep '^+' | awk '{print $2}' | xargs git cherry-pick",
+        "description": "Using git cherry to track backport status"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "git shortlog: summarize commit history by author",
+    "category": "pattern",
+    "tags": ["git", "shortlog", "contributors", "changelog", "statistics"],
+    "problem": "Project managers and teams want a summary of who contributed what in a release cycle without wading through full git log output.",
+    "solution": "Use git shortlog to group commits by author:\n\n  # Summary with commit counts\n  git shortlog -sn\n\n  # For a specific range (e.g. a release)\n  git shortlog -sn v2.0.0..v2.1.0\n\n  # With full commit messages grouped by author\n  git shortlog v2.0.0..v2.1.0\n\n  # Sort by number of commits, show emails\n  git shortlog -sne HEAD\n\n  # Generate a CONTRIBUTORS file\n  git shortlog -sn | awk '{print $2, $3}' > CONTRIBUTORS",
+    "why": "git shortlog reads git log output and groups commits by author name, optionally summarizing to just counts. It reads from stdin or a revision range, making it composable with other git commands.",
+    "gotchas": [
+      "Contributor deduplication fails if the same person uses different email addresses — normalize with .mailmap file",
+      "Create a .mailmap file to map old emails to canonical identities: `Proper Name <canonical@email.com> <old@email.com>`",
+      "`git log --author='Alice'` is an alternative for filtering by a single author"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["git shortlog", "contributors", "author stats", "commit count", "release summary", "mailmap"],
+    "severity": "tip",
+    "context": "Generating release notes, CONTRIBUTORS files, or team productivity reports",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Top contributors by commit count\ngit shortlog -sn HEAD\n\n# Commits since last release\ngit shortlog -sn v2.0.0..HEAD\n\n# Full grouped log for a release\ngit shortlog v2.0.0..v2.1.0\n\n# .mailmap to normalize identities\ncat > .mailmap << 'EOF'\nAlice Smith <alice@company.com> <alice@gmail.com>\nEOF",
+        "description": "git shortlog for contributor summaries"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "git archive: export a clean snapshot without .git directory",
+    "category": "pattern",
+    "tags": ["git", "archive", "export", "deployment", "distribution"],
+    "problem": "When packaging a release or deploying, you need the source files without the .git directory, history, or development-only files. Copying the directory and manually removing .git is error-prone.",
+    "solution": "Use git archive to export a clean snapshot:\n\n  # Create a zip of the current HEAD\n  git archive --format=zip HEAD -o release-v2.1.0.zip\n\n  # Create a tarball of a specific tag\n  git archive --format=tar.gz v2.1.0 -o v2.1.0.tar.gz\n\n  # Export only a subdirectory\n  git archive HEAD:src/ --format=zip -o src-only.zip\n\n  # Export to a remote server via SSH\n  git archive HEAD | ssh user@server 'cd /var/www && tar xf -'",
+    "why": "git archive reads directly from the Git object store and outputs only the working tree files at the specified ref. It respects .gitattributes export-ignore patterns to exclude dev-only files.",
+    "gotchas": [
+      "Add `export-ignore` to .gitattributes to exclude test files, CI configs from archives: `tests/ export-ignore`",
+      "Submodule contents are NOT included in git archive — use `git submodule foreach` to archive submodules separately",
+      "git archive does not expand shell variables in filenames — use --prefix to add a root directory: `--prefix=myapp/`"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [
+      "fatal: Not a valid object name: 'HEAD'",
+      "error: unknown switch `e'"
+    ],
+    "keywords": ["git archive", "export repo", "release package", "deployment archive", "export-ignore"],
+    "severity": "tip",
+    "context": "Creating release packages, deployment bundles, or clean source distributions",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Export current HEAD as zip\ngit archive --format=zip --prefix=myapp/ HEAD -o myapp-release.zip\n\n# Export a tag as tarball\ngit archive --format=tar.gz v2.1.0 | gzip > v2.1.0.tar.gz\n\n# .gitattributes: exclude dev files from archives\n# .gitattributes\ntests/ export-ignore\n.github/ export-ignore\ndocker-compose.yml export-ignore",
+        "description": "Creating clean release archives with git archive"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "git notes: attach metadata to commits without changing their SHA",
+    "category": "pattern",
+    "tags": ["git", "notes", "metadata", "annotation", "ci"],
+    "problem": "You need to attach build status, review notes, or deployment metadata to a commit, but amending the commit would change its SHA and break references.",
+    "solution": "Use git notes to attach metadata without altering the commit:\n\n  # Add a note to the current commit\n  git notes add -m \"Deployed to production: 2024-03-15 14:30 UTC\"\n\n  # Add a note to a specific commit\n  git notes add -m \"Build #1234 passed\" a1b2c3d\n\n  # Show notes in git log\n  git log --show-notes\n\n  # Push notes to remote (not pushed by default)\n  git push origin refs/notes/commits\n\n  # Fetch notes from remote\n  git fetch origin refs/notes/commits:refs/notes/commits",
+    "why": "Git notes are stored as separate objects referenced from the commit but not as part of the commit. The commit SHA doesn't change. Notes are stored in refs/notes/ and must be explicitly pushed and fetched.",
+    "gotchas": [
+      "Notes are NOT pushed or fetched by default — you must explicitly configure the refspec",
+      "Notes are not preserved by `git rebase` — rebased commits lose their notes",
+      "GitHub and GitLab do not display git notes in their web UIs"
+    ],
+    "language": "git",
+    "framework": null,
+    "environment": [],
+    "error_messages": [
+      "error: Cannot add notes. Found existing notes for object a1b2c3d. Use '-f' to overwrite existing notes"
+    ],
+    "keywords": ["git notes", "commit metadata", "attach notes", "notes push", "non-destructive annotation"],
+    "severity": "tip",
+    "context": "CI systems or deployment pipelines that need to annotate commits with build/deploy metadata",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Add a deployment note\ngit notes add -m \"Deployed to prod: $(date -u)\" HEAD\n\n# View notes in log\ngit log --show-notes=commits -1\n\n# Push notes to remote\ngit push origin refs/notes/commits\n\n# Auto-fetch notes\ngit config --add remote.origin.fetch '+refs/notes/commits:refs/notes/commits'\ngit fetch origin",
+        "description": "Using git notes for deployment metadata"
+      }
+    ],
+    "version_info": null
+  }
+]

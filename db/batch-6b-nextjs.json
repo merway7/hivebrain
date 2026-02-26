@@ -1,0 +1,914 @@
+[
+  {
+    "title": "App Router vs Pages Router: server components are the default",
+    "category": "principle",
+    "tags": ["nextjs", "app-router", "pages-router", "server-components"],
+    "problem": "Developers migrating from Pages Router to App Router expect all components to behave like React client components. In App Router, every component is a Server Component by default — no useState, no useEffect, no browser APIs.",
+    "solution": "Understand the split: Pages Router components are always client-eligible. App Router components are server-rendered by default. Mark components 'use client' only when they need interactivity or browser APIs.\n\n// pages/index.tsx (Pages Router) — always client-eligible\nimport { useState } from 'react';\nexport default function Page() {\n  const [count, setCount] = useState(0);\n  return <button onClick={() => setCount(c => c + 1)}>{count}</button>;\n}\n\n// app/page.tsx (App Router) — Server Component by default\nexport default async function Page() {\n  const data = await fetch('https://api.example.com/data').then(r => r.json());\n  return <main>{data.title}</main>;\n}\n\n// app/counter.tsx — Client Component\n'use client';\nimport { useState } from 'react';\nexport function Counter() {\n  const [count, setCount] = useState(0);\n  return <button onClick={() => setCount(c => c + 1)}>{count}</button>;\n}",
+    "why": "App Router was built around React Server Components to shift data fetching and rendering to the server, reducing client bundle size. The default-server model is a paradigm shift from the Pages Router where all components could use hooks freely.",
+    "gotchas": [
+      "'use client' propagates down — all imports in a client component become client-side too",
+      "Server Components cannot use useState, useEffect, or any React hook",
+      "Client Components can import Server Components only as children (via props), not directly",
+      "Both routers can coexist in the same app during migration — /pages and /app simultaneously"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [
+      "Error: useState only works in Client Components. Add the \"use client\" directive at the top of the file.",
+      "Error: Event handlers cannot be passed to Client Component props."
+    ],
+    "keywords": ["app router", "pages router", "server components", "use client", "migration", "default server"],
+    "severity": "major",
+    "context": "When migrating from Pages Router to App Router or starting a new Next.js 13+ project",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// app/page.tsx — Server Component, can fetch directly\nexport default async function Page() {\n  const posts = await db.post.findMany();\n  return <PostList posts={posts} />;\n}",
+        "description": "Server Component with direct data access"
+      }
+    ],
+    "version_info": "Next.js 13+ with App Router"
+  },
+  {
+    "title": "Server Actions: 'use server' directive and form mutations",
+    "category": "pattern",
+    "tags": ["nextjs", "server-actions", "forms", "mutations", "app-router"],
+    "problem": "Handling form submissions in App Router requires either a separate API route or a Server Action. Using a traditional onSubmit with fetch works but loses progressive enhancement and adds boilerplate.",
+    "solution": "Define Server Actions with 'use server' and wire them to forms via the action prop:\n\n// app/actions.ts\n'use server';\nimport { revalidatePath } from 'next/cache';\nimport { redirect } from 'next/navigation';\n\nexport async function createPost(formData: FormData) {\n  const title = formData.get('title') as string;\n  const body = formData.get('body') as string;\n  await db.post.create({ data: { title, body } });\n  revalidatePath('/posts');\n  redirect('/posts');\n}\n\n// app/new-post/page.tsx\nimport { createPost } from '../actions';\nexport default function NewPostPage() {\n  return (\n    <form action={createPost}>\n      <input name='title' required />\n      <textarea name='body' />\n      <button type='submit'>Create</button>\n    </form>\n  );\n}\n\n// With useActionState for pending/error state:\n'use client';\nimport { useActionState } from 'react';\nimport { createPost } from '../actions';\nexport function NewPostForm() {\n  const [state, action, isPending] = useActionState(createPost, null);\n  return (\n    <form action={action}>\n      <input name='title' />\n      <button disabled={isPending}>Submit</button>\n      {state?.error && <p>{state.error}</p>}\n    </form>\n  );\n}",
+    "why": "Server Actions run exclusively on the server, giving direct database/filesystem access without an API layer. They enable progressive enhancement — forms work even without JavaScript. Next.js handles CSRF protection automatically for Server Actions.",
+    "gotchas": [
+      "'use server' can be at the top of a file (all exports become actions) or inline inside a Server Component async function",
+      "Server Actions cannot be defined in Client Component files — import them from a separate 'use server' file",
+      "FormData values are always strings — coerce numbers explicitly: Number(formData.get('count'))",
+      "useActionState is from React 19 — older React versions use useFormState from react-dom"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [
+      "Error: Server actions must be async functions.",
+      "Error: \"use server\" functions cannot be defined in a Client Component."
+    ],
+    "keywords": ["server actions", "use server", "form action", "mutations", "revalidatePath", "useActionState"],
+    "severity": "tip",
+    "context": "When handling form submissions and data mutations in Next.js App Router",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "'use server';\nexport async function deletePost(id: string) {\n  await db.post.delete({ where: { id } });\n  revalidatePath('/posts');\n}",
+        "description": "Simple Server Action with cache invalidation"
+      }
+    ],
+    "version_info": "Next.js 14+ (stable Server Actions), React 19 for useActionState"
+  },
+  {
+    "title": "Parallel Routes: @folder convention for simultaneous layouts",
+    "category": "pattern",
+    "tags": ["nextjs", "parallel-routes", "app-router", "layouts", "slots"],
+    "problem": "Rendering multiple independent sections of a page (like a dashboard with separate analytics and feed panels) that each have their own loading/error states requires duplicating logic or using complex state management.",
+    "solution": "Use parallel routes with the @slot convention in the same layout:\n\n// app/dashboard/layout.tsx\nexport default function DashboardLayout({\n  children,\n  analytics,\n  feed,\n}: {\n  children: React.ReactNode;\n  analytics: React.ReactNode;\n  feed: React.ReactNode;\n}) {\n  return (\n    <div className='dashboard'>\n      <main>{children}</main>\n      <aside>{analytics}</aside>\n      <section>{feed}</section>\n    </div>\n  );\n}\n\n// File structure:\n// app/dashboard/@analytics/page.tsx  — renders in analytics slot\n// app/dashboard/@feed/page.tsx       — renders in feed slot\n// app/dashboard/@analytics/loading.tsx — independent loading UI\n// app/dashboard/@feed/error.tsx       — independent error boundary\n\n// app/dashboard/@analytics/page.tsx\nexport default async function AnalyticsPanel() {\n  const data = await fetchAnalytics();\n  return <Chart data={data} />;\n}",
+    "why": "Parallel routes allow multiple pages to be rendered simultaneously in the same layout. Each slot is independent — it can have its own loading.tsx, error.tsx, and data fetching. This enables true parallel data fetching at the route level without waterfalls.",
+    "gotchas": [
+      "The @folder name (e.g., @analytics) maps to a prop in the parent layout, not a URL segment",
+      "Each slot needs a default.tsx file for cases where the slot has no active state (e.g., on initial navigation)",
+      "Parallel routes can be combined with intercepting routes for modal patterns",
+      "Unmatched slots show default.tsx — if no default.tsx exists, the page renders a 404"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [
+      "Error: Missing required default export in @slot directory"
+    ],
+    "keywords": ["parallel routes", "slots", "@folder", "dashboard layout", "independent loading", "simultaneous rendering"],
+    "severity": "tip",
+    "context": "When building dashboards or pages with multiple independent UI sections in Next.js App Router",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// app/dashboard/layout.tsx — receives named slot props\nexport default function Layout({ children, analytics, team }) {\n  return (\n    <>\n      {children}\n      <Sidebar>{analytics}</Sidebar>\n      <Panel>{team}</Panel>\n    </>\n  );\n}",
+        "description": "Layout with parallel route slots"
+      }
+    ],
+    "version_info": "Next.js 13+ with App Router"
+  },
+  {
+    "title": "Intercepting Routes: (..) convention for modal patterns",
+    "category": "pattern",
+    "tags": ["nextjs", "intercepting-routes", "modals", "app-router", "routing"],
+    "problem": "Showing a photo in a modal when clicked from a gallery, while keeping the full photo page accessible via direct URL, requires complex client-side state management in traditional routing.",
+    "solution": "Use intercepting routes with the (.) convention to intercept navigation:\n\n// File structure for photo gallery with modal:\n// app/photos/page.tsx          — gallery grid\n// app/photos/[id]/page.tsx     — full photo page (direct URL)\n// app/photos/@modal/(..)photos/[id]/page.tsx  — intercepted modal\n// app/photos/layout.tsx        — renders both\n\n// The (..) means 'intercept the parent segment'\n// (.) = same segment, (..) = one level up, (...) = root\n\n// app/photos/layout.tsx\nexport default function Layout({ children, modal }) {\n  return (\n    <>\n      {children}\n      {modal}\n    </>\n  );\n}\n\n// app/photos/@modal/(..)photos/[id]/page.tsx\nimport { PhotoModal } from '@/components/PhotoModal';\nexport default function ModalPage({ params }) {\n  return <PhotoModal id={params.id} />;\n}\n\n// PhotoModal uses useRouter().back() to close:\n'use client';\nimport { useRouter } from 'next/navigation';\nexport function PhotoModal({ id }) {\n  const router = useRouter();\n  return (\n    <dialog open>\n      <button onClick={() => router.back()}>Close</button>\n      <Photo id={id} />\n    </dialog>\n  );\n}",
+    "why": "Intercepting routes let you load a route in a different context (e.g., a modal) while keeping the URL updated. Refreshing the page shows the full page (not the modal), because interception only happens during client-side navigation.",
+    "gotchas": [
+      "Interception only works on client-side navigation — hard refresh always shows the actual route",
+      "Combine with parallel routes (@modal slot) to render the modal alongside the background page",
+      "(..) matches one URL segment up, not one filesystem folder up",
+      "The intercepting folder must be inside a parallel route slot (@modal) to work correctly"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["intercepting routes", "modal routing", "photo gallery", "(..) convention", "parallel routes modal", "client navigation"],
+    "severity": "tip",
+    "context": "When implementing modal patterns where the modal content also has a dedicated full page URL",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// Folder: app/photos/@modal/(..)photos/[id]/page.tsx\n// This intercepts /photos/:id navigation and renders as modal\nexport default function InterceptedPhoto({ params }) {\n  return <PhotoModal photoId={params.id} />;\n}",
+        "description": "Intercepting route for photo modal"
+      }
+    ],
+    "version_info": "Next.js 13.3+ with App Router"
+  },
+  {
+    "title": "Middleware patterns: matcher config and early returns",
+    "category": "pattern",
+    "tags": ["nextjs", "middleware", "auth", "matcher", "edge-runtime"],
+    "problem": "Running middleware on every request (including static assets, _next, and API routes) wastes cycles and can break things. Auth middleware that fetches from a database causes timeouts due to edge runtime constraints.",
+    "solution": "Configure matcher to narrow middleware scope, and use lightweight checks:\n\n// middleware.ts (at project root or src/)\nimport { NextRequest, NextResponse } from 'next/server';\nimport { verifyJWT } from './lib/auth';\n\nexport function middleware(request: NextRequest) {\n  const token = request.cookies.get('token')?.value;\n\n  if (!token) {\n    return NextResponse.redirect(new URL('/login', request.url));\n  }\n\n  try {\n    const payload = verifyJWT(token);\n    const response = NextResponse.next();\n    response.headers.set('x-user-id', payload.sub);\n    return response;\n  } catch {\n    return NextResponse.redirect(new URL('/login', request.url));\n  }\n}\n\nexport const config = {\n  matcher: [\n    '/((?!_next/static|_next/image|favicon.ico|login|register).*)',\n    '/api/:path*',\n  ],\n};",
+    "why": "Middleware runs on every matched request before it reaches the page or API handler. Without matcher config, it runs on static files and Next.js internals — wasteful and potentially breaking. Edge runtime has no Node.js APIs so database clients that use TCP sockets won't work.",
+    "gotchas": [
+      "Middleware runs in Edge Runtime by default — no Node.js built-ins (fs, net, etc.)",
+      "Never put database queries in middleware — use JWT/session token verification instead",
+      "NextResponse.rewrite() changes the URL internally; NextResponse.redirect() changes it externally (301/307)",
+      "The matcher array supports regex negation with (?!...) to exclude paths"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [
+      "Error: The Edge runtime does not support Node.js modules.",
+      "Error: Dynamic Code Evaluation not allowed in Edge Runtime"
+    ],
+    "keywords": ["middleware", "matcher", "edge runtime", "auth middleware", "JWT", "NextResponse redirect"],
+    "severity": "major",
+    "context": "When adding authentication or request transformation middleware to a Next.js app",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "export const config = {\n  matcher: [\n    // Skip static files, run on everything else\n    '/((?!_next/static|_next/image|favicon.ico).*)',\n  ],\n};",
+        "description": "Middleware matcher to skip static assets"
+      }
+    ],
+    "version_info": "Next.js 12+ for middleware"
+  },
+  {
+    "title": "ISR revalidation: time-based vs on-demand with revalidatePath/revalidateTag",
+    "category": "pattern",
+    "tags": ["nextjs", "isr", "revalidation", "cache", "app-router"],
+    "problem": "Static pages go stale after deployment but you don't want to rebuild the entire site. On-demand revalidation is needed when content changes in a CMS, but the Next.js cache API differs between Pages Router and App Router.",
+    "solution": "App Router: use fetch cache options and revalidatePath/revalidateTag. Pages Router: use res.revalidate().\n\n// App Router: time-based revalidation\nexport default async function BlogPage() {\n  const posts = await fetch('https://cms.example.com/posts', {\n    next: { revalidate: 3600 },\n  }).then(r => r.json());\n  return <PostList posts={posts} />;\n}\n\n// App Router: tag-based revalidation\nconst posts = await fetch('https://cms.example.com/posts', {\n  next: { tags: ['posts'] },\n}).then(r => r.json());\n\n// On-demand: Route Handler\n// app/api/revalidate/route.ts\nimport { revalidatePath, revalidateTag } from 'next/cache';\nimport { NextRequest, NextResponse } from 'next/server';\n\nexport async function POST(request: NextRequest) {\n  const secret = request.nextUrl.searchParams.get('secret');\n  if (secret !== process.env.REVALIDATION_SECRET) {\n    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });\n  }\n  revalidateTag('posts');\n  revalidatePath('/blog');\n  return NextResponse.json({ revalidated: true });\n}",
+    "why": "ISR (Incremental Static Regeneration) lets pages be statically generated but refreshed in the background after a specified interval. Tag-based revalidation is more precise — you can invalidate specific data across multiple pages at once.",
+    "gotchas": [
+      "revalidatePath and revalidateTag only work in Server Actions and Route Handlers, not in component code",
+      "revalidatePath('/blog') also revalidates all pages under /blog by default — use { type: 'page' } to be specific",
+      "In Pages Router, getStaticProps returns { revalidate: N } seconds — different API",
+      "fetch cache is per-request in development — ISR behavior is only visible in production builds"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [
+      "Error: revalidatePath() can only be called inside Server Actions or Route Handlers."
+    ],
+    "keywords": ["ISR", "revalidatePath", "revalidateTag", "on-demand revalidation", "next revalidate", "cache tags"],
+    "severity": "moderate",
+    "context": "When managing cache freshness for statically rendered pages in Next.js",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// Tag fetch and invalidate later\nconst data = await fetch(url, { next: { tags: ['products'] } });\n\n// In a Server Action after mutation:\nrevalidateTag('products');",
+        "description": "Tag-based cache invalidation"
+      }
+    ],
+    "version_info": "Next.js 13+ (App Router caching), revalidateTag added in Next.js 13.4"
+  },
+  {
+    "title": "Route Handlers replace API Routes in App Router",
+    "category": "pattern",
+    "tags": ["nextjs", "route-handlers", "api-routes", "app-router", "rest"],
+    "problem": "Pages Router API routes (pages/api/*.ts) use req/res. App Router uses Route Handlers in app/ with a completely different Request/Response API based on Web standards, breaking existing patterns.",
+    "solution": "Create Route Handlers in app/api/ using named HTTP method exports:\n\n// app/api/posts/route.ts\nimport { NextRequest, NextResponse } from 'next/server';\n\nexport async function GET(request: NextRequest) {\n  const { searchParams } = new URL(request.url);\n  const page = Number(searchParams.get('page') ?? 1);\n  const posts = await db.post.findMany({ skip: (page - 1) * 10, take: 10 });\n  return NextResponse.json(posts);\n}\n\nexport async function POST(request: NextRequest) {\n  const body = await request.json();\n  const post = await db.post.create({ data: body });\n  return NextResponse.json(post, { status: 201 });\n}\n\n// app/api/posts/[id]/route.ts\nexport async function DELETE(\n  request: NextRequest,\n  { params }: { params: Promise<{ id: string }> }\n) {\n  const { id } = await params;\n  await db.post.delete({ where: { id } });\n  return new NextResponse(null, { status: 204 });\n}",
+    "why": "Route Handlers use the standard Web Fetch API (Request, Response) instead of Node.js http module types. This enables running on Edge Runtime and aligns with the web platform standard. The named export pattern replaces the single default export with method switching.",
+    "gotchas": [
+      "In Next.js 15, params is now a Promise — must await { params } before accessing values",
+      "Route Handlers in the app directory don't need NextRequest — plain Request works too",
+      "Route Handlers are not Server Components — they run on each request and cannot use React",
+      "A route.ts file and a page.tsx file cannot coexist in the same directory"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [
+      "Error: A conflicting public file and page file was found for path /api/posts",
+      "Error: Route \"/api/posts\" used `params.id`. `params` should be awaited before using its properties."
+    ],
+    "keywords": ["route handlers", "API routes", "app router", "GET POST DELETE", "NextRequest", "web fetch API"],
+    "severity": "moderate",
+    "context": "When creating backend API endpoints in Next.js App Router",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// app/api/users/[id]/route.ts\nexport async function GET(\n  _req: Request,\n  { params }: { params: Promise<{ id: string }> }\n) {\n  const { id } = await params;\n  const user = await db.user.findUnique({ where: { id } });\n  if (!user) return NextResponse.json({ error: 'Not found' }, { status: 404 });\n  return NextResponse.json(user);\n}",
+        "description": "Route Handler with dynamic params (Next.js 15)"
+      }
+    ],
+    "version_info": "Next.js 13+ for Route Handlers; Next.js 15 made params async"
+  },
+  {
+    "title": "Metadata API: static and dynamic page metadata in App Router",
+    "category": "pattern",
+    "tags": ["nextjs", "metadata", "seo", "app-router", "open-graph"],
+    "problem": "Pages Router used next/head with JSX to set page titles and meta tags. App Router uses a completely different Metadata API with exported objects and functions, and using next/head in App Router doesn't work.",
+    "solution": "Export a metadata object or generateMetadata function from page.tsx or layout.tsx:\n\n// Static metadata — app/about/page.tsx\nimport type { Metadata } from 'next';\n\nexport const metadata: Metadata = {\n  title: 'About Us',\n  description: 'Learn about our company',\n  openGraph: {\n    title: 'About Us | Acme Corp',\n    images: [{ url: '/og-about.png', width: 1200, height: 630 }],\n  },\n};\n\n// Dynamic metadata — app/blog/[slug]/page.tsx\nexport async function generateMetadata(\n  { params }: { params: Promise<{ slug: string }> }\n): Promise<Metadata> {\n  const { slug } = await params;\n  const post = await fetchPost(slug);\n  return {\n    title: post.title,\n    description: post.excerpt,\n    openGraph: {\n      title: post.title,\n      images: [{ url: post.coverImage }],\n    },\n  };\n}\n\n// Root layout sets site-wide defaults and template\n// app/layout.tsx\nexport const metadata: Metadata = {\n  title: { template: '%s | Acme Corp', default: 'Acme Corp' },\n  description: 'Default description',\n};",
+    "why": "The Metadata API enables Next.js to render meta tags on the server for SEO and social sharing without JavaScript. The title template system cascades through layouts, eliminating redundant title strings. next/head in App Router is not supported and will be silently ignored.",
+    "gotchas": [
+      "generateMetadata runs on the server — it can fetch data but must be async",
+      "Metadata defined in layout.tsx applies to all child pages unless overridden",
+      "The title template '%s' is replaced by the child page's title string",
+      "Twitter card metadata is nested under twitter: {} in the Metadata object"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["metadata API", "generateMetadata", "page title", "SEO", "open graph", "title template"],
+    "severity": "moderate",
+    "context": "When setting page titles, descriptions, and Open Graph tags in Next.js App Router",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "export const metadata: Metadata = {\n  title: { template: '%s | My Site', default: 'My Site' },\n  metadataBase: new URL('https://mysite.com'),\n  openGraph: { type: 'website' },\n};",
+        "description": "Root layout metadata with title template"
+      }
+    ],
+    "version_info": "Next.js 13.2+ for Metadata API"
+  },
+  {
+    "title": "loading.tsx and error.tsx conventions in App Router",
+    "category": "pattern",
+    "tags": ["nextjs", "loading", "error-boundary", "suspense", "app-router"],
+    "problem": "Showing loading states and handling errors for server-rendered pages requires manual Suspense boundaries and error boundaries. Forgetting them leads to blank screens during data fetching.",
+    "solution": "Place loading.tsx and error.tsx files next to page.tsx — Next.js auto-wraps them:\n\n// app/dashboard/loading.tsx — auto-shown while page.tsx suspends\nexport default function DashboardLoading() {\n  return (\n    <div className='animate-pulse'>\n      <div className='h-8 bg-gray-200 rounded w-1/4 mb-4' />\n      <div className='h-32 bg-gray-200 rounded' />\n    </div>\n  );\n}\n\n// app/dashboard/error.tsx — wraps page.tsx in an error boundary\n'use client';\nimport { useEffect } from 'react';\n\nexport default function DashboardError({\n  error,\n  reset,\n}: {\n  error: Error & { digest?: string };\n  reset: () => void;\n}) {\n  useEffect(() => {\n    console.error(error);\n  }, [error]);\n\n  return (\n    <div>\n      <h2>Something went wrong!</h2>\n      <button onClick={reset}>Try again</button>\n    </div>\n  );\n}\n\n// app/dashboard/page.tsx — can throw or be async\nexport default async function DashboardPage() {\n  const data = await fetchDashboard();\n  return <Dashboard data={data} />;\n}",
+    "why": "Next.js wraps page.tsx in a Suspense boundary using loading.tsx as the fallback, and in a React error boundary using error.tsx. This eliminates boilerplate and ensures loading/error states are handled at the route level.",
+    "gotchas": [
+      "error.tsx MUST be a Client Component ('use client') because error boundaries require client hooks",
+      "The reset() function re-renders the error boundary — it re-fetches the page component",
+      "global-error.tsx in the app root catches errors in the root layout — it must include <html> and <body>",
+      "loading.tsx wraps the entire page — for granular loading, use Suspense manually inside the page"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [
+      "Error: error.tsx must be a Client Component (add 'use client' directive)"
+    ],
+    "keywords": ["loading.tsx", "error.tsx", "suspense", "error boundary", "route-level loading", "global-error"],
+    "severity": "moderate",
+    "context": "When adding loading states and error handling to Next.js App Router pages",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "'use client';\nexport default function Error({ error, reset }: {\n  error: Error; reset: () => void;\n}) {\n  return (\n    <div>\n      <p>Error: {error.message}</p>\n      <button onClick={reset}>Retry</button>\n    </div>\n  );\n}",
+        "description": "error.tsx with reset functionality"
+      }
+    ],
+    "version_info": "Next.js 13+ with App Router"
+  },
+  {
+    "title": "not-found.tsx and notFound() for 404 handling in App Router",
+    "category": "pattern",
+    "tags": ["nextjs", "404", "not-found", "app-router", "notFound"],
+    "problem": "In App Router, returning a 404 from a page component or API is not straightforward. There's no res.status(404) — you need to throw a specific Next.js error or use the notFound() function.",
+    "solution": "Call notFound() to trigger the nearest not-found.tsx, and create not-found.tsx files at appropriate route levels:\n\n// app/not-found.tsx — global 404 page\nexport default function NotFound() {\n  return (\n    <div>\n      <h2>404 - Page Not Found</h2>\n      <a href='/'>Go Home</a>\n    </div>\n  );\n}\n\n// app/blog/[slug]/page.tsx\nimport { notFound } from 'next/navigation';\n\nexport default async function BlogPost({\n  params,\n}: {\n  params: Promise<{ slug: string }>;\n}) {\n  const { slug } = await params;\n  const post = await fetchPost(slug);\n\n  if (!post) {\n    notFound();\n  }\n\n  return <Article post={post} />;\n}\n\n// app/blog/not-found.tsx — segment-specific 404\nexport default function BlogNotFound() {\n  return <div>This blog post doesn't exist.</div>;\n}",
+    "why": "notFound() throws a special Next.js error that triggers the nearest not-found.tsx boundary. Without calling notFound(), a missing resource would render an empty page or throw an unhandled exception, degrading user experience and hurting SEO (200 status for missing content).",
+    "gotchas": [
+      "notFound() throws and terminates execution immediately — no need for a return after it",
+      "not-found.tsx at the app root level is also the custom 404 page (replaces pages/404.tsx)",
+      "In Route Handlers, return NextResponse.json({ error: 'Not found' }, { status: 404 }) instead",
+      "notFound() only works in Server Components and Route Handlers, not in Client Components"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["notFound", "not-found.tsx", "404 page", "custom 404", "missing resource", "navigation notFound"],
+    "severity": "moderate",
+    "context": "When handling missing resources and 404 states in Next.js App Router",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "import { notFound } from 'next/navigation';\n\nconst user = await db.user.findUnique({ where: { id } });\nif (!user) notFound();",
+        "description": "Triggering 404 from a Server Component"
+      }
+    ],
+    "version_info": "Next.js 13+ with App Router"
+  },
+  {
+    "title": "redirect() vs rewrite in Next.js: navigation vs URL masking",
+    "category": "principle",
+    "tags": ["nextjs", "redirect", "rewrite", "next.config.js", "navigation"],
+    "problem": "Developers confuse redirect() (changes the browser URL) with rewrites (serves different content under the same URL) and use them interchangeably, causing SEO issues or broken user experiences.",
+    "solution": "Use redirect() for user navigation, rewrites for URL masking:\n\n// redirect() — changes browser URL, for auth gates and moved pages\nimport { redirect } from 'next/navigation';\n\nexport default async function Page() {\n  const session = await getSession();\n  if (!session) redirect('/login');\n}\n\n// permanentRedirect() — for SEO-safe permanent moves (308)\nimport { permanentRedirect } from 'next/navigation';\npermanentRedirect('/new-url');\n\n// next.config.js redirects — run at the edge before rendering\nmodule.exports = {\n  async redirects() {\n    return [\n      { source: '/old-blog/:slug', destination: '/blog/:slug', permanent: true },\n    ];\n  },\n  async rewrites() {\n    return [\n      // URL stays /dashboard, but Next.js serves /app/dashboard\n      { source: '/dashboard', destination: '/app/dashboard' },\n      // Proxy to external API without exposing the URL\n      { source: '/api/external/:path*', destination: 'https://api.third-party.com/:path*' },\n    ];\n  },\n};",
+    "why": "Redirects tell the browser (and search engines) that a URL has moved — the browser URL changes. Rewrites serve different content under the same URL, useful for clean URLs, A/B testing, or proxying external services. SEO bots see the rewrite destination but users see the source URL.",
+    "gotchas": [
+      "redirect() in Server Components throws and terminates — you don't need a return statement after it",
+      "redirect() in Route Handlers must be called outside a try/catch — it throws a special error internally",
+      "permanent: true in next.config.js redirects sends 308 (for POST) or 301 — cached by browsers permanently",
+      "Rewrites run BEFORE middleware in the request lifecycle"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [
+      "Error: redirect() was called inside a try/catch block — remove the try/catch or move redirect() outside of it"
+    ],
+    "keywords": ["redirect", "rewrite", "permanentRedirect", "URL masking", "301 redirect", "next.config redirects"],
+    "severity": "moderate",
+    "context": "When handling navigation flows, legacy URL migration, and URL masking in Next.js",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// next.config.js: permanent redirect for moved page\nasync redirects() {\n  return [{ source: '/about-us', destination: '/about', permanent: true }];\n},\n// rewrite to proxy without exposing backend URL\nasync rewrites() {\n  return [{ source: '/api/data/:path*', destination: 'https://internal.svc/:path*' }];\n}",
+        "description": "Redirects and rewrites in next.config.js"
+      }
+    ],
+    "version_info": "Next.js 9.5+ for config redirects/rewrites; redirect() from next/navigation in App Router"
+  },
+  {
+    "title": "Dynamic routes, catch-all routes, and optional catch-all routes",
+    "category": "pattern",
+    "tags": ["nextjs", "dynamic-routes", "catch-all", "optional-catch-all", "params"],
+    "problem": "Choosing between [slug], [...slug], and [[...slug]] routes is confusing. Using the wrong one leads to routes not matching or generating incorrect static pages.",
+    "solution": "Match the route pattern to your use case:\n\n// [slug]        — matches exactly one segment:  /blog/hello\n// [...slug]     — matches one or more segments: /docs/a/b/c\n// [[...slug]]   — matches zero or more:         /docs and /docs/a/b\n\n// app/blog/[slug]/page.tsx\nexport default async function Post({ params }) {\n  const { slug } = await params; // string: 'hello-world'\n}\n\n// app/docs/[...slug]/page.tsx\nexport default async function Docs({ params }) {\n  const { slug } = await params; // string[]: ['guide', 'setup']\n  const path = slug.join('/');\n}\n\n// app/[[...slug]]/page.tsx — catch-all including root\nexport default async function CatchAll({ params }) {\n  const { slug } = await params; // string[] | undefined\n  if (!slug) return <Home />;\n  return <PageFor path={slug} />;\n}\n\n// generateStaticParams for static generation\nexport async function generateStaticParams() {\n  const posts = await fetchAllPosts();\n  return posts.map(post => ({ slug: post.slug }));\n  // For [...slug]: return [{ slug: ['docs', 'intro'] }]\n}",
+    "why": "Different route patterns serve different URL shapes. [...slug] is ideal for nested documentation trees or CMS pages with unknown depth. [[...slug]] is useful for optional locale prefixes or CMS roots where the index is also dynamic.",
+    "gotchas": [
+      "In Next.js 15, params is a Promise — always await it before accessing values",
+      "Catch-all routes [...slug] do NOT match the parent path — /docs doesn't match if the file is in app/docs/[...slug]/",
+      "Optional catch-all [[...slug]] matches both /docs and /docs/guide",
+      "generateStaticParams for catch-all must return { slug: string[] } — an array inside the object"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["dynamic routes", "catch-all", "optional catch-all", "generateStaticParams", "[...slug]", "[[...slug]]"],
+    "severity": "moderate",
+    "context": "When building documentation sites, CMS-driven pages, or any multi-segment dynamic routing",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// app/docs/[...path]/page.tsx\nexport async function generateStaticParams() {\n  const pages = await getDocPages();\n  return pages.map(p => ({ path: p.urlPath.split('/') }));\n}",
+        "description": "generateStaticParams for catch-all route"
+      }
+    ],
+    "version_info": "Next.js 13+ App Router; params is async in Next.js 15"
+  },
+  {
+    "title": "Route Groups: (folder) convention for layout organization without affecting URLs",
+    "category": "pattern",
+    "tags": ["nextjs", "route-groups", "layouts", "app-router", "folder-convention"],
+    "problem": "Organizing pages into folders changes the URL path, but you want to group pages by feature (marketing, app, auth) with different layouts without polluting URLs with folder names.",
+    "solution": "Wrap folder names in parentheses to create route groups that are invisible in URLs:\n\n// File structure:\n// app/(marketing)/layout.tsx     — marketing layout (header/footer)\n// app/(marketing)/page.tsx       — matches /\n// app/(marketing)/about/page.tsx — matches /about\n// app/(app)/layout.tsx           — app layout (sidebar/nav)\n// app/(app)/dashboard/page.tsx   — matches /dashboard\n// app/(auth)/layout.tsx          — auth layout (centered)\n// app/(auth)/login/page.tsx      — matches /login\n\n// app/(marketing)/layout.tsx\nexport default function MarketingLayout({ children }) {\n  return (\n    <>\n      <MarketingHeader />\n      {children}\n      <Footer />\n    </>\n  );\n}\n\n// app/(app)/layout.tsx\nexport default function AppLayout({ children }) {\n  return (\n    <div className='flex'>\n      <Sidebar />\n      <main>{children}</main>\n    </div>\n  );\n}",
+    "why": "Route groups let you apply different layouts to different sections of the app without the folder name appearing in the URL. This is essential for apps that have distinct sections (marketing site, authenticated app, admin panel) with completely different UIs.",
+    "gotchas": [
+      "Route groups can't be used to create the same URL path in two groups — /about in (marketing) and (app) would conflict",
+      "Each route group can have its own root layout with separate <html> and <body> if needed",
+      "Route groups don't affect routing — (group)/about/page.tsx still matches /about",
+      "You can have multiple root layouts in different route groups for multi-tenant apps"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["route groups", "(folder)", "layout organization", "multiple layouts", "url structure", "marketing app split"],
+    "severity": "tip",
+    "context": "When organizing a Next.js app with multiple distinct sections that need different layouts",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// app/(auth)/layout.tsx — applies to /login, /register, /forgot-password\n// without (auth) appearing in URLs\nexport default function AuthLayout({ children }) {\n  return <div className='min-h-screen flex items-center justify-center'>{children}</div>;\n}",
+        "description": "Auth layout via route group"
+      }
+    ],
+    "version_info": "Next.js 13+ with App Router"
+  },
+  {
+    "title": "next/image: blur placeholder, priority, and sizes for performance",
+    "category": "pattern",
+    "tags": ["nextjs", "next-image", "performance", "LCP", "CLS", "optimization"],
+    "problem": "Pages score poorly on Core Web Vitals despite using next/image. LCP (Largest Contentful Paint) is slow because hero images are lazy-loaded. CLS (Cumulative Layout Shift) occurs because images don't reserve space. Remote images are downloaded at full resolution.",
+    "solution": "Use priority for above-the-fold images, sizes for responsive images, and placeholder for CLS:\n\nimport Image from 'next/image';\n\n// Hero image: disable lazy loading, preload it\n<Image\n  src='/hero.jpg'\n  width={1200}\n  height={600}\n  alt='Hero'\n  priority\n  quality={85}\n/>\n\n// Responsive image with correct sizes hint\n<Image\n  src={post.cover}\n  fill\n  style={{ objectFit: 'cover' }}\n  sizes='(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw'\n  alt={post.title}\n  placeholder='blur'\n  blurDataURL={post.blurDataUrl}\n/>\n\n// Generate blurDataURL at build time:\nimport { getPlaiceholder } from 'plaiceholder';\nconst { base64 } = await getPlaiceholder('/public/photo.jpg');",
+    "why": "priority adds a preload link tag so browsers download hero images immediately without waiting for JavaScript. The sizes prop tells the browser which image size to download based on viewport — without it, the browser may download a 1200px image for a 300px thumbnail. placeholder='blur' prevents layout shift while the image loads.",
+    "gotchas": [
+      "Only use priority on the 2-3 most important above-the-fold images — overusing it defeats the purpose",
+      "sizes must match your actual CSS layout, not the image's natural dimensions",
+      "For fill images, the parent must have position: relative and an explicit height",
+      "Static imports (import img from './photo.jpg') automatically generate blurDataURL — remote images need it manually"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [
+      "Error: Image with src X is missing required \"sizes\" prop — this may cause LCP issues"
+    ],
+    "keywords": ["next/image", "priority", "sizes", "blur placeholder", "LCP", "CLS", "Core Web Vitals"],
+    "severity": "moderate",
+    "context": "When optimizing images in Next.js for Core Web Vitals and performance",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// Responsive image with correct sizes\n<Image\n  src={src}\n  fill\n  sizes='(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 400px'\n  alt={alt}\n/>",
+        "description": "Responsive image with sizes hint"
+      }
+    ],
+    "version_info": "Next.js 13+ (next/image v2)"
+  },
+  {
+    "title": "next/font: self-hosted fonts with zero layout shift",
+    "category": "pattern",
+    "tags": ["nextjs", "next-font", "typography", "performance", "CLS"],
+    "problem": "Loading Google Fonts via a <link> tag causes network requests to Google's servers, impacts privacy, and causes layout shift (FOUT/FOIT) when the font loads after the page. Custom fonts need complex self-hosting setup.",
+    "solution": "Use next/font/google or next/font/local for automatic self-hosting and size-adjust:\n\n// app/layout.tsx\nimport { Inter, Playfair_Display } from 'next/font/google';\n\nconst inter = Inter({\n  subsets: ['latin'],\n  display: 'swap',\n  variable: '--font-inter',\n});\n\nconst playfair = Playfair_Display({\n  subsets: ['latin'],\n  weight: ['400', '700'],\n  variable: '--font-playfair',\n});\n\nexport default function RootLayout({ children }) {\n  return (\n    <html lang='en' className={`${inter.variable} ${playfair.variable}`}>\n      <body className={inter.className}>{children}</body>\n    </html>\n  );\n}\n\n// tailwind.config.ts\nexport default {\n  theme: {\n    extend: {\n      fontFamily: {\n        sans: ['var(--font-inter)', 'system-ui'],\n        serif: ['var(--font-playfair)', 'serif'],\n      },\n    },\n  },\n};\n\n// Local font\nimport localFont from 'next/font/local';\nconst myFont = localFont({\n  src: './fonts/MyFont.woff2',\n  variable: '--font-my',\n});",
+    "why": "next/font downloads and self-hosts Google Fonts at build time, eliminating runtime requests to Google and improving privacy compliance (GDPR). It automatically adds size-adjust CSS to minimize layout shift during font swap.",
+    "gotchas": [
+      "Font files are downloaded at build time — CI/CD needs internet access during next build",
+      "Each font call creates a separate optimized CSS chunk — don't call Inter() in multiple files",
+      "The variable prop is needed for Tailwind or custom CSS variable usage; className applies the font directly",
+      "Fonts with many weights/variants increase bundle size — only include what you use"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["next/font", "Google Fonts", "self-hosted fonts", "font variable", "layout shift", "FOUT"],
+    "severity": "tip",
+    "context": "When adding custom or Google Fonts to a Next.js application",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "import { Inter } from 'next/font/google';\nconst inter = Inter({ subsets: ['latin'], variable: '--font-inter' });\n// In layout: <html className={inter.variable}>",
+        "description": "Google Font with CSS variable"
+      }
+    ],
+    "version_info": "Next.js 13.0+ for next/font"
+  },
+  {
+    "title": "Internationalization in App Router with next-intl",
+    "category": "pattern",
+    "tags": ["nextjs", "i18n", "internationalization", "routing", "next-intl"],
+    "problem": "Adding multi-language support requires locale-prefixed URLs (/en/about, /fr/about), locale detection, and translated content. Pages Router had built-in i18n but App Router removed it, requiring manual setup or a library.",
+    "solution": "Use next-intl with middleware for App Router i18n:\n\n// middleware.ts\nimport createMiddleware from 'next-intl/middleware';\nexport default createMiddleware({\n  locales: ['en', 'fr', 'de'],\n  defaultLocale: 'en',\n});\nexport const config = { matcher: ['/((?!api|_next|.*\\..*).*)'] };\n\n// app/[locale]/layout.tsx\nimport { NextIntlClientProvider } from 'next-intl';\nimport { getMessages } from 'next-intl/server';\n\nexport default async function LocaleLayout({ children, params }) {\n  const { locale } = await params;\n  const messages = await getMessages();\n  return (\n    <html lang={locale}>\n      <body>\n        <NextIntlClientProvider messages={messages}>\n          {children}\n        </NextIntlClientProvider>\n      </body>\n    </html>\n  );\n}\n\n// messages/en.json\n{ \"nav\": { \"home\": \"Home\", \"about\": \"About\" } }\n\n// In a Server Component:\nimport { useTranslations } from 'next-intl';\nexport default function Nav() {\n  const t = useTranslations('nav');\n  return <nav><a href='/'>{t('home')}</a></nav>;\n}",
+    "why": "App Router removed the built-in i18n config that Pages Router had. Libraries like next-intl handle locale routing via middleware, provide type-safe translations, and support both Server and Client Components.",
+    "gotchas": [
+      "All routes must be under app/[locale]/ — this changes every file path in the app",
+      "generateStaticParams must be added to layouts to generate pages for each locale",
+      "Client Components use useTranslations hook; Server Components use the same hook (next-intl handles both)",
+      "hreflang alternate links are needed for SEO — next-intl generates them via the Metadata API"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["internationalization", "i18n", "next-intl", "locale routing", "translations", "multilingual"],
+    "severity": "moderate",
+    "context": "When building a multi-language Next.js App Router application",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// app/[locale]/page.tsx\nimport { useTranslations } from 'next-intl';\nexport default function HomePage() {\n  const t = useTranslations('home');\n  return <h1>{t('title')}</h1>;\n}",
+        "description": "Server Component with next-intl translation"
+      }
+    ],
+    "version_info": "next-intl 3.x with Next.js 13+ App Router"
+  },
+  {
+    "title": "Edge Runtime limitations: no Node.js APIs, no TCP, no native modules",
+    "category": "gotcha",
+    "tags": ["nextjs", "edge-runtime", "middleware", "limitations", "deployment"],
+    "problem": "Moving a Route Handler or page to Edge Runtime fails because it uses a database client, bcrypt, or any Node.js built-in. Edge Runtime is a subset of the Web API, not Node.js.",
+    "solution": "Use Edge-compatible alternatives or move to Node.js runtime:\n\n// Bad: Prisma/pg/mongoose don't work in Edge Runtime\nexport const runtime = 'edge';\nimport { prisma } from '@/lib/prisma'; // FAILS — uses net/tcp\n\n// Option 1: Remove the runtime export — Node.js is default\n\n// Option 2: Use an Edge-compatible database client\nimport { neon } from '@neondatabase/serverless'; // HTTP-based\nconst sql = neon(process.env.DATABASE_URL!);\n\nexport const runtime = 'edge';\nexport async function GET() {\n  const posts = await sql`SELECT * FROM posts`;\n  return Response.json(posts);\n}\n\n// Edge Runtime DOES support:\n// fetch, Request, Response, Headers, URL, URLSearchParams\n// Web Crypto API (crypto.subtle)\n// TextEncoder/TextDecoder\n// ReadableStream, WritableStream\n// Env variables (process.env)\n\n// Edge Runtime does NOT support:\n// Node.js built-ins: fs, path, net, tls\n// Native addons (.node files)\n// TCP sockets (most database drivers)\n\n// Edge-compatible password hashing:\nconst encoder = new TextEncoder();\nconst data = encoder.encode(password + salt);\nconst hash = await crypto.subtle.digest('SHA-256', data);",
+    "why": "Edge Runtime runs on V8 isolates in CDN edge nodes (Cloudflare Workers, Vercel Edge Network). These environments don't have the full Node.js runtime — only Web APIs. This enables globally distributed low-latency execution, but restricts which code can run there.",
+    "gotchas": [
+      "Middleware always runs in Edge Runtime — never put database calls in middleware",
+      "bcrypt uses native code — use bcryptjs (pure JS) or Web Crypto for Edge-compatible hashing",
+      "Prisma does NOT support Edge Runtime — use Prisma's Accelerate (HTTP proxy) for edge",
+      "Some packages detect Edge Runtime and switch behavior — check package docs"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [
+      "Error: The Edge runtime does not support Node.js built-ins.",
+      "Error: Module not found: Can't resolve 'net'",
+      "Error: Dynamic Code Evaluation not allowed in Edge Runtime"
+    ],
+    "keywords": ["edge runtime", "Node.js limitations", "Cloudflare Workers", "tcp sockets", "bcrypt edge", "Prisma edge"],
+    "severity": "major",
+    "context": "When using export const runtime = 'edge' in Route Handlers, middleware, or pages",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// Edge-compatible hashing with Web Crypto\nconst encoder = new TextEncoder();\nconst keyData = encoder.encode(secret);\nconst key = await crypto.subtle.importKey('raw', keyData, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);\nconst sig = await crypto.subtle.sign('HMAC', key, encoder.encode(payload));",
+        "description": "Edge-compatible HMAC signing"
+      }
+    ],
+    "version_info": "Next.js 12.2+ for Edge Runtime"
+  },
+  {
+    "title": "Next.js caching layers: request memoization, Data Cache, Full Route Cache, Router Cache",
+    "category": "principle",
+    "tags": ["nextjs", "caching", "data-cache", "full-route-cache", "router-cache"],
+    "problem": "Next.js has four distinct caching layers that interact in non-obvious ways. Data fetched once in a page appears stale, or the same API is called multiple times despite memoization, because developers don't understand which cache is responsible.",
+    "solution": "Understand each cache layer and how to opt out:\n\n// 1. Request Memoization — deduplicates identical fetch() calls within ONE request\nconst a = await fetch('https://api.example.com/user'); // hits network\nconst b = await fetch('https://api.example.com/user'); // returns memoized result\n\n// 2. Data Cache — persists fetch() results across requests\n// Opt out:\nconst data = await fetch(url, { cache: 'no-store' });\n// Opt in with TTL:\nconst data2 = await fetch(url, { next: { revalidate: 60 } });\n\n// 3. Full Route Cache — caches entire rendered HTML+RSC payload at build time\n// Force dynamic rendering:\nexport const dynamic = 'force-dynamic';\n// Force static:\nexport const dynamic = 'force-static';\n\n// 4. Router Cache (client-side) — caches RSC payloads in browser during navigation\n// Invalidate with:\nrouter.refresh();\n// Or server-side:\nrevalidatePath('/path');\nrevalidateTag('tag');\n\n// Cache an ORM call (not a fetch) with unstable_cache:\nimport { unstable_cache } from 'next/cache';\nconst getUser = unstable_cache(\n  async (id: string) => db.user.findUnique({ where: { id } }),\n  ['user'],\n  { tags: ['users'], revalidate: 60 }\n);",
+    "why": "Next.js layers caches to maximize performance: memoization deduplicates per-request, Data Cache persists across requests, Full Route Cache serves pre-rendered HTML, Router Cache avoids server round-trips during client navigation.",
+    "gotchas": [
+      "In Next.js 15, fetch() defaults to no-store (uncached) — you must explicitly opt into caching with next: { revalidate }",
+      "The Router Cache (client) is separate from the server Data Cache — router.refresh() clears only the client cache",
+      "cookies() and headers() calls inside a Server Component automatically opt the route into dynamic rendering",
+      "unstable_cache() from next/cache can cache non-fetch async functions like ORM calls"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["caching", "data cache", "full route cache", "router cache", "request memoization", "no-store", "force-dynamic"],
+    "severity": "major",
+    "context": "When debugging stale data or unexpected cache behavior in Next.js App Router",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// Next.js 15: fetch is uncached by default\n// Opt into caching explicitly:\nconst data = await fetch(url, { next: { revalidate: 3600 } });\n\n// Cache ORM queries:\nconst cachedGetUser = unstable_cache(\n  (id: string) => db.user.findUnique({ where: { id } }),\n  ['user'],\n  { tags: ['users'] }\n);",
+        "description": "Caching ORM calls with unstable_cache"
+      }
+    ],
+    "version_info": "Next.js 13+ (caching system); Next.js 15 changed fetch default to no-store"
+  },
+  {
+    "title": "server-only package: preventing server code from leaking to client bundles",
+    "category": "gotcha",
+    "tags": ["nextjs", "server-only", "security", "client-boundary", "secrets"],
+    "problem": "A utility module with database credentials or API secrets gets imported by a Client Component — Next.js doesn't automatically prevent this, and the secrets end up in the client bundle.",
+    "solution": "Import 'server-only' at the top of any module that must never run client-side:\n\n// lib/db.ts — MUST NOT be sent to client\nimport 'server-only';\nimport { PrismaClient } from '@prisma/client';\nexport const db = new PrismaClient();\n\n// lib/config.ts — contains secrets\nimport 'server-only';\nexport const config = {\n  stripeSecret: process.env.STRIPE_SECRET_KEY!,\n  databaseUrl: process.env.DATABASE_URL!,\n};\n\n// If a Client Component tries to import lib/db.ts:\n// 'use client';\n// import { db } from '@/lib/db'; // BUILD ERROR\n// Error: This module cannot be imported from a Client Component module.\n\n// lib/stripe.ts — server-only module\nimport 'server-only';\nimport Stripe from 'stripe';\nexport const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);\n\n// For client-safe environment variables:\n// Use NEXT_PUBLIC_ prefix (intentionally exposed):\nexport const PUBLIC_API_URL = process.env.NEXT_PUBLIC_API_URL;",
+    "why": "Next.js can't automatically determine which code is safe to send to the client. Without 'server-only', a developer can accidentally import a server-only module from a Client Component, and Next.js will bundle it and potentially expose secrets. The 'server-only' package adds a build-time check.",
+    "gotchas": [
+      "NEXT_PUBLIC_ env vars are intentionally inlined into the client bundle — never use this prefix for secrets",
+      "'server-only' is a package you must install: npm install server-only",
+      "The inverse is 'client-only' — for modules that use browser APIs and must not run on the server",
+      "Server Actions marked 'use server' are callable from the client but run on the server — secrets inside them are safe"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [
+      "Error: This module cannot be imported from a Client Component module. It should only be used from a Server Component."
+    ],
+    "keywords": ["server-only", "secrets", "client bundle", "NEXT_PUBLIC_", "security", "server import"],
+    "severity": "critical",
+    "context": "When securing server-only modules (database clients, secret config) from accidental client import",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// lib/stripe.ts\nimport 'server-only';\nimport Stripe from 'stripe';\nexport const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);",
+        "description": "Protecting secret API clients with server-only"
+      }
+    ],
+    "version_info": "Next.js 13+ with App Router"
+  },
+  {
+    "title": "Client boundary serialization: passing data from Server to Client Components",
+    "category": "gotcha",
+    "tags": ["nextjs", "serialization", "server-components", "client-components", "props"],
+    "problem": "A Server Component passes a complex object (Date, Map, class instance, function) as props to a Client Component and gets an error about non-serializable values. Only JSON-serializable data can cross the Server/Client boundary.",
+    "solution": "Only pass serializable data across the boundary; convert complex types before passing:\n\n// BAD: passing non-serializable values\nconst user = await db.user.findUnique({ where: { id } });\nreturn <UserProfile user={user} onUpdate={handleUpdate} />;\n// Error: handleUpdate is a function — can't be serialized\n// Error: user.createdAt is a Date — serialize to string\n\n// GOOD: serialize at the boundary\nreturn (\n  <UserProfile\n    user={{\n      id: user.id,\n      name: user.name,\n      createdAt: user.createdAt.toISOString(), // Date to string\n    }}\n    // For callbacks, use a Server Action instead of a function prop:\n  />\n);\n\n// actions.ts\n'use server';\nexport async function updateUser(formData: FormData) { /* ... */ }\n\n// UserProfile.tsx\n'use client';\nimport { updateUser } from '@/app/actions';\nexport function UserProfile({ user }) {\n  return <form action={updateUser}>...</form>;\n}\n\n// Serializable: string, number, boolean, null, plain objects, arrays, Uint8Array\n// NOT serializable: functions, class instances, Date objects, Map, Set, Symbol",
+    "why": "Props crossing the Server/Client boundary are serialized to JSON (or RSC payload format). Functions, class instances, Dates (as objects), Maps, Sets, and Symbols cannot be serialized. Next.js enforces this at build/runtime to prevent impossible states.",
+    "gotchas": [
+      "Passing functions as props to Client Components is the most common violation — use Server Actions instead",
+      "Date objects are serialized as strings in RSC payloads — reconstruct with new Date(dateString) in the client",
+      "Prisma model instances are class instances — spread them into plain objects before passing",
+      "Arrays of serializable items are fine; arrays of class instances are not"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [
+      "Error: Functions cannot be passed directly to Client Components unless you explicitly expose it by marking it with \"use server\".",
+      "Error: Only plain objects can be passed to Client Components from Server Components."
+    ],
+    "keywords": ["serialization", "client boundary", "Server to Client props", "Date serialization", "function props", "RSC payload"],
+    "severity": "major",
+    "context": "When passing data from Server Components down to Client Components as props",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// Convert Prisma result to plain object\nconst rawUser = await db.user.findUniqueOrThrow({ where: { id } });\nconst user = {\n  id: rawUser.id,\n  name: rawUser.name,\n  createdAt: rawUser.createdAt.toISOString(), // Date -> string\n};\nreturn <ClientUserCard user={user} />;",
+        "description": "Serializing DB result for Client Component"
+      }
+    ],
+    "version_info": "Next.js 13+ with App Router and React Server Components"
+  },
+  {
+    "title": "Streaming with Suspense in App Router for faster Time to First Byte",
+    "category": "pattern",
+    "tags": ["nextjs", "streaming", "suspense", "performance", "TTFB"],
+    "problem": "A page with multiple slow data fetches blocks the entire page render until all fetches complete. Users see nothing until the slowest fetch finishes, even if most of the page is ready.",
+    "solution": "Wrap slow sections in Suspense to stream them independently:\n\n// app/dashboard/page.tsx\nimport { Suspense } from 'react';\n\nexport default function DashboardPage() {\n  return (\n    <main>\n      <h1>Dashboard</h1>\n      {/* Fast — renders immediately */}\n      <QuickStats />\n\n      {/* Slow — streams when ready */}\n      <Suspense fallback={<ChartSkeleton />}>\n        <RevenueChart />\n      </Suspense>\n\n      <Suspense fallback={<TableSkeleton />}>\n        <RecentOrders />\n      </Suspense>\n    </main>\n  );\n}\n\n// RevenueChart.tsx — Server Component with its own fetch\nexport default async function RevenueChart() {\n  const data = await fetchRevenue(); // slow fetch\n  return <Chart data={data} />;\n}\n\n// Both fetches start simultaneously.\n// The HTML shell (h1 + QuickStats) is sent immediately.\n// Each Suspense boundary streams in as its data resolves.\n// Total time = longest individual fetch, not sum of all.",
+    "why": "React 18 streaming renders HTML progressively. Without Suspense, Next.js waits for all async Server Components to resolve before sending HTML. With Suspense, the shell (non-async content) is sent immediately, then each boundary streams in as its data resolves.",
+    "gotchas": [
+      "loading.tsx wraps the ENTIRE page in one Suspense — use inline Suspense for granular streaming",
+      "Each Suspense boundary should encapsulate one data fetch — avoid nesting too many levels",
+      "Suspense does not work in Pages Router — it's App Router only",
+      "Sequential data fetches (one depends on another) can't be parallelized — use Promise.all when fetches are independent"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["streaming", "Suspense", "TTFB", "progressive rendering", "skeleton", "parallel data fetching"],
+    "severity": "moderate",
+    "context": "When a page has multiple slow data fetches and you want to show content progressively",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// Independent Suspense boundaries — both fetches run in parallel\n<Suspense fallback={<Skeleton />}><SlowComponent1 /></Suspense>\n<Suspense fallback={<Skeleton />}><SlowComponent2 /></Suspense>",
+        "description": "Parallel streaming with Suspense"
+      }
+    ],
+    "version_info": "Next.js 13+ with App Router and React 18"
+  },
+  {
+    "title": "generateStaticParams: pre-generating dynamic routes at build time",
+    "category": "pattern",
+    "tags": ["nextjs", "generateStaticParams", "static-generation", "dynamic-routes", "build"],
+    "problem": "Dynamic routes like /blog/[slug] are server-rendered on every request by default. High-traffic pages should be statically generated at build time for performance, but the old getStaticPaths API doesn't exist in App Router.",
+    "solution": "Export generateStaticParams from any dynamic segment page:\n\n// app/blog/[slug]/page.tsx\nexport async function generateStaticParams() {\n  const posts = await fetch('https://cms.example.com/posts').then(r => r.json());\n  return posts.map((post: { slug: string }) => ({ slug: post.slug }));\n  // Returns: [{ slug: 'hello-world' }, { slug: 'second-post' }, ...]\n}\n\nexport default async function BlogPost({ params }) {\n  const { slug } = await params;\n  const post = await fetchPost(slug);\n  return <Article post={post} />;\n}\n\n// Control behavior for params not in generateStaticParams:\nexport const dynamicParams = true;  // generate on-demand (default)\nexport const dynamicParams = false; // return 404 for unknown params\n\n// For nested dynamic routes — app/[category]/[slug]/page.tsx:\nexport async function generateStaticParams() {\n  const posts = await fetchAllPosts();\n  return posts.map(post => ({\n    category: post.category,\n    slug: post.slug,\n  }));\n}",
+    "why": "generateStaticParams replaces getStaticPaths from Pages Router. It runs at build time to generate the list of dynamic param combinations to pre-render as static HTML. Pre-rendered pages are served from CDN with zero server computation per request.",
+    "gotchas": [
+      "generateStaticParams has access to the build-time environment — fetch calls are cached and deduplicated",
+      "Setting dynamicParams = false causes unknown slugs to 404 at request time (no on-demand generation)",
+      "For parent layouts with dynamic segments, generateStaticParams can narrow the list for child pages",
+      "In development (next dev), generateStaticParams is not called — pages are always server-rendered"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["generateStaticParams", "getStaticPaths", "static generation", "dynamic routes", "dynamicParams", "build time"],
+    "severity": "moderate",
+    "context": "When pre-generating dynamic route pages at build time for performance in Next.js App Router",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "export async function generateStaticParams() {\n  const products = await db.product.findMany({ select: { slug: true } });\n  return products.map(p => ({ slug: p.slug }));\n}\nexport const dynamicParams = false;",
+        "description": "generateStaticParams with strict mode"
+      }
+    ],
+    "version_info": "Next.js 13+ App Router (replaces getStaticPaths)"
+  },
+  {
+    "title": "next.config.js: key options and common pitfalls",
+    "category": "pattern",
+    "tags": ["nextjs", "next.config.js", "configuration", "webpack", "environment"],
+    "problem": "next.config.js has many options with non-obvious interactions. Enabling certain features breaks others, or changes are not reflected because the config format changed between versions.",
+    "solution": "Key next.config.js options with correct syntax:\n\n// next.config.ts (TypeScript config supported since Next.js 15)\nimport type { NextConfig } from 'next';\n\nconst nextConfig: NextConfig = {\n  // Expose build-time env vars\n  env: { BUILD_TIME: new Date().toISOString() },\n\n  // Strict mode for React\n  reactStrictMode: true,\n\n  // Custom webpack config\n  webpack(config, { isServer }) {\n    if (!isServer) {\n      config.resolve.fallback = { fs: false, net: false };\n    }\n    return config; // MUST return config\n  },\n\n  // Image optimization\n  images: {\n    remotePatterns: [{ protocol: 'https', hostname: '**.cloudinary.com' }],\n    formats: ['image/avif', 'image/webp'],\n  },\n\n  // Custom headers\n  async headers() {\n    return [{\n      source: '/(.*)',\n      headers: [{ key: 'X-Frame-Options', value: 'DENY' }],\n    }];\n  },\n\n  // Transpile packages in monorepo\n  transpilePackages: ['@myorg/ui'],\n};\n\nexport default nextConfig;",
+    "why": "next.config.js is the central configuration for the Next.js build pipeline. Changes require a server restart. The webpack config must always return the modified config. Wrong image remotePatterns cause runtime errors on remote images.",
+    "gotchas": [
+      "Forgetting return config in the webpack function silently breaks the build",
+      "next.config.ts (TypeScript) requires Next.js 15+ — use next.config.js for earlier versions",
+      "Changes to next.config.js require restarting the dev server (next dev)",
+      "The images.domains option is deprecated — use images.remotePatterns instead"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [
+      "Error: Invalid next.config.js options detected",
+      "Error: Image hostname is not configured under images in your next.config.js"
+    ],
+    "keywords": ["next.config.js", "webpack config", "remotePatterns", "transpilePackages", "reactStrictMode", "configuration"],
+    "severity": "moderate",
+    "context": "When configuring Next.js project settings, custom webpack, or image domains",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// next.config.ts\nimport type { NextConfig } from 'next';\nconst config: NextConfig = {\n  reactStrictMode: true,\n  images: { remotePatterns: [{ protocol: 'https', hostname: 'cdn.example.com' }] },\n};\nexport default config;",
+        "description": "Minimal typed next.config.ts"
+      }
+    ],
+    "version_info": "next.config.ts supported from Next.js 15"
+  },
+  {
+    "title": "Custom 404 and 500 pages in App Router vs Pages Router",
+    "category": "pattern",
+    "tags": ["nextjs", "custom-404", "custom-500", "error-pages", "not-found"],
+    "problem": "Pages Router custom error pages (pages/404.tsx, pages/500.tsx) don't work in App Router. Developers add them and wonder why the default Next.js error page still shows.",
+    "solution": "App Router uses different file conventions for error pages:\n\n// App Router 404: app/not-found.tsx\nexport default function NotFound() {\n  return (\n    <html>\n      <body>\n        <h1>404 - Page Not Found</h1>\n        <a href='/'>Return Home</a>\n      </body>\n    </html>\n  );\n}\n\n// App Router global error: app/global-error.tsx\n// MUST include <html> and <body> — it replaces the root layout\n'use client';\nexport default function GlobalError({\n  error,\n  reset,\n}: {\n  error: Error & { digest?: string };\n  reset: () => void;\n}) {\n  return (\n    <html>\n      <body>\n        <h2>Something went wrong!</h2>\n        <button onClick={reset}>Try again</button>\n      </body>\n    </html>\n  );\n}\n\n// Pages Router (still valid if using /pages):\n// pages/404.tsx — custom 404\n// pages/500.tsx — custom 500\n// pages/_error.tsx — handles all errors",
+    "why": "App Router and Pages Router have completely separate conventions for error pages. App Router uses not-found.tsx and global-error.tsx with React's error boundary system. These must be in the app/ directory, not pages/.",
+    "gotchas": [
+      "global-error.tsx must be a Client Component and must render <html> and <body> since it replaces the root layout",
+      "not-found.tsx at the app root is used for all unmatched routes — no need for pages/404.tsx in App Router",
+      "Segment-level error.tsx does NOT catch root layout errors — only global-error.tsx does",
+      "In Pages Router, _error.tsx receives statusCode prop; in App Router, error.tsx receives error and reset"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["custom 404", "custom 500", "not-found.tsx", "global-error.tsx", "error pages", "_error.tsx"],
+    "severity": "moderate",
+    "context": "When creating custom error pages in Next.js, especially when migrating from Pages to App Router",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// app/global-error.tsx\n'use client';\nexport default function GlobalError({ reset }: { reset: () => void }) {\n  return (\n    <html><body>\n      <h1>Critical Error</h1>\n      <button onClick={reset}>Reload</button>\n    </body></html>\n  );\n}",
+        "description": "Global error page with html/body (App Router)"
+      }
+    ],
+    "version_info": "Next.js 13+ App Router"
+  },
+  {
+    "title": "API Route migration from Pages Router to App Router Route Handlers",
+    "category": "pattern",
+    "tags": ["nextjs", "api-routes", "migration", "route-handlers", "pages-to-app"],
+    "problem": "Migrating pages/api/*.ts to app/api/ requires rewriting request/response handling from Node.js http style to Web Fetch API. Patterns like req.body, req.query, res.json(), and res.status() don't exist in Route Handlers.",
+    "solution": "Translate Pages Router API patterns to Route Handler equivalents:\n\n// PAGES ROUTER: pages/api/users/[id].ts\nexport default async function handler(req, res) {\n  const { id } = req.query;\n  if (req.method === 'GET') {\n    const user = await db.user.findUnique({ where: { id: String(id) } });\n    if (!user) return res.status(404).json({ error: 'Not found' });\n    return res.status(200).json(user);\n  }\n  if (req.method === 'PUT') {\n    const body = req.body; // pre-parsed by Next.js\n    const user = await db.user.update({ where: { id: String(id) }, data: body });\n    return res.status(200).json(user);\n  }\n  res.setHeader('Allow', ['GET', 'PUT']);\n  res.status(405).end();\n}\n\n// APP ROUTER: app/api/users/[id]/route.ts\nimport { NextRequest, NextResponse } from 'next/server';\n\nexport async function GET(\n  _req: NextRequest,\n  { params }: { params: Promise<{ id: string }> }\n) {\n  const { id } = await params;\n  const user = await db.user.findUnique({ where: { id } });\n  if (!user) return NextResponse.json({ error: 'Not found' }, { status: 404 });\n  return NextResponse.json(user);\n}\n\nexport async function PUT(\n  req: NextRequest,\n  { params }: { params: Promise<{ id: string }> }\n) {\n  const { id } = await params;\n  const body = await req.json(); // must manually parse\n  const user = await db.user.update({ where: { id }, data: body });\n  return NextResponse.json(user);\n}",
+    "why": "Route Handlers use the Web Fetch API (Request/Response) instead of Node.js http types. Method routing is done with named exports (GET, POST, PUT, DELETE) instead of req.method switching. params is now a Promise in Next.js 15.",
+    "gotchas": [
+      "req.body is not auto-parsed — use await req.json() for JSON or req.formData() for multipart",
+      "req.query becomes new URL(req.url).searchParams in Route Handlers",
+      "Method not allowed is automatic — undefined exports return 405 without any code",
+      "CORS headers can be added via response headers or via next.config.js headers()"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["API route migration", "route handlers", "req.body", "req.query", "res.json", "pages to app router"],
+    "severity": "moderate",
+    "context": "When migrating Next.js Pages Router API routes to App Router Route Handlers",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// Pages: const { id } = req.query;\n// App Router equivalent:\nconst { searchParams } = new URL(req.url);\nconst id = searchParams.get('id');\n\n// Pages: const body = req.body;\n// App Router equivalent:\nconst body = await req.json();",
+        "description": "Pages Router to Route Handler API equivalents"
+      }
+    ],
+    "version_info": "Next.js 13+ for Route Handlers"
+  },
+  {
+    "title": "Turbopack: enabling and known limitations in Next.js 15",
+    "category": "gotcha",
+    "tags": ["nextjs", "turbopack", "bundler", "build", "performance"],
+    "problem": "Turbopack speeds up local development but some webpack plugins, loaders, and configurations are not yet supported. Enabling it breaks certain setups without clear error messages.",
+    "solution": "Enable Turbopack with the --turbopack flag and configure supported transforms:\n\n// package.json\n{\n  \"scripts\": {\n    \"dev\": \"next dev --turbopack\",\n    \"build\": \"next build\"\n  }\n}\n\n// Turbopack compatibility:\n// Supported: sass/scss, CSS Modules, Tailwind CSS (PostCSS)\n// Supported: TypeScript, JSX, SVG with config\n// NOT supported: arbitrary webpack plugins\n// NOT supported: custom Babel plugins (use SWC transforms)\n// NOT supported: webpack-bundle-analyzer\n\n// SVGR with Turbopack — next.config.ts\nconst config: NextConfig = {\n  experimental: {\n    turbo: {\n      rules: {\n        '*.svg': {\n          loaders: ['@svgr/webpack'],\n          as: '*.js',\n        },\n      },\n    },\n  },\n};\n\n// To analyze bundle with Turbopack off:\n// Use next build (webpack) + @next/bundle-analyzer",
+    "why": "Turbopack is a Rust-based bundler that provides much faster local dev builds than webpack by only bundling what's changed. However, it is not webpack-compatible — custom webpack loaders and plugins require Turbopack-specific equivalents. Production builds still use webpack as of Next.js 15.",
+    "gotchas": [
+      "Turbopack is only for next dev in Next.js 15 — next build still uses webpack",
+      "Custom Babel configurations are ignored by Turbopack — SWC transforms are used instead",
+      "webpack-bundle-analyzer requires switching back to webpack for analysis",
+      "next.config.js webpack() function is ignored when Turbopack is active"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [
+      "Error: webpack 'loaders' configuration is not supported with Turbopack."
+    ],
+    "keywords": ["turbopack", "bundler", "fast builds", "webpack alternative", "SWC", "development performance"],
+    "severity": "moderate",
+    "context": "When enabling Turbopack for faster local development in Next.js 15+",
+    "code_snippets": [
+      {
+        "lang": "json",
+        "code": "{\n  \"scripts\": {\n    \"dev\": \"next dev --turbopack\",\n    \"build\": \"next build\"\n  }\n}",
+        "description": "Enable Turbopack for dev only"
+      }
+    ],
+    "version_info": "Turbopack stable for next dev in Next.js 15; production build still uses webpack"
+  },
+  {
+    "title": "next/headers: accessing cookies and headers in Server Components",
+    "category": "pattern",
+    "tags": ["nextjs", "next-headers", "cookies", "headers", "server-components"],
+    "problem": "Server Components need to read request cookies for session management or authentication, but there's no req object — it's a Server Component, not a handler. Attempting to access document.cookie crashes on the server.",
+    "solution": "Use next/headers to access cookies and headers in Server Components and Route Handlers:\n\nimport { cookies, headers } from 'next/headers';\n\n// In a Server Component:\nexport default async function ProtectedPage() {\n  const cookieStore = await cookies(); // Next.js 15: must await\n  const token = cookieStore.get('auth-token')?.value;\n  if (!token) redirect('/login');\n\n  const headersList = await headers();\n  const userAgent = headersList.get('user-agent');\n  const ip = headersList.get('x-forwarded-for');\n\n  return <Dashboard />;\n}\n\n// Setting cookies — only in Route Handlers or Server Actions\n'use server';\nexport async function login(formData: FormData) {\n  const cookieStore = await cookies();\n  cookieStore.set('auth-token', token, {\n    httpOnly: true,\n    secure: process.env.NODE_ENV === 'production',\n    sameSite: 'lax',\n    maxAge: 60 * 60 * 24 * 7,\n  });\n  redirect('/dashboard');\n}",
+    "why": "next/headers provides access to the incoming request's cookies and headers from anywhere in the Server Component tree, without passing them down as props. This is possible because Next.js uses AsyncLocalStorage to make request context available throughout the render.",
+    "gotchas": [
+      "In Next.js 15, cookies() and headers() return Promises — must await them",
+      "Calling cookies() or headers() makes the route dynamically rendered (opt-out of static caching)",
+      "You can read cookies in Server Components but can only set/delete cookies in Server Actions or Route Handlers",
+      "cookies() is not available in Client Components — use document.cookie or a cookie library on the client"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [
+      "Error: Route used `cookies()`. It should be awaited before using its value.",
+      "Error: Cookies can only be modified in a Server Action or Route Handler."
+    ],
+    "keywords": ["next/headers", "cookies", "headers", "server components", "request context", "AsyncLocalStorage"],
+    "severity": "moderate",
+    "context": "When accessing request cookies or headers from Server Components in Next.js App Router",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "import { cookies } from 'next/headers';\n\nexport default async function Page() {\n  const cookieStore = await cookies();\n  const session = cookieStore.get('session')?.value;\n  if (!session) redirect('/login');\n}",
+        "description": "Reading auth cookie in Server Component (Next.js 15)"
+      }
+    ],
+    "version_info": "next/headers exists since Next.js 13; became async (Promise-based) in Next.js 15"
+  },
+  {
+    "title": "Avoiding waterfall fetches: parallel data fetching with Promise.all in Server Components",
+    "category": "pattern",
+    "tags": ["nextjs", "performance", "data-fetching", "Promise.all", "waterfall"],
+    "problem": "Using sequential await in a Server Component creates fetch waterfalls — each fetch waits for the previous one to finish. A page with three 500ms fetches takes 1500ms instead of 500ms.",
+    "solution": "Initiate all independent fetches in parallel using Promise.all:\n\n// BAD: sequential — takes 1500ms total\nexport default async function Page() {\n  const user = await fetchUser();         // 500ms\n  const posts = await fetchPosts();       // 500ms after user\n  const comments = await fetchComments(); // 500ms after posts\n  return <Layout user={user} posts={posts} comments={comments} />;\n}\n\n// GOOD: parallel — takes 500ms total\nexport default async function Page() {\n  const [user, posts, comments] = await Promise.all([\n    fetchUser(),\n    fetchPosts(),\n    fetchComments(),\n  ]);\n  return <Layout user={user} posts={posts} comments={comments} />;\n}\n\n// When fetches depend on each other, use Suspense at component level:\nexport default function Page() {\n  return (\n    <>\n      <Suspense fallback={<UserSkeleton />}>\n        <UserSection />\n      </Suspense>\n      <Suspense fallback={<PostsSkeleton />}>\n        <PostsSection />\n      </Suspense>\n    </>\n  );\n}",
+    "why": "JavaScript await is sequential by nature — each await pauses execution. Promise.all starts all Promises simultaneously and waits for all to settle. For independent data fetches, parallel fetching is almost always faster and has no correctness downside.",
+    "gotchas": [
+      "Promise.all fails fast — if any promise rejects, the entire call rejects. Use Promise.allSettled for independent error handling",
+      "Requests to the same URL+options within a single request are deduplicated by Next.js memoization — safe to call the same fetch in multiple components",
+      "Dependent fetches (user -> then user.teamId -> then team) must remain sequential",
+      "Suspense boundaries at the component level achieve parallelism without blocking the parent"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["Promise.all", "parallel fetch", "waterfall", "data fetching", "performance", "sequential await"],
+    "severity": "moderate",
+    "context": "When a Server Component needs to fetch multiple independent data sources",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// Start all fetches in parallel\nconst [user, posts, stats] = await Promise.all([\n  fetchUser(id),\n  fetchUserPosts(id),\n  fetchUserStats(id),\n]);\n// Total time = longest fetch, not sum of all",
+        "description": "Parallel data fetching with Promise.all"
+      }
+    ],
+    "version_info": "Next.js 13+ App Router"
+  },
+  {
+    "title": "useRouter, usePathname, useSearchParams: client-side navigation hooks",
+    "category": "pattern",
+    "tags": ["nextjs", "useRouter", "usePathname", "useSearchParams", "client-navigation"],
+    "problem": "Next.js App Router changed the useRouter API — it no longer exposes pathname or query. Code that reads router.pathname or router.query from Pages Router breaks silently in App Router.",
+    "solution": "Use the correct hooks for each navigation concern in App Router:\n\n'use client';\nimport {\n  useRouter,\n  usePathname,\n  useSearchParams,\n  useParams,\n} from 'next/navigation';\n\nexport function NavExample() {\n  const router = useRouter();             // only for imperative navigation\n  const pathname = usePathname();         // '/blog/hello' — current path\n  const searchParams = useSearchParams(); // URLSearchParams object\n  const params = useParams();             // { slug: 'hello' } — dynamic params\n\n  const query = searchParams.get('q');\n  const page = searchParams.get('page') ?? '1';\n\n  function navigate() {\n    router.push('/dashboard');   // navigate programmatically\n    router.replace('/profile');  // no history entry\n    router.refresh();            // re-fetch server data\n    router.back();               // go back\n  }\n\n  // Update search params without full navigation:\n  function updateSearch(value: string) {\n    const updated = new URLSearchParams(searchParams.toString());\n    updated.set('q', value);\n    router.push(`${pathname}?${updated.toString()}`);\n  }\n\n  return <div>{pathname}</div>;\n}",
+    "why": "App Router split the monolithic useRouter from Pages Router into focused hooks. usePathname and useSearchParams are read-only. useRouter is write-only (navigation). This separation makes it clear what triggers re-renders (searchParams changes) vs what doesn't (router navigation).",
+    "gotchas": [
+      "useSearchParams must be wrapped in a Suspense boundary — it opts into dynamic rendering",
+      "router.pathname does not exist in App Router — use usePathname() instead",
+      "router.query does not exist in App Router — use useSearchParams() and useParams()",
+      "useRouter from 'next/navigation' is different from 'next/router' — wrong import causes runtime errors"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [
+      "Error: useSearchParams() should be wrapped in a suspense boundary at page",
+      "TypeError: Cannot read properties of undefined (reading 'pathname')"
+    ],
+    "keywords": ["useRouter", "usePathname", "useSearchParams", "useParams", "client navigation", "next/navigation"],
+    "severity": "moderate",
+    "context": "When handling client-side navigation and reading URL state in Next.js App Router",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "'use client';\nimport { usePathname, useSearchParams } from 'next/navigation';\n\nexport function Breadcrumbs() {\n  const pathname = usePathname();\n  const searchParams = useSearchParams();\n  const tab = searchParams.get('tab');\n  return <div>{pathname} - {tab}</div>;\n}",
+        "description": "Reading path and query params in App Router"
+      }
+    ],
+    "version_info": "next/navigation hooks available from Next.js 13+ App Router"
+  },
+  {
+    "title": "Environment variables in Next.js: server vs client exposure rules",
+    "category": "gotcha",
+    "tags": ["nextjs", "environment-variables", "NEXT_PUBLIC_", "security", "configuration"],
+    "problem": "Environment variables set in .env.local are undefined in the browser, or sensitive server variables are accidentally exposed to clients by prefixing them with NEXT_PUBLIC_.",
+    "solution": "Follow Next.js env var exposure rules:\n\n// .env.local\n// SERVER ONLY (never in client bundle):\nDATABASE_URL=postgresql://...\nSTRIPE_SECRET_KEY=sk_live_...\n\n// CLIENT SAFE (intentionally in client bundle):\nNEXT_PUBLIC_STRIPE_KEY=pk_live_...\nNEXT_PUBLIC_API_URL=https://api.example.com\n\n// Server Component — can read any env var:\nexport default async function Page() {\n  const db = new PrismaClient({\n    datasourceUrl: process.env.DATABASE_URL, // server only\n  });\n}\n\n// Client Component — only NEXT_PUBLIC_ vars are available:\n'use client';\nexport function PaymentButton() {\n  const key = process.env.NEXT_PUBLIC_STRIPE_KEY; // safe\n  const secret = process.env.STRIPE_SECRET_KEY;   // undefined in browser!\n}\n\n// .env file precedence (highest to lowest):\n// .env.local > .env.development.local > .env.development > .env",
+    "why": "Next.js inlines NEXT_PUBLIC_ variables into the JavaScript bundle at build time using static string replacement. Server-only variables remain in the Node.js process and are never sent to the browser. This is why NEXT_PUBLIC_ changes require a rebuild to take effect.",
+    "gotchas": [
+      "NEXT_PUBLIC_ variables are baked into the build — changing them in production requires a rebuild",
+      "process.env.NEXT_PUBLIC_X evaluates to a literal string at build time — dynamic property access won't work for public vars",
+      "Vercel and other platforms automatically set env vars from their dashboard — no .env.local needed in production",
+      ".env.local is gitignored by default — use .env.example to document required vars"
+    ],
+    "language": "typescript",
+    "framework": "nextjs",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["NEXT_PUBLIC_", "environment variables", "server env", "client env", "build-time", ".env.local"],
+    "severity": "major",
+    "context": "When configuring environment variables for a Next.js application across server and client",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// Rule:\n// process.env.DATABASE_URL      → server only (Server Components, Route Handlers)\n// process.env.NEXT_PUBLIC_URL   → available everywhere, baked in at build time",
+        "description": "Next.js environment variable exposure rules"
+      }
+    ],
+    "version_info": "Next.js 9.4+ for .env.local support"
+  }
+]

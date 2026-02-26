@@ -1,0 +1,915 @@
+[
+  {
+    "title": "Redis data structure selection: choosing the right type for your use case",
+    "category": "pattern",
+    "tags": ["redis", "data-structures", "performance", "architecture"],
+    "problem": "Developers default to Redis strings for everything, missing out on O(1) operations and atomic commands that specialized types provide. Storing JSON blobs in strings forces client-side parsing and full rewrites for partial updates.",
+    "solution": "Match data structures to access patterns: use Hashes for objects with field-level reads/writes, Sets for membership checks and unique collections, Sorted Sets for leaderboards and range queries, Lists for queues and recent-N logs, Streams for append-only event logs with consumer groups.",
+    "why": "Each Redis type has native atomic commands that eliminate race conditions and reduce round trips. A Hash lets you HGET a single field without deserializing the whole object. A Sorted Set ZADD + ZRANGE replaces expensive sort queries.",
+    "gotchas": [
+      "Hashes with more than 128 fields or values longer than 64 bytes switch from ziplist to hashtable encoding, increasing memory use",
+      "Lists are O(n) for index access — use them only as queues (LPUSH/RPOP) not random-access arrays",
+      "Sets do not preserve insertion order; use Sorted Sets with a score if order matters"
+    ],
+    "language": "javascript",
+    "framework": "redis",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["redis", "hash", "sorted set", "list", "set", "string", "data structure", "encoding", "ziplist"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Using Hash for user profile instead of JSON string",
+        "code": "// Bad: full serialize/deserialize on every update\nawait redis.set('user:42', JSON.stringify(user));\nconst user = JSON.parse(await redis.get('user:42'));\n\n// Good: field-level reads and atomic increments\nawait redis.hset('user:42', { name: 'Alice', score: 0 });\nawait redis.hincrby('user:42', 'score', 10);  // atomic, no read-modify-write\nconst name = await redis.hget('user:42', 'name');"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Redis pub/sub vs Streams: choosing the right messaging primitive",
+    "category": "pattern",
+    "tags": ["redis", "pubsub", "streams", "messaging", "reliability"],
+    "problem": "Redis PUBLISH/SUBSCRIBE drops messages if no subscriber is connected at publish time. Using pub/sub for work queues or guaranteed delivery causes silent message loss under deployment restarts or consumer lag.",
+    "solution": "Use pub/sub only for ephemeral real-time notifications where loss is acceptable (e.g. live cursor positions). Use Redis Streams (XADD/XREADGROUP) for durable, at-least-once delivery with consumer groups and acknowledgements.",
+    "why": "Pub/sub is fire-and-forget at the Redis level — the server keeps no history. Streams persist entries and track per-consumer delivery state with XACK, enabling retry on crash without a separate dead-letter queue.",
+    "gotchas": [
+      "SUBSCRIBE blocks the connection; you need a dedicated Redis client for subscriptions",
+      "Pattern subscriptions (PSUBSCRIBE) can match millions of channels and cause CPU spikes",
+      "Streams grow unboundedly unless trimmed with XADD MAXLEN or XTRIM"
+    ],
+    "language": "javascript",
+    "framework": "redis",
+    "environment": [],
+    "error_messages": [
+      "ERR only (P)SUBSCRIBE / (P)UNSUBSCRIBE / PING / QUIT allowed in this context"
+    ],
+    "keywords": ["redis", "pubsub", "streams", "XADD", "XREADGROUP", "XACK", "consumer group", "message loss", "durability"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Redis Streams producer and consumer with ACK",
+        "code": "// Producer\nawait redis.xadd('jobs', '*', 'type', 'email', 'to', 'user@example.com');\n\n// Consumer group setup (once)\nawait redis.xgroup('CREATE', 'jobs', 'workers', '$', 'MKSTREAM');\n\n// Consumer reads and acknowledges\nconst entries = await redis.xreadgroup(\n  'GROUP', 'workers', 'consumer-1',\n  'COUNT', 10, 'BLOCK', 2000,\n  'STREAMS', 'jobs', '>'\n);\nfor (const [stream, messages] of entries) {\n  for (const [id, fields] of messages) {\n    await processJob(fields);\n    await redis.xack('jobs', 'workers', id);\n  }\n}"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Redis Lua scripting for atomic multi-key operations",
+    "category": "pattern",
+    "tags": ["redis", "lua", "atomic", "transactions", "scripting"],
+    "problem": "Sequences of Redis commands that must be atomic (check-then-act, multi-key updates) are vulnerable to race conditions when written as separate client calls, even inside a MULTI/EXEC block that does not support conditionals.",
+    "solution": "Use the Redis EVAL command or EVALSHA with Lua scripts to execute conditional logic atomically on the server. Redis runs Lua scripts single-threaded with no interleaving, providing true atomicity across multiple keys.",
+    "why": "MULTI/EXEC is optimistic — it queues commands blindly without branching. Lua scripts can read values and branch conditionally within a single atomic execution on the Redis server side, replacing patterns like GET-then-SET that are inherently racy.",
+    "gotchas": [
+      "All keys accessed in a Lua script must be declared in the KEYS array for cluster compatibility",
+      "Lua scripts block the entire Redis server while running — keep them short (less than 1ms)",
+      "Use EVALSHA with pre-loaded scripts in production to avoid resending script text on every call",
+      "redis.call() inside Lua raises an error on Redis command failure; redis.pcall() catches it as a return value"
+    ],
+    "language": "javascript",
+    "framework": "redis",
+    "environment": [],
+    "error_messages": [
+      "CROSSSLOT Keys in request don't hash to the same slot"
+    ],
+    "keywords": ["redis", "lua", "EVAL", "EVALSHA", "atomic", "conditional", "race condition", "cluster", "KEYS", "server-side script"],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Atomic increment-if-below-limit using a Redis Lua script via the ioredis client",
+        "code": "// luaScript is sent to Redis server and executed atomically there\n// redis.sendCommand invokes the EVAL command on the Redis server\nconst luaScript = `\n  local current = tonumber(redis.call('GET', KEYS[1])) or 0\n  if current >= tonumber(ARGV[1]) then\n    return 0\n  end\n  redis.call('INCR', KEYS[1])\n  redis.call('EXPIRE', KEYS[1], ARGV[2])\n  return 1\n`;\n\n// Sends the Lua script to Redis with 1 key, limit=100, ttl=3600\n// Returns 1 if incremented, 0 if rate limit reached\nconst allowed = await redis.sendCommand([\n  'EVAL', luaScript, '1', 'ratelimit:user:42', '100', '3600'\n]);"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Redis key expiration: TTL pitfalls and eviction policies",
+    "category": "gotcha",
+    "tags": ["redis", "expiration", "TTL", "eviction", "memory"],
+    "problem": "Setting TTLs on Redis keys does not guarantee memory will be reclaimed immediately. Under memory pressure, Redis may evict keys before their TTL or keep expired keys in memory until a read or periodic scan triggers deletion.",
+    "solution": "Configure the maxmemory-policy in redis.conf to match your use case (allkeys-lru for cache, volatile-lru for mixed cache+persistent data). Monitor expired_keys and evicted_keys metrics. Use OBJECT ENCODING and OBJECT IDLETIME to understand actual memory pressure.",
+    "why": "Redis uses lazy expiration (delete on access) plus periodic background scans. Keys that are never read may linger beyond their TTL. The eviction policy kicks in only when maxmemory is reached and determines which keys to sacrifice.",
+    "gotchas": [
+      "PERSIST removes a TTL entirely — easy to accidentally make a cached key permanent",
+      "EXPIRE resets the TTL from now, not from the original set time",
+      "Replicas do not independently expire keys; they wait for the primary to propagate DEL commands",
+      "keyspace notifications for expired events (KEA config) add CPU overhead"
+    ],
+    "language": "javascript",
+    "framework": "redis",
+    "environment": [],
+    "error_messages": [
+      "OOM command not allowed when used memory > 'maxmemory'"
+    ],
+    "keywords": ["redis", "TTL", "EXPIRE", "eviction", "maxmemory", "allkeys-lru", "volatile-lru", "lazy expiration", "memory pressure"],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Safe set-with-TTL and TTL check pattern",
+        "code": "// Atomic set-with-expiry (avoids separate SET + EXPIRE race)\nawait redis.set('session:abc', JSON.stringify(data), 'EX', 3600);\n\n// Check remaining TTL before trusting a value\nconst ttl = await redis.ttl('session:abc');\nif (ttl === -1) console.warn('Key has no expiry — possible leak');\nif (ttl === -2) console.warn('Key does not exist');"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Redis Sorted Sets for real-time leaderboards and range queries",
+    "category": "pattern",
+    "tags": ["redis", "sorted-set", "leaderboard", "ranking", "score"],
+    "problem": "Implementing leaderboards with SQL requires expensive ORDER BY queries on large tables. Keeping rankings consistent under high write volume is difficult without table locks or complex caching.",
+    "solution": "Use Redis Sorted Sets: ZADD to update scores, ZRANK/ZREVRANK for position, ZRANGE/ZREVRANGE with WITHSCORES for paginated leaderboards. Scores are doubles so they support sub-millisecond precision timestamps as tiebreakers.",
+    "why": "Sorted Sets maintain a skip list + hash table structure giving O(log N) for updates and O(log N + M) for range queries. Atomic ZADD with NX/XX/GT/LT flags prevent stale updates without separate read locks.",
+    "gotchas": [
+      "Scores are IEEE 754 doubles — integers above 2^53 lose precision",
+      "ZRANGEBYSCORE is deprecated in Redis 6.2; use the new ZRANGE with BYSCORE option instead",
+      "Ties in score are broken by lexicographic member order, which may not match insertion order"
+    ],
+    "language": "javascript",
+    "framework": "redis",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["redis", "sorted set", "ZADD", "ZRANK", "ZRANGE", "leaderboard", "ranking", "score", "skip list"],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Leaderboard update and top-10 retrieval",
+        "code": "// Add or update score (GT means only update if new score is greater)\nawait redis.zadd('leaderboard:weekly', 'GT', score, userId);\n\n// Top 10 with scores, highest first\nconst top10 = await redis.zrange('leaderboard:weekly', 0, 9, 'REV', 'WITHSCORES');\n\n// User's rank (0-indexed, add 1 for display)\nconst rank = await redis.zrevrank('leaderboard:weekly', userId);"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Distributed locking with Redlock: correct implementation and failure modes",
+    "category": "gotcha",
+    "tags": ["redis", "redlock", "distributed-lock", "concurrency", "fault-tolerance"],
+    "problem": "A single-node Redis lock (SET key value NX PX ttl) fails when the Redis node restarts or when network partitions cause a client to believe it holds a lock it no longer owns. This leads to two clients executing critical sections concurrently.",
+    "solution": "Use the Redlock algorithm across 2N+1 independent Redis nodes. A lock is acquired only when a majority (N+1) of nodes grant it within a validity window. Use the `redlock` npm package which implements the algorithm precisely per the spec.",
+    "why": "Redlock's quorum approach means a single node failure or network split cannot cause dual ownership. The lock's validity time is shortened by the acquisition time, preventing a slow-acquire client from using a nearly-expired lock.",
+    "gotchas": [
+      "Redlock does NOT protect against GC pauses longer than the lock TTL — the client may think it holds the lock while another has acquired it",
+      "Clock drift across nodes must be accounted for in the drift factor (typically 0.01 * TTL + 2ms)",
+      "Never retry lock acquisition in a tight loop — use exponential backoff with jitter",
+      "Redlock is controversial for safety-critical systems; consider etcd or ZooKeeper for strong guarantees"
+    ],
+    "language": "javascript",
+    "framework": "redis",
+    "environment": [],
+    "error_messages": [
+      "LockError: Exceeded 3 attempts to lock the resource"
+    ],
+    "keywords": ["redis", "redlock", "distributed lock", "mutex", "quorum", "NX", "PX", "GC pause", "clock drift"],
+    "severity": "critical",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Redlock usage with proper lock release",
+        "code": "import Redlock from 'redlock';\nconst redlock = new Redlock([redis1, redis2, redis3], {\n  driftFactor: 0.01,\n  retryCount: 3,\n  retryDelay: 200,\n  retryJitter: 100,\n});\n\nasync function criticalSection() {\n  let lock;\n  try {\n    lock = await redlock.acquire(['lock:payment:order-99'], 5000);\n    await doWork();\n  } finally {\n    if (lock) await lock.release();\n  }\n}"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Redis persistence: RDB snapshots vs AOF — choosing and combining",
+    "category": "principle",
+    "tags": ["redis", "persistence", "RDB", "AOF", "durability", "backup"],
+    "problem": "Using RDB-only persistence risks losing minutes of writes on crash. Using AOF-only with fsync=always kills throughput. Disabling persistence entirely on a cache-intended instance then using it for data that matters causes silent data loss.",
+    "solution": "For most production systems: enable both RDB and AOF. Use AOF with appendfsync everysec (1-second durability window) and auto-rewrite thresholds. Take RDB snapshots for fast restarts and backups. Pure cache instances can disable both safely.",
+    "why": "RDB provides compact point-in-time snapshots for fast restarts but loses data since the last snapshot. AOF logs every write and can replay to exact state but is larger and slower to restore. Combined mode gets fast startup (RDB) with recent-write protection (AOF).",
+    "gotchas": [
+      "BGSAVE forks the process — on large datasets this can cause latency spikes due to copy-on-write memory pressure",
+      "AOF rewrite (BGREWRITEAOF) also forks; schedule it during low-traffic periods",
+      "appendfsync always provides strong durability but drops throughput by 10-100x",
+      "After a crash, if both RDB and AOF exist, Redis loads the AOF file (more complete data)"
+    ],
+    "language": "javascript",
+    "framework": "redis",
+    "environment": [],
+    "error_messages": [
+      "MISCONF Redis is configured to save RDB snapshots, but it is currently not able to persist on disk"
+    ],
+    "keywords": ["redis", "RDB", "AOF", "persistence", "durability", "BGSAVE", "appendfsync", "snapshot", "write-ahead log"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "conf",
+        "description": "redis.conf recommended combined persistence settings",
+        "code": "# redis.conf\nsave 900 1       # RDB: snapshot if 1 change in 900s\nsave 300 10\nsave 60 10000\n\nappendonly yes\nappendfsync everysec   # 1-second durability window\nauto-aof-rewrite-percentage 100\nauto-aof-rewrite-min-size 64mb"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "MongoDB aggregation pipeline: stage ordering for performance",
+    "category": "pattern",
+    "tags": ["mongodb", "aggregation", "pipeline", "performance", "indexing"],
+    "problem": "Aggregation pipelines that place $match and $sort stages late in the pipeline scan entire collections before filtering, causing full collection scans even when indexes exist.",
+    "solution": "Always place $match as early as possible to reduce document count before expensive stages. Place $sort before $limit so the engine can use top-K heap optimization. Put $project last to avoid carrying unused fields through intermediate stages.",
+    "why": "MongoDB's query planner can push $match and $sort to the index scan phase only if they appear before transforming stages like $lookup or $unwind. After $unwind the planner loses index coverage context.",
+    "gotchas": [
+      "$match after $unwind cannot use indexes on the original collection",
+      "$sort before $group on a grouped field cannot use an index — move $sort after $group in that case",
+      "allowDiskUse: true is required for pipelines that exceed the 100MB in-memory limit",
+      "Using $expr inside $match prevents index use in MongoDB < 4.0"
+    ],
+    "language": "javascript",
+    "framework": "mongoose",
+    "environment": [],
+    "error_messages": [
+      "MongoServerError: Sort exceeded memory limit of 104857600 bytes"
+    ],
+    "keywords": ["mongodb", "aggregation", "$match", "$sort", "$project", "$unwind", "pipeline", "index", "performance", "allowDiskUse"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Correct pipeline stage order for performance",
+        "code": "// Bad: $match late in pipeline, full scan\ndb.orders.aggregate([\n  { $lookup: { from: 'products', localField: 'productId', foreignField: '_id', as: 'product' } },\n  { $unwind: '$product' },\n  { $match: { status: 'completed', createdAt: { $gte: startDate } } },\n  { $sort: { total: -1 } },\n  { $limit: 20 }\n]);\n\n// Good: $match first, uses index on (status, createdAt)\ndb.orders.aggregate([\n  { $match: { status: 'completed', createdAt: { $gte: startDate } } },\n  { $sort: { total: -1 } },\n  { $limit: 20 },\n  { $lookup: { from: 'products', localField: 'productId', foreignField: '_id', as: 'product' } },\n  { $project: { status: 1, total: 1, 'product.name': 1 } }\n]);"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "MongoDB compound indexes: field order and ESR rule",
+    "category": "principle",
+    "tags": ["mongodb", "indexes", "compound-index", "ESR", "query-planning"],
+    "problem": "Compound indexes created in the wrong field order do not satisfy queries that filter on later fields without the earlier fields, wasting the index entirely and causing collection scans.",
+    "solution": "Follow the ESR rule: Equality fields first, Sort fields second, Range fields last. This order maximizes index prefix matching and allows the query planner to use the index for both filtering and sorting without a blocking sort stage.",
+    "why": "MongoDB index scans use a prefix of the compound key. An index on (a, b, c) satisfies queries on (a), (a, b), and (a, b, c) but not (b, c) alone. ESR ordering keeps the most selective, exact-match fields first to prune the index scan quickly.",
+    "gotchas": [
+      "A sort on fields not in the index or in different order forces an in-memory sort",
+      "Indexes on low-cardinality fields first (e.g. boolean) waste index depth",
+      "Covered queries (returning only indexed fields) require _id: 0 in the projection",
+      "Partial indexes ({partialFilterExpression}) can replace compound indexes for sparse data"
+    ],
+    "language": "javascript",
+    "framework": "mongoose",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["mongodb", "compound index", "ESR rule", "equality sort range", "query planner", "index prefix", "covered query"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "ESR-ordered compound index for a common query pattern",
+        "code": "// Query: find active users in a date range, sorted by name\n// ESR: status (equality), name (sort), createdAt (range)\ndb.users.createIndex({ status: 1, name: 1, createdAt: 1 });\n\n// This query fully uses the index (no blocking sort)\ndb.users.find(\n  { status: 'active', createdAt: { $gte: startDate, $lte: endDate } },\n  { sort: { name: 1 } }\n);"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "MongoDB change streams: resuming after disconnect",
+    "category": "pattern",
+    "tags": ["mongodb", "change-streams", "resume-token", "real-time", "reliability"],
+    "problem": "Change streams that do not persist resume tokens lose events that occurred while the consumer was disconnected. After a restart the stream resumes from the current oplog tail, silently skipping any missed changes.",
+    "solution": "Persist the resume token after processing each event (or batch). On startup, open the change stream with resumeAfter or startAfter pointing to the last persisted token. Handle ChangeStreamHistoryLost errors by falling back to a full resync.",
+    "why": "MongoDB's oplog has a fixed size and rolls over. Resume tokens reference oplog positions. If the consumer is down longer than the oplog retention window, the token becomes invalid and requires application-level reconciliation.",
+    "gotchas": [
+      "The oplog window is typically hours to days depending on write volume and oplog size",
+      "startAfter skips the document at the token position; resumeAfter re-delivers it",
+      "Change streams on sharded clusters require connecting to mongos, not individual shards",
+      "fullDocument: 'updateLookup' fetches the post-update document but adds a round trip and is not atomic with the change event"
+    ],
+    "language": "javascript",
+    "framework": "mongoose",
+    "environment": [],
+    "error_messages": [
+      "MongoServerError: Resume of change stream was not possible, as the resume point may no longer be in the oplog"
+    ],
+    "keywords": ["mongodb", "change stream", "resume token", "oplog", "real-time", "event sourcing", "resumeAfter", "startAfter"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Change stream with resume token persistence",
+        "code": "let resumeToken = await loadResumeToken(); // from DB or file\n\nconst stream = collection.watch([], {\n  resumeAfter: resumeToken,\n  fullDocument: 'updateLookup'\n});\n\nfor await (const change of stream) {\n  await processChange(change);\n  resumeToken = change._id; // the resume token\n  await saveResumeToken(resumeToken);\n}"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "MongoDB multi-document transactions: when to use and overhead",
+    "category": "pattern",
+    "tags": ["mongodb", "transactions", "ACID", "performance", "replica-set"],
+    "problem": "Developers either avoid MongoDB transactions entirely (losing ACID guarantees) or use them everywhere (paying unnecessary latency overhead). Transactions require replica sets and add coordinator overhead even for single-document operations.",
+    "solution": "Use transactions only when you need atomicity across multiple documents or collections. Single-document operations in MongoDB are already atomic. Design schemas to embed related data together to reduce the need for multi-document transactions.",
+    "why": "MongoDB multi-document transactions use a two-phase commit protocol with a 60-second timeout and 16MB transaction size limit. They require a replica set even in development and add ~3ms coordinator latency per operation.",
+    "gotchas": [
+      "Transactions are automatically aborted after 60 seconds (transactionLifetimeLimitSeconds)",
+      "DDL operations (createIndex, createCollection) cannot run inside a transaction",
+      "Read preference inside a transaction must be primary",
+      "Long-running transactions cause oplog bloat and can impact secondary lag"
+    ],
+    "language": "javascript",
+    "framework": "mongoose",
+    "environment": [],
+    "error_messages": [
+      "MongoServerError: Transaction numbers are only allowed on a replica set member or mongos",
+      "MongoServerError: Given transaction number 1 does not match any in-progress transactions"
+    ],
+    "keywords": ["mongodb", "transaction", "ACID", "replica set", "session", "withTransaction", "atomicity", "two-phase commit"],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "MongoDB transaction with Mongoose and automatic retry",
+        "code": "const session = await mongoose.startSession();\ntry {\n  await session.withTransaction(async () => {\n    await Order.create([{ userId, items }], { session });\n    await Inventory.updateMany(\n      { _id: { $in: itemIds } },\n      { $inc: { stock: -1 } },\n      { session }\n    );\n  }, {\n    readPreference: 'primary',\n    readConcern: { level: 'snapshot' },\n    writeConcern: { w: 'majority' }\n  });\n} finally {\n  session.endSession();\n}"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "MongoDB schema validation with JSON Schema",
+    "category": "pattern",
+    "tags": ["mongodb", "schema-validation", "JSON-schema", "data-integrity"],
+    "problem": "MongoDB's schema-less nature allows malformed documents to enter collections silently. Missing required fields, wrong types, or invalid enum values only surface at read time in application code, making bugs hard to trace.",
+    "solution": "Define collection-level JSON Schema validators using db.createCollection with a validator option or db.runCommand({collMod}). Set validationAction to 'error' to reject invalid inserts/updates, or 'warn' to log without blocking.",
+    "why": "Server-side validation runs before documents are written regardless of which client or driver inserts them, providing a last line of defense that application-level validation cannot guarantee.",
+    "gotchas": [
+      "validationAction: 'warn' writes violations to the MongoDB log, not to the application — easy to miss",
+      "Schema validation does not apply to existing documents unless you run a migration",
+      "Using additionalProperties: false blocks adding new fields — risky during rolling deployments",
+      "$jsonSchema inside validator does not support all JSON Schema features (e.g., $ref)"
+    ],
+    "language": "javascript",
+    "framework": "mongoose",
+    "environment": [],
+    "error_messages": [
+      "MongoServerError: Document failed validation"
+    ],
+    "keywords": ["mongodb", "schema validation", "jsonSchema", "validator", "validationAction", "data integrity", "collMod"],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Creating a collection with JSON Schema validation",
+        "code": "db.createCollection('users', {\n  validator: {\n    $jsonSchema: {\n      bsonType: 'object',\n      required: ['email', 'role'],\n      properties: {\n        email: { bsonType: 'string', pattern: '^[^@]+@[^@]+$' },\n        role: { enum: ['admin', 'user', 'guest'] },\n        age: { bsonType: 'int', minimum: 0, maximum: 150 }\n      }\n    }\n  },\n  validationAction: 'error',\n  validationLevel: 'strict'\n});"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "MongoDB TTL indexes for automatic document expiration",
+    "category": "pattern",
+    "tags": ["mongodb", "TTL", "indexes", "expiration", "cleanup"],
+    "problem": "Applications manually delete expired documents (sessions, tokens, temporary data) with scheduled jobs that are brittle, miss edge cases, and add operational burden.",
+    "solution": "Create a TTL index on a Date field. MongoDB's background thread checks every 60 seconds and automatically removes documents where the indexed date plus expireAfterSeconds is in the past.",
+    "why": "TTL indexes are managed by MongoDB's server-side background task, removing the need for application cron jobs. They respect write concern and are replicated to secondaries.",
+    "gotchas": [
+      "TTL index background thread runs every 60 seconds — documents may persist up to 60 seconds after expiry",
+      "TTL indexes cannot be compound indexes",
+      "The indexed field must be a BSON Date type — strings or timestamps will not work",
+      "If the indexed field contains an array of dates, the document expires when the earliest date expires"
+    ],
+    "language": "javascript",
+    "framework": "mongoose",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["mongodb", "TTL index", "expiration", "createdAt", "expireAfterSeconds", "session cleanup", "automatic deletion"],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "TTL index in Mongoose schema and raw command",
+        "code": "// Mongoose schema with TTL\nconst sessionSchema = new Schema({\n  token: String,\n  createdAt: { type: Date, default: Date.now, expires: '24h' } // 86400 seconds\n});\n\n// Raw MongoDB command\ndb.sessions.createIndex({ createdAt: 1 }, { expireAfterSeconds: 86400 });"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Mongoose middleware (hooks): pre/post pitfalls",
+    "category": "gotcha",
+    "tags": ["mongoose", "middleware", "hooks", "pre", "post", "query"],
+    "problem": "Mongoose pre/post hooks do not fire for all operation types. Hooks registered on 'save' do not trigger on findByIdAndUpdate, updateMany, or deleteMany, silently skipping validation, hashing, or audit logging.",
+    "solution": "Register hooks on the query operations you actually use, or replace query-based updates with document save() calls. For consistent behavior, use document middleware (save, validate) and fetch-then-modify patterns instead of query middleware shortcuts.",
+    "why": "Mongoose has separate document middleware (operates on document instances) and query middleware (operates on query objects). findByIdAndUpdate bypasses document middleware entirely and goes directly to the driver.",
+    "gotchas": [
+      "this in query middleware refers to the query, not the document",
+      "Pre 'save' runs before validators; pre 'validate' runs before that",
+      "post middleware receives the result, not the query — use post('save', function(doc)) not function(result)",
+      "Calling next() in pre middleware is optional in async functions but required in callback-style hooks"
+    ],
+    "language": "javascript",
+    "framework": "mongoose",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["mongoose", "middleware", "hooks", "pre", "post", "findByIdAndUpdate", "save", "document middleware", "query middleware"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Hook that fires for both save and query updates",
+        "code": "// Fires on .save() only — NOT on findByIdAndUpdate\nuserSchema.pre('save', async function() {\n  if (this.isModified('password')) {\n    this.password = await bcrypt.hash(this.password, 12);\n  }\n});\n\n// To also cover query updates:\nuserSchema.pre(['findOneAndUpdate', 'updateOne', 'updateMany'], async function() {\n  const update = this.getUpdate();\n  if (update.password) {\n    update.password = await bcrypt.hash(update.password, 12);\n  }\n});"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "SQLite WAL mode: enabling write-ahead logging for concurrency",
+    "category": "pattern",
+    "tags": ["sqlite", "WAL", "concurrency", "performance", "journal-mode"],
+    "problem": "SQLite in default journal mode (DELETE/ROLLBACK) blocks all readers during a write. Applications with concurrent read + write workloads see SQLITE_BUSY errors and high latency because writers take an exclusive lock on the database file.",
+    "solution": "Enable WAL (Write-Ahead Logging) mode with PRAGMA journal_mode=WAL. WAL allows concurrent readers and a single writer simultaneously, eliminating reader/writer contention in most workloads.",
+    "why": "WAL appends changes to a separate WAL file instead of modifying the database in-place. Readers access the original database file while a write is in progress, reading a consistent snapshot. Checkpointing merges the WAL back periodically.",
+    "gotchas": [
+      "WAL mode is per-database, not per-connection — all connections must use compatible settings",
+      "WAL mode creates two additional files: database-wal and database-shm. Do not delete these while the database is open",
+      "WAL does not help with multiple concurrent writers — there is still only one writer at a time",
+      "WAL checkpoint (merging WAL back to main db) can cause latency spikes; use wal_autocheckpoint pragma to tune",
+      "WAL mode cannot be used on networked filesystems (NFS, SMB)"
+    ],
+    "language": "javascript",
+    "framework": "drizzle",
+    "environment": [],
+    "error_messages": [
+      "SqliteError: database is locked",
+      "SQLITE_BUSY: database is locked"
+    ],
+    "keywords": ["sqlite", "WAL", "journal_mode", "concurrency", "SQLITE_BUSY", "write-ahead log", "checkpoint", "readers writers"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Enable WAL mode and set busy timeout on SQLite connection",
+        "code": "import Database from 'better-sqlite3';\nconst db = new Database('app.db');\n\n// Enable WAL mode (persists across connections)\ndb.pragma('journal_mode = WAL');\n\n// Wait up to 5 seconds before throwing SQLITE_BUSY\ndb.pragma('busy_timeout = 5000');\n\n// Tune checkpoint to avoid large WAL files\ndb.pragma('wal_autocheckpoint = 1000'); // checkpoint every 1000 pages"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "SQLite FTS5: full-text search setup and query syntax",
+    "category": "pattern",
+    "tags": ["sqlite", "FTS5", "full-text-search", "search", "virtual-table"],
+    "problem": "Using LIKE '%term%' for text search in SQLite performs a full table scan and cannot use indexes, making it unusable for any non-trivial data size. It also lacks relevance ranking and stemming.",
+    "solution": "Create an FTS5 virtual table (or use content= to point to an existing table). Use MATCH for queries with boolean operators, phrase matching, and prefix search. Use rank or bm25() for relevance-ordered results.",
+    "why": "FTS5 maintains an inverted index over tokenized text, giving O(k) search where k is the number of matching documents rather than O(n) for the full table. bm25() provides relevance scoring out of the box.",
+    "gotchas": [
+      "FTS5 tables must be kept in sync with source tables manually via triggers or application logic",
+      "Using content= mode links to a source table but FTS5 does not auto-update — you must manage inserts/deletes",
+      "FTS5 MATCH queries use a different syntax from SQL LIKE — AND, OR, NOT, and phrase matching with quotes",
+      "Column filters in FTS5 queries use the column: prefix syntax: 'title: search term'"
+    ],
+    "language": "javascript",
+    "framework": "drizzle",
+    "environment": [],
+    "error_messages": [
+      "SqliteError: no such module: fts5"
+    ],
+    "keywords": ["sqlite", "FTS5", "full-text search", "MATCH", "bm25", "virtual table", "inverted index", "tokenizer"],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "description": "FTS5 virtual table setup and search with ranking",
+        "code": "-- Create FTS5 virtual table linked to articles\nCREATE VIRTUAL TABLE articles_fts USING fts5(\n  title, body,\n  content=articles,\n  content_rowid=id\n);\n\n-- Trigger to keep FTS in sync\nCREATE TRIGGER articles_ai AFTER INSERT ON articles BEGIN\n  INSERT INTO articles_fts(rowid, title, body) VALUES (new.id, new.title, new.body);\nEND;\n\n-- Search with relevance ranking\nSELECT a.id, a.title, rank\nFROM articles_fts\nJOIN articles a ON a.id = articles_fts.rowid\nWHERE articles_fts MATCH 'sqlite AND search'\nORDER BY rank;"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "SQLite JSON functions for querying JSON columns",
+    "category": "pattern",
+    "tags": ["sqlite", "JSON", "json_extract", "json_each", "virtual-column"],
+    "problem": "Storing JSON blobs in SQLite TEXT columns makes querying specific fields impossible without pulling all rows into application memory and filtering there, defeating the purpose of the database.",
+    "solution": "Use SQLite's built-in JSON functions: json_extract() for field access, json_each() to iterate arrays as rows, json_set()/json_patch() for updates. In SQLite 3.38+ use the -> and ->> operators as shorthand.",
+    "why": "JSON functions execute inside the SQLite engine, allowing filtered queries, computed columns, and generated column indexes on JSON fields without deserializing in application code.",
+    "gotchas": [
+      "json_extract returns NULL for missing paths, not an error — guard comparisons accordingly",
+      "Generated columns on JSON paths require SQLite 3.31+ and must specify AS STORED or AS VIRTUAL",
+      "The -> operator returns a JSON fragment; ->> returns a SQL scalar. Use ->> for comparisons",
+      "JSON functions do not validate JSON — malformed JSON returns NULL silently"
+    ],
+    "language": "javascript",
+    "framework": "drizzle",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["sqlite", "JSON", "json_extract", "json_each", "generated column", "->", "->>", "virtual column", "JSON functions"],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "description": "JSON extraction, filtering, and generated index column",
+        "code": "-- Query JSON field directly\nSELECT id, metadata->>'$.name' AS name\nFROM products\nWHERE metadata->>'$.category' = 'electronics';\n\n-- Generated column with index on JSON field (SQLite 3.31+)\nALTER TABLE products ADD COLUMN category TEXT\n  GENERATED ALWAYS AS (json_extract(metadata, '$.category')) STORED;\nCREATE INDEX idx_products_category ON products(category);\n\n-- Iterate JSON array\nSELECT p.id, tag.value\nFROM products p, json_each(p.metadata, '$.tags') AS tag;"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "SQLite concurrent write limitations and busy timeout",
+    "category": "gotcha",
+    "tags": ["sqlite", "concurrency", "SQLITE_BUSY", "busy_timeout", "WAL"],
+    "problem": "SQLite allows only one writer at a time. Node.js applications with multiple async workers or serverless functions hitting the same SQLite file experience SQLITE_BUSY errors and lost writes under even moderate concurrency.",
+    "solution": "Set busy_timeout to give writers time to wait rather than immediately failing. Serialize writes through a single connection or worker queue. Use WAL mode to reduce reader/writer contention. For high concurrency, migrate to PostgreSQL.",
+    "why": "SQLite's locking model is file-level. Without busy_timeout, a second writer immediately receives SQLITE_BUSY. With a timeout, it polls until the lock is released or the timeout expires, handling brief contention gracefully.",
+    "gotchas": [
+      "busy_timeout is a per-connection pragma — set it on every connection that may write",
+      "WAL mode reduces contention but does not eliminate the single-writer constraint",
+      "Serverless/edge environments opening many SQLite connections simultaneously will always contend",
+      "Using SQLite with Prisma in Next.js requires careful connection pooling to avoid file locking"
+    ],
+    "language": "javascript",
+    "framework": "drizzle",
+    "environment": [],
+    "error_messages": [
+      "SqliteError: database is locked",
+      "SQLITE_BUSY: database is locked",
+      "Error: SQLITE_BUSY: database is locked"
+    ],
+    "keywords": ["sqlite", "SQLITE_BUSY", "busy_timeout", "concurrent writes", "file lock", "single writer", "connection pool"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Configuring busy timeout and serializing writes",
+        "code": "import Database from 'better-sqlite3';\n\n// Single shared connection (serializes writes automatically in Node.js)\nconst db = new Database('app.db');\ndb.pragma('journal_mode = WAL');\ndb.pragma('busy_timeout = 5000'); // 5 seconds\n\n// For Drizzle ORM\nimport { drizzle } from 'drizzle-orm/better-sqlite3';\nconst drizzleDb = drizzle(db);"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "SQLite WAL busy timeout: always set it immediately after opening a connection",
+    "category": "debug",
+    "tags": ["sqlite", "WAL", "busy_timeout", "SQLITE_BUSY", "locking"],
+    "problem": "Even with WAL mode enabled, SQLite applications see SQLITE_BUSY errors during write bursts because WAL still serializes writers and the default busy_timeout is 0 (fail immediately without retry).",
+    "solution": "Always set busy_timeout immediately after opening any SQLite connection that may write. Values of 3000-10000ms cover most transient contention. Combine with WAL mode and connection serialization for best results.",
+    "why": "busy_timeout = 0 means SQLite returns SQLITE_BUSY immediately without retrying. Any positive value tells SQLite to sleep-and-retry for up to that many milliseconds before giving up, transparently handling short lock waits.",
+    "gotchas": [
+      "busy_timeout is a per-connection pragma — it must be set on every new connection",
+      "Very high busy_timeout values can make slow operations appear to hang",
+      "Transactions that hold write locks longer than busy_timeout will still cause failures in concurrent writers"
+    ],
+    "language": "javascript",
+    "framework": "drizzle",
+    "environment": [],
+    "error_messages": [
+      "SqliteError: database is locked",
+      "SQLITE_BUSY"
+    ],
+    "keywords": ["sqlite", "busy_timeout", "SQLITE_BUSY", "WAL", "write contention", "pragma", "locking"],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Minimal safe SQLite setup for any write-capable connection",
+        "code": "const db = new Database(dbPath);\ndb.pragma('journal_mode = WAL');\ndb.pragma('busy_timeout = 5000');\ndb.pragma('synchronous = NORMAL'); // faster than FULL, safe with WAL"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Prisma schema: defining explicit many-to-many relations",
+    "category": "pattern",
+    "tags": ["prisma", "schema", "relations", "many-to-many", "explicit-join-table"],
+    "problem": "Prisma implicit many-to-many relations (using arrays on both sides without a join model) create a hidden join table that cannot hold extra fields. Adding metadata to the relationship later requires a destructive migration to explicit relations.",
+    "solution": "Define explicit many-to-many relations with a dedicated join model from the start. This gives you control over the join table name, indexes, and allows adding relationship-level fields (e.g. role, createdAt) without a schema redesign.",
+    "why": "Implicit relations create a _ModelAToModelB table with only the two foreign keys. Once you need to add a field (e.g. a user's role in a team), you must convert to an explicit model, which requires data migration and code changes.",
+    "gotchas": [
+      "Implicit many-to-many table names are auto-generated and sorted alphabetically — hard to reference in raw SQL",
+      "You cannot query the join table directly in Prisma with implicit relations",
+      "Explicit join models require create/delete operations on the join model, not direct connect/disconnect"
+    ],
+    "language": "javascript",
+    "framework": "prisma",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["prisma", "schema", "many-to-many", "relation", "join table", "explicit", "implicit", "migration"],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Explicit many-to-many with join model in Prisma schema",
+        "code": "// prisma/schema.prisma\nmodel User {\n  id          Int          @id @default(autoincrement())\n  memberships Membership[]\n}\n\nmodel Team {\n  id          Int          @id @default(autoincrement())\n  memberships Membership[]\n}\n\nmodel Membership {\n  userId    Int\n  teamId    Int\n  role      String   @default(\"member\")\n  joinedAt  DateTime @default(now())\n  user      User     @relation(fields: [userId], references: [id])\n  team      Team     @relation(fields: [teamId], references: [id])\n  @@id([userId, teamId])\n}"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Prisma migrations: migrate dev vs migrate deploy",
+    "category": "pattern",
+    "tags": ["prisma", "migrations", "shadow-database", "production", "deploy"],
+    "problem": "Running prisma migrate dev in production is dangerous — it may reset data and uses a shadow database to detect drift. Teams accidentally run dev commands in production, causing outages.",
+    "solution": "Use prisma migrate deploy in production and CI/CD. Reserve prisma migrate dev for local development only. Set DATABASE_URL and SHADOW_DATABASE_URL separately. In environments without shadow DB support (PlanetScale), use prisma db push.",
+    "why": "migrate dev creates a shadow database, runs all migrations against it to detect schema drift, and may prompt for a reset if the database is out of sync. migrate deploy simply applies pending migrations without any shadow DB or prompts.",
+    "gotchas": [
+      "migrate deploy does not generate or apply new migrations — only applies already-generated ones",
+      "prisma db push bypasses the migrations folder entirely — changes are not tracked in version control",
+      "Baseline migrations are required when adopting Prisma on an existing database",
+      "The shadow database must be on the same database server type as the main database"
+    ],
+    "language": "javascript",
+    "framework": "prisma",
+    "environment": [],
+    "error_messages": [
+      "Error: The migration `20240101_init` failed to apply cleanly to the shadow database.",
+      "P3005: The database schema is not empty"
+    ],
+    "keywords": ["prisma", "migrate deploy", "migrate dev", "shadow database", "production migration", "prisma db push", "CI/CD"],
+    "severity": "critical",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "description": "Correct migration commands per environment",
+        "code": "# Local development\nnpx prisma migrate dev --name add_user_role\n\n# Production / CI (no shadow DB, no prompts)\nnpx prisma migrate deploy"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Drizzle ORM setup with better-sqlite3 and type-safe queries",
+    "category": "pattern",
+    "tags": ["drizzle", "sqlite", "type-safe", "setup", "schema"],
+    "problem": "Setting up Drizzle ORM correctly with SQLite requires understanding the schema definition pattern, the db instance initialization, and how to run migrations without the Prisma-style CLI flow.",
+    "solution": "Define tables with drizzle-orm/sqlite-core type helpers. Initialize the db with drizzle(connection). Use drizzle-kit for schema diffing and migration generation. Run migrations with migrate() from drizzle-orm/better-sqlite3/migrator.",
+    "why": "Drizzle is a SQL-first ORM where the schema IS the query builder type system — there is no separate runtime schema inference. Getting the initialization right ensures full TypeScript type inference on all query results.",
+    "gotchas": [
+      "Drizzle schemas must be exported from a single file pointed to by drizzle.config.ts for the CLI to work",
+      "Using db.run() vs db.get() vs db.all() matters — run() for mutations, get() for single row, all() for arrays",
+      "Drizzle migrations are SQL files — inspect them before applying in production",
+      "Relations in Drizzle are query-level constructs, not enforced at the schema level (use foreignKey() for DB constraints)"
+    ],
+    "language": "javascript",
+    "framework": "drizzle",
+    "environment": [],
+    "error_messages": [
+      "Error: Cannot find module 'drizzle-orm/better-sqlite3'"
+    ],
+    "keywords": ["drizzle", "sqlite", "better-sqlite3", "schema", "migrator", "drizzle-kit", "type inference", "setup"],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Minimal Drizzle + better-sqlite3 setup",
+        "code": "// schema.ts\nimport { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core';\nexport const users = sqliteTable('users', {\n  id: integer('id').primaryKey({ autoIncrement: true }),\n  email: text('email').notNull().unique(),\n  name: text('name'),\n});\n\n// db.ts\nimport Database from 'better-sqlite3';\nimport { drizzle } from 'drizzle-orm/better-sqlite3';\nimport * as schema from './schema';\nconst sqlite = new Database('app.db');\nsqlite.pragma('journal_mode = WAL');\nsqlite.pragma('busy_timeout = 5000');\nexport const db = drizzle(sqlite, { schema });\n\n// query\nconst allUsers = db.select().from(schema.users).all();"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "N+1 query problem in ORMs: detection and solutions",
+    "category": "gotcha",
+    "tags": ["orm", "N+1", "performance", "eager-loading", "query-optimization"],
+    "problem": "ORM code that iterates a list and accesses a relation for each item generates one query for the list plus one per item (N+1). With 100 users each accessing their posts, this produces 101 database round trips instead of 2.",
+    "solution": "Use eager loading to fetch related data in a single query. In Prisma use include/select with nested relations. In Mongoose use populate() or aggregation. In Drizzle use joins or the relational query API with with. In SQLAlchemy use joinedload() or selectinload().",
+    "why": "Without eager loading, each property access on a lazy-loaded relation triggers a separate SQL query. The ORM abstracts this so well that developers don't realize each dot-access is a database call.",
+    "gotchas": [
+      "Eager loading too many levels deep (user.posts.comments.author) can produce wide JOIN results with many duplicate rows",
+      "Prisma's include always fetches all fields — use select for projection to avoid over-fetching",
+      "selectinload (SQLAlchemy) issues a single IN query and is often better than joinedload for one-to-many",
+      "Enable query logging during development to catch N+1 before production"
+    ],
+    "language": "javascript",
+    "framework": "prisma",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["N+1", "eager loading", "lazy loading", "ORM", "include", "populate", "joinedload", "query count", "performance"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "N+1 problem and fix in Prisma",
+        "code": "// Bad: N+1 — 1 query for users + 1 per user for posts\nconst users = await prisma.user.findMany();\nfor (const user of users) {\n  const posts = await prisma.post.findMany({ where: { authorId: user.id } });\n  console.log(user.name, posts.length);\n}\n\n// Good: 2 queries total (or 1 with join)\nconst users = await prisma.user.findMany({\n  include: { posts: { select: { id: true, title: true } } }\n});\nfor (const user of users) {\n  console.log(user.name, user.posts.length); // no extra queries\n}"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Raw queries in ORMs: when and how to escape the abstraction safely",
+    "category": "pattern",
+    "tags": ["orm", "raw-query", "SQL", "prisma", "drizzle", "performance"],
+    "problem": "Complex queries (window functions, CTEs, lateral joins, ON CONFLICT clauses) cannot be expressed through ORM query builders. Developers either create unmaintainable workaround chains or miss database features entirely.",
+    "solution": "Use the ORM's raw query escape hatch with parameterized placeholders. In Prisma use prisma.$queryRaw with Prisma.sql tagged template. In Drizzle use sql`` tagged template. Always use parameterized queries, never string concatenation.",
+    "why": "Raw queries with parameterized values go through the same prepared statement path as ORM queries, providing SQL injection safety while giving full SQL expressiveness. The ORM still handles connection pooling and type coercion.",
+    "gotchas": [
+      "Prisma.$executeRaw does not return rows; use $queryRaw for SELECT statements",
+      "Prisma.sql tagged template is required — never use template literals directly (SQL injection risk)",
+      "Raw query return types are not type-checked by the ORM — add Zod validation or TypeScript casting",
+      "Drizzle's sql`` template supports .mapWith() for type coercion on individual columns"
+    ],
+    "language": "javascript",
+    "framework": "prisma",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["raw query", "prisma.$queryRaw", "sql tagged template", "CTE", "window function", "SQL injection", "parameterized", "escape hatch"],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Safe raw query with Prisma.sql tagged template (parameterized, injection-safe)",
+        "code": "import { Prisma } from '@prisma/client';\n\n// Parameterized raw query — safe from SQL injection\nconst results = await prisma.$queryRaw<Array<{ id: number; rank: number }>>(\n  Prisma.sql`\n    SELECT id, RANK() OVER (PARTITION BY dept ORDER BY salary DESC) as rank\n    FROM employees\n    WHERE dept = ${deptId}\n  `\n);\n\n// NEVER do this — string interpolation is unsafe\n// const unsafe = `SELECT * FROM users WHERE name = '${userInput}'`;"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Prisma connection pool: sizing and PgBouncer compatibility",
+    "category": "pattern",
+    "tags": ["prisma", "connection-pool", "PgBouncer", "serverless", "PostgreSQL"],
+    "problem": "Prisma's default connection pool (based on database CPU count) is too large for serverless environments where each function instance creates its own pool, exhausting PostgreSQL's max_connections. With PgBouncer the pool settings conflict.",
+    "solution": "For serverless: set connection_limit=1 in the DATABASE_URL and use an external pooler (PgBouncer, Supabase Pooler, or Prisma Accelerate). For PgBouncer in transaction mode: disable prepared statements with pgbouncer=true in the URL.",
+    "why": "Each serverless invocation that calls new PrismaClient() creates a new pool. With 100 concurrent functions each holding a pool of 5, you hit 500 connections. PostgreSQL defaults to max_connections=100.",
+    "gotchas": [
+      "PgBouncer in transaction mode does not support prepared statements — add ?pgbouncer=true to disable them",
+      "connection_limit=1 means queries serialize within a single function instance — fine for serverless, bad for long-running servers",
+      "Prisma Accelerate (edge proxy) handles pooling outside the function but adds network latency",
+      "Never instantiate PrismaClient inside a request handler — use a module-level singleton"
+    ],
+    "language": "javascript",
+    "framework": "prisma",
+    "environment": [],
+    "error_messages": [
+      "PrismaClientInitializationError: Can't reach database server",
+      "Error: sorry, too many clients already"
+    ],
+    "keywords": ["prisma", "connection pool", "PgBouncer", "serverless", "max_connections", "connection_limit", "Prisma Accelerate", "singleton"],
+    "severity": "critical",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Prisma singleton and serverless connection URL",
+        "code": "// lib/prisma.ts — module-level singleton prevents pool exhaustion\nimport { PrismaClient } from '@prisma/client';\n\nconst globalForPrisma = global as unknown as { prisma: PrismaClient };\nexport const prisma = globalForPrisma.prisma ?? new PrismaClient();\nif (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;\n\n// .env for serverless with PgBouncer in transaction mode\n// DATABASE_URL=\"postgresql://user:pass@host:6432/db?connection_limit=1&pgbouncer=true\""
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Migration rollbacks: expand-contract pattern for zero-downtime schema changes",
+    "category": "pattern",
+    "tags": ["migrations", "rollback", "prisma", "drizzle", "database", "safety"],
+    "problem": "ORM migration tools (Prisma, Drizzle, Knex) do not auto-generate rollback/down migrations. Deploying a breaking schema change with no rollback plan means a failed deployment leaves the database in an inconsistent state.",
+    "solution": "Write explicit down migrations as SQL files. For Prisma, maintain a custom rollback SQL file alongside each migration. Practice expand-contract: add new columns before removing old ones, keeping both compatible with old and new code during the transition.",
+    "why": "Expand-contract enables zero-downtime deployments: first deploy the migration adding new columns (expand), then deploy the code using them, then deploy the migration removing old columns (contract). Each step is independently reversible.",
+    "gotchas": [
+      "Dropping a column is not reversible without a backup — always make columns nullable before dropping",
+      "Renaming a column is a two-step process: add new column, copy data, update code, drop old column",
+      "Prisma does not track manually applied SQL — mark custom SQL migrations as applied with prisma migrate resolve",
+      "Test rollback SQL in staging before deploying to production"
+    ],
+    "language": "javascript",
+    "framework": "prisma",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["migration rollback", "expand-contract", "down migration", "zero downtime", "schema change", "Prisma", "Drizzle", "column rename"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "description": "Expand-contract pattern for a column rename with safe rollback",
+        "code": "-- Step 1: EXPAND — add new column (backward compatible, can roll back)\nALTER TABLE users ADD COLUMN username TEXT;\nUPDATE users SET username = name WHERE username IS NULL;\n\n-- Step 2: Deploy app code that reads username (falls back to name if null)\n-- Step 3: Deploy app code that writes to both columns\n-- Step 4: Verify no reads of old column in production logs\n\n-- Step 5: CONTRACT — drop old column after confirming no reads\nALTER TABLE users DROP COLUMN name;\n\n-- Rollback for step 1 (safe — only drops the new column)\nALTER TABLE users DROP COLUMN username;"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Optimistic locking in ORMs with version fields",
+    "category": "pattern",
+    "tags": ["orm", "optimistic-locking", "concurrency", "version", "conflict"],
+    "problem": "Without concurrency control, two users reading the same record and updating it concurrently cause a lost update — the second write silently overwrites the first. This is invisible without explicit locking.",
+    "solution": "Add a version integer column to the table. On every update, include WHERE version = knownVersion in the query and increment version. If 0 rows are updated, a concurrent modification occurred — retry or surface a conflict error to the user.",
+    "why": "Optimistic locking assumes conflicts are rare and avoids holding database locks for the duration of a user's think time. The version check is atomic with the update, so it is safe without explicit locks.",
+    "gotchas": [
+      "Prisma does not have built-in optimistic locking — implement it with $executeRaw or raw WHERE clause",
+      "Drizzle supports optimistic locking patterns via returning() clause to verify row was updated",
+      "Always return the new version to the client after a successful update so subsequent operations use the correct version",
+      "Do not use timestamps as version fields — clock skew can make two concurrent updates appear sequential"
+    ],
+    "language": "javascript",
+    "framework": "prisma",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["optimistic locking", "version field", "lost update", "concurrency", "ORM", "conflict detection", "WHERE version"],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Optimistic locking with Prisma parameterized raw query",
+        "code": "import { Prisma } from '@prisma/client';\n\nasync function updateWithOptimisticLock(id, data, version) {\n  const result = await prisma.$executeRaw(\n    Prisma.sql`\n      UPDATE documents\n      SET title = ${data.title}, body = ${data.body}, version = version + 1\n      WHERE id = ${id} AND version = ${version}\n    `\n  );\n  if (result === 0) {\n    throw new Error('Conflict: document was modified by another user. Refresh and try again.');\n  }\n  return { ...data, version: version + 1 };\n}"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Bulk operations in ORMs: avoiding per-row insert performance traps",
+    "category": "pattern",
+    "tags": ["orm", "bulk-insert", "performance", "createMany", "upsert", "batch"],
+    "problem": "Inserting 1000 records with a loop of ORM create() calls issues 1000 separate INSERT statements, each with a round-trip to the database. This is 10-100x slower than a single multi-row INSERT.",
+    "solution": "Use ORM bulk APIs: Prisma's createMany(), Drizzle's insert().values([...]), Mongoose's insertMany(). For upserts use Prisma's createMany({skipDuplicates}) or native ON CONFLICT DO UPDATE via raw SQL.",
+    "why": "Multi-row INSERT statements send all data in a single round trip and let the database batch-optimize the write. Connection setup, network latency, and transaction overhead are paid once instead of N times.",
+    "gotchas": [
+      "Prisma createMany does not support nested relation creates — only flat models",
+      "Prisma createMany with skipDuplicates silently ignores conflicting rows — no way to distinguish skipped from inserted",
+      "SQLite has a default limit of 999 bound parameters — batch large inserts into chunks of ~500 rows",
+      "Mongoose insertMany bypasses schema validation by default — pass {runValidators: true}"
+    ],
+    "language": "javascript",
+    "framework": "prisma",
+    "environment": [],
+    "error_messages": [
+      "SqliteError: too many SQL variables",
+      "MongoServerError: BulkWriteError"
+    ],
+    "keywords": ["bulk insert", "createMany", "insertMany", "batch", "performance", "multi-row INSERT", "ORM", "upsert", "ON CONFLICT"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Bulk insert with Prisma and chunking for SQLite",
+        "code": "// Prisma: bulk insert (single round trip)\nawait prisma.product.createMany({\n  data: products,\n  skipDuplicates: true\n});\n\n// SQLite-safe chunked insert with Drizzle (avoid >999 bound params)\nconst CHUNK_SIZE = 500;\nfor (let i = 0; i < rows.length; i += CHUNK_SIZE) {\n  await db.insert(productsTable).values(rows.slice(i, i + CHUNK_SIZE));\n}\n\n// Mongoose bulk insert with validation enabled\nawait Product.insertMany(docs, { ordered: false, runValidators: true });"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "SQLAlchemy session management: scoped sessions and connection lifecycle",
+    "category": "gotcha",
+    "tags": ["orm", "sqlalchemy", "session", "connection-pool", "web"],
+    "problem": "SQLAlchemy sessions accumulate in-memory state and hold database connections. Using a module-level Session object in a web app causes cross-request data contamination, stale reads, and connection exhaustion under concurrent load.",
+    "solution": "Use scoped_session with a session factory tied to the request lifecycle. In Flask use flask-sqlalchemy which handles teardown automatically. In FastAPI use a dependency that yields a session and closes it after the response. Never share session objects across threads.",
+    "why": "SQLAlchemy's Session tracks the identity map (all objects loaded in the session) and holds a database connection from the pool. Without proper scoping, one request's dirty objects bleed into another request's reads, and unreleased connections exhaust the pool.",
+    "gotchas": [
+      "Calling session.add() on an object from a closed session raises DetachedInstanceError on attribute access",
+      "session.commit() expires all loaded objects by default — subsequent attribute access triggers new lazy loads",
+      "Using expire_on_commit=False avoids re-fetching after commit but risks stale data in long-lived sessions",
+      "session.merge() copies state from a detached object into the current session — use it to re-attach across request boundaries"
+    ],
+    "language": "javascript",
+    "framework": "prisma",
+    "environment": [],
+    "error_messages": [
+      "sqlalchemy.orm.exc.DetachedInstanceError: Instance is not bound to a Session",
+      "sqlalchemy.exc.TimeoutError: QueuePool limit of size 5 overflow 10 reached"
+    ],
+    "keywords": ["sqlalchemy", "session", "scoped_session", "DetachedInstanceError", "connection pool", "request lifecycle", "expire_on_commit"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "python",
+        "description": "FastAPI dependency that scopes a SQLAlchemy session to a single request",
+        "code": "from sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker, Session\nfrom fastapi import Depends\n\nengine = create_engine(DATABASE_URL, pool_size=5, max_overflow=10)\nSessionLocal = sessionmaker(bind=engine, expire_on_commit=False)\n\ndef get_db():\n    db: Session = SessionLocal()\n    try:\n        yield db\n        db.commit()\n    except Exception:\n        db.rollback()\n        raise\n    finally:\n        db.close()  # returns connection to pool\n\n# Usage in route\ndef get_user(user_id: int, db: Session = Depends(get_db)):\n    return db.query(User).filter(User.id == user_id).first()"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Drizzle ORM: relations API vs SQL joins and when to use each",
+    "category": "pattern",
+    "tags": ["drizzle", "relations", "joins", "query", "type-safety"],
+    "problem": "Drizzle's relational query API (db.query.users.findMany with with:) and manual SQL joins both fetch related data but behave differently. Using the wrong one leads to either N+1 queries or unexpectedly wide Cartesian products.",
+    "solution": "Use the relational query API (db.query) for application-level data fetching — it issues separate optimized queries per relation (not JOINs) and returns typed nested objects. Use explicit joins (db.select().from().leftJoin()) for aggregate queries, filtering across tables, or when you need a single flat result set.",
+    "why": "Drizzle's relational API with findMany + with issues one query per relation using IN clauses, avoiding the duplicate rows problem of JOIN on one-to-many. Manual joins give full SQL control but return flat rows that require manual grouping in application code.",
+    "gotchas": [
+      "The relational query API requires defining relations in the schema with relations() — missing this causes TypeScript errors on with: fields",
+      "db.query uses separate queries internally — for read-consistency across tables, wrap in a transaction",
+      "Joining a one-to-many relation with db.select().leftJoin() returns one row per child — group results manually",
+      "Drizzle does not yet support polymorphic relations — use raw SQL or a discriminated union pattern instead"
+    ],
+    "language": "javascript",
+    "framework": "drizzle",
+    "environment": [],
+    "error_messages": [
+      "TypeError: Cannot read properties of undefined (reading 'referencedTable')"
+    ],
+    "keywords": ["drizzle", "relations", "findMany", "with", "leftJoin", "relational API", "N+1", "Cartesian product", "schema relations"],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Relational API vs explicit join in Drizzle",
+        "code": "// schema.ts: define relations\nimport { relations } from 'drizzle-orm';\nexport const usersRelations = relations(users, ({ many }) => ({\n  posts: many(posts)\n}));\n\n// Relational API: separate IN queries, typed nested result\nconst usersWithPosts = await db.query.users.findMany({\n  with: { posts: { columns: { id: true, title: true } } }\n});\n// result: [{ id, name, posts: [{ id, title }] }]\n\n// Manual join: single query, flat rows — need manual grouping\nconst rows = await db\n  .select({ userId: users.id, postTitle: posts.title })\n  .from(users)\n  .leftJoin(posts, eq(posts.authorId, users.id))\n  .where(gt(users.createdAt, cutoffDate));"
+      }
+    ],
+    "version_info": null
+  }
+]

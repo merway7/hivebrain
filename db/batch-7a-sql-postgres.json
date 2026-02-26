@@ -1,0 +1,886 @@
+[
+  {
+    "title": "JSONB GIN index does not accelerate all operators equally",
+    "category": "gotcha",
+    "tags": ["postgresql", "jsonb", "gin", "index", "performance"],
+    "problem": "A GIN index on a JSONB column speeds up @>, ?, ?|, ?& operators but NOT ->> or -> with equality. Queries like WHERE data->>'email' = 'x' perform a full sequential scan even with a GIN index present.",
+    "solution": "Use a GIN index for containment and key-existence queries. For equality on a specific key, create an expression index:\n\n-- For containment queries (fast with GIN):\nCREATE INDEX idx_data_gin ON events USING gin(data);\nSELECT * FROM events WHERE data @> '{\"status\": \"active\"}';\n\n-- For equality on a specific key (needs expression index):\nCREATE INDEX idx_data_email ON events ((data->>'email'));\nSELECT * FROM events WHERE data->>'email' = 'user@example.com';",
+    "why": "GIN indexes for JSONB store an inverted index of keys and values suitable for containment and existence checks. They cannot satisfy an equality predicate on an extracted text value because that extraction produces a scalar, not a JSONB structure.",
+    "gotchas": [
+      "jsonb_path_ops GIN opclass is smaller and faster for @> but drops support for ? operators",
+      "Expression indexes on JSONB extractions are B-tree, not GIN, and only cover one key",
+      "EXPLAIN ANALYZE is the only reliable way to confirm index usage"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["jsonb gin index", "jsonb expression index", "jsonb operator performance", "containment operator", "arrow operator index"],
+    "severity": "major",
+    "context": "When adding indexes to JSONB columns expecting all query patterns to benefit",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- Check which index is used\nEXPLAIN (ANALYZE, BUFFERS)\nSELECT * FROM events WHERE data @> '{\"type\": \"click\"}';\n-- vs\nEXPLAIN (ANALYZE, BUFFERS)\nSELECT * FROM events WHERE data->>'type' = 'click';",
+        "description": "EXPLAIN to verify which JSONB query patterns use the GIN index"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Array column overlap and containment queries with GIN indexes",
+    "category": "pattern",
+    "tags": ["postgresql", "array", "gin", "overlap", "containment"],
+    "problem": "Querying array columns with ANY() or = ANY() skips available GIN indexes and falls back to sequential scans on large tables, causing severe performance degradation.",
+    "solution": "Use GIN-indexed array operators && (overlap), @> (contains), <@ (contained by) instead of ANY():\n\nCREATE INDEX idx_tags_gin ON posts USING gin(tags);\n\n-- SLOW (seq scan even with GIN):\nSELECT * FROM posts WHERE 'postgresql' = ANY(tags);\n\n-- FAST (uses GIN index):\nSELECT * FROM posts WHERE tags @> ARRAY['postgresql'];\nSELECT * FROM posts WHERE tags && ARRAY['postgresql', 'sql'];",
+    "why": "The GIN index for arrays is built for the array operators defined in the intarray or array_ops opclass. The ANY() construct is a scalar comparison that the planner cannot rewrite to use the GIN index path.",
+    "gotchas": [
+      "= ANY() with a literal array constant can sometimes use an index scan on the array element, not a GIN index",
+      "intarray extension provides a faster GIN opclass for integer arrays",
+      "Array GIN indexes grow large quickly; monitor with pg_relation_size()"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["array gin index", "array overlap", "array containment", "ANY operator", "array query performance"],
+    "severity": "moderate",
+    "context": "Querying tables that store tags, permissions, or categories as PostgreSQL arrays",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "CREATE TABLE posts (id bigserial PRIMARY KEY, tags text[]);\nCREATE INDEX idx_posts_tags ON posts USING gin(tags);\n\n-- Uses index:\nSELECT id FROM posts WHERE tags @> '{postgresql,sql}'::text[];\n\n-- Skips index:\nSELECT id FROM posts WHERE 'postgresql' = ANY(tags);",
+        "description": "Array GIN index usage: correct vs incorrect operator"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Full-text search with tsvector and tsquery: index, store, query",
+    "category": "pattern",
+    "tags": ["postgresql", "full-text-search", "tsvector", "tsquery", "gin"],
+    "problem": "Running to_tsvector() inside a WHERE clause recomputes it for every row, making full-text search across millions of rows extremely slow even when a GIN index exists.",
+    "solution": "Store the tsvector in a generated column (or a regular column updated by trigger) and index it:\n\n-- Generated column approach (PG 12+):\nALTER TABLE articles\n  ADD COLUMN fts tsvector\n  GENERATED ALWAYS AS (\n    to_tsvector('english', coalesce(title,'') || ' ' || coalesce(body,''))\n  ) STORED;\n\nCREATE INDEX idx_articles_fts ON articles USING gin(fts);\n\n-- Query:\nSELECT id, title\nFROM articles\nWHERE fts @@ plainto_tsquery('english', 'database performance')\nORDER BY ts_rank(fts, plainto_tsquery('english', 'database performance')) DESC\nLIMIT 20;",
+    "why": "A GIN index on a tsvector column stores pre-computed lexemes. If you call to_tsvector() in the WHERE clause without a matching functional index, PostgreSQL cannot use the stored index and re-derives the tsvector for every row.",
+    "gotchas": [
+      "plainto_tsquery ignores operators; use to_tsquery for phrase or boolean queries",
+      "websearch_to_tsquery (PG 11+) parses Google-style queries and is safer for user input",
+      "ts_rank_cd uses cover density and is more accurate than ts_rank for long documents",
+      "The text search configuration ('english') must match between index and query"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["tsvector", "tsquery", "full-text search", "GIN index", "ts_rank", "plainto_tsquery", "generated column"],
+    "severity": "major",
+    "context": "Building search functionality on text-heavy tables in PostgreSQL",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- Phrase search:\nSELECT title FROM articles\nWHERE fts @@ phraseto_tsquery('english', 'query planner');\n\n-- Ranked results with headline:\nSELECT title,\n  ts_headline('english', body, q) AS snippet,\n  ts_rank_cd(fts, q) AS rank\nFROM articles, plainto_tsquery('english', 'index bloat') q\nWHERE fts @@ q\nORDER BY rank DESC\nLIMIT 10;",
+        "description": "Ranked full-text search with snippet highlighting"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "LISTEN/NOTIFY for lightweight real-time events between processes",
+    "category": "pattern",
+    "tags": ["postgresql", "listen", "notify", "pubsub", "real-time"],
+    "problem": "Polling a database table repeatedly to detect new rows or state changes wastes connection time and adds unnecessary load. Many developers do not know PostgreSQL has built-in async pub/sub.",
+    "solution": "Use LISTEN/NOTIFY for event-driven communication:\n\n-- Publisher (any session or trigger):\nNOTIFY channel_name, 'optional payload up to 8000 bytes';\n\n-- From a trigger:\nCREATE OR REPLACE FUNCTION notify_new_order() RETURNS trigger AS $$\nBEGIN\n  PERFORM pg_notify('orders', row_to_json(NEW)::text);\n  RETURN NEW;\nEND;\n$$ LANGUAGE plpgsql;\n\nCREATE TRIGGER trg_notify_order\n  AFTER INSERT ON orders\n  FOR EACH ROW EXECUTE FUNCTION notify_new_order();\n\n-- Subscriber (separate connection):\nLISTEN orders;\n-- Then call PQnotifies() in libpq or equivalent in your driver",
+    "why": "pg_notify delivers messages asynchronously over existing database connections. It is transactional: notifications are only sent if the transaction commits, preventing phantom events from rolled-back transactions.",
+    "gotchas": [
+      "Payload is limited to 8000 bytes; send an ID and let the subscriber fetch details",
+      "Notifications are not persisted; a subscriber that is down misses events",
+      "The subscriber must be in an idle state between LISTEN calls to receive events; connection poolers in transaction mode break this",
+      "Use pg_notification_queue_usage() to monitor backpressure"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["LISTEN NOTIFY", "pg_notify", "pubsub", "real-time events", "trigger notification", "async"],
+    "severity": "tip",
+    "context": "When building lightweight real-time pipelines or cache invalidation systems backed by PostgreSQL",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- Check pending notification queue pressure:\nSELECT pg_notification_queue_usage();\n\n-- Send a notification manually:\nSELECT pg_notify('cache_invalidate', '{\"table\":\"products\",\"id\":42}');",
+        "description": "NOTIFY with JSON payload and queue monitoring"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Advisory locks for distributed mutual exclusion without extra infrastructure",
+    "category": "pattern",
+    "tags": ["postgresql", "advisory-locks", "concurrency", "distributed", "mutex"],
+    "problem": "Application-level job queues, cron runners, and report generators running on multiple servers can execute the same work concurrently without a coordination mechanism, causing duplicate processing.",
+    "solution": "Use PostgreSQL advisory locks as a lightweight distributed mutex:\n\n-- Session-level lock (held until released or session ends):\nSELECT pg_try_advisory_lock(hashtext('nightly_report_job'));\n-- Returns true if lock acquired, false if already held elsewhere\n\n-- Transaction-level lock (auto-released at commit/rollback):\nSELECT pg_try_advisory_xact_lock(42);\n\n-- Release manually:\nSELECT pg_advisory_unlock(hashtext('nightly_report_job'));\n\n-- Application pattern:\nDO $$\nBEGIN\n  IF pg_try_advisory_lock(1234) THEN\n    -- do the work\n    PERFORM run_nightly_job();\n    PERFORM pg_advisory_unlock(1234);\n  ELSE\n    RAISE NOTICE 'Another instance is running';\n  END IF;\nEND;\n$$;",
+    "why": "Advisory locks are stored in shared memory and have virtually zero overhead. They are not tied to any table or row, so they work for coordinating any application-level operation.",
+    "gotchas": [
+      "Session-level locks survive transaction rollback; always release explicitly or use xact variants",
+      "Lock IDs are global per cluster; use namespacing with two bigint arguments or hashtext() to avoid collisions",
+      "pg_try_advisory_lock() is non-blocking; pg_advisory_lock() blocks indefinitely",
+      "Connection poolers that reuse sessions can leak unreleased advisory locks"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["advisory lock", "pg_try_advisory_lock", "distributed lock", "mutex", "job deduplication", "hashtext"],
+    "severity": "moderate",
+    "context": "Multi-process or multi-server applications sharing a single PostgreSQL database",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- List all currently held advisory locks:\nSELECT pid, locktype, classid, objid, granted\nFROM pg_locks\nWHERE locktype = 'advisory';",
+        "description": "Inspect active advisory locks in pg_locks"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "pg_stat_statements reveals the actual slow queries in production",
+    "category": "pattern",
+    "tags": ["postgresql", "pg_stat_statements", "performance", "monitoring", "slow-query"],
+    "problem": "Query logs with log_min_duration_statement catch individual slow executions but miss queries that are individually fast yet collectively expensive due to high call frequency.",
+    "solution": "Enable and query pg_stat_statements:\n\n-- In postgresql.conf:\n-- shared_preload_libraries = 'pg_stat_statements'\n-- pg_stat_statements.track = all\n\nCREATE EXTENSION IF NOT EXISTS pg_stat_statements;\n\n-- Top 10 queries by total time:\nSELECT\n  round(total_exec_time::numeric, 2) AS total_ms,\n  calls,\n  round(mean_exec_time::numeric, 2) AS mean_ms,\n  round((100 * total_exec_time / sum(total_exec_time) OVER ())::numeric, 2) AS pct,\n  left(query, 120) AS query\nFROM pg_stat_statements\nORDER BY total_exec_time DESC\nLIMIT 10;",
+    "why": "pg_stat_statements aggregates execution statistics across all calls since the last pg_stat_statements_reset(). This surfaces queries that are called millions of times per day even if each call takes under 1ms.",
+    "gotchas": [
+      "Requires server restart to enable (shared_preload_libraries is not reloadable)",
+      "Call pg_stat_statements_reset() after making index or query changes so metrics reflect the new state",
+      "The queryid column joins to pg_stat_activity for in-flight query matching",
+      "Track planning time separately with total_plan_time (PG 13+)"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["pg_stat_statements", "slow query", "query statistics", "total_exec_time", "query profiling", "shared_preload_libraries"],
+    "severity": "tip",
+    "context": "Diagnosing database performance problems in production without per-query profiling tools",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- Queries with high planning overhead:\nSELECT query, calls,\n  round(mean_plan_time::numeric,2) AS mean_plan_ms,\n  round(mean_exec_time::numeric,2) AS mean_exec_ms\nFROM pg_stat_statements\nWHERE calls > 100\nORDER BY mean_plan_time DESC\nLIMIT 10;",
+        "description": "Find queries with disproportionate planning overhead"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Connection pool exhaustion: symptoms, diagnosis, and remediation",
+    "category": "debug",
+    "tags": ["postgresql", "connection-pool", "pgbouncer", "max_connections", "exhaustion"],
+    "problem": "Application requests hang indefinitely or fail with 'remaining connection slots are reserved for non-replication superuser connections' when the connection limit is reached.",
+    "solution": "Diagnose and fix connection pool exhaustion:\n\n-- Check current connections:\nSELECT count(*), state, wait_event_type, wait_event\nFROM pg_stat_activity\nGROUP BY state, wait_event_type, wait_event\nORDER BY count DESC;\n\n-- Find idle connections holding slots:\nSELECT pid, usename, application_name, state, query_start,\n  now() - state_change AS idle_for\nFROM pg_stat_activity\nWHERE state = 'idle'\nORDER BY idle_for DESC;\n\n-- Emergency: terminate idle connections older than 10 minutes:\nSELECT pg_terminate_backend(pid)\nFROM pg_stat_activity\nWHERE state = 'idle'\n  AND now() - state_change > interval '10 minutes'\n  AND pid <> pg_backend_pid();\n\n-- Long-term fix: deploy PgBouncer in transaction mode",
+    "why": "PostgreSQL allocates a process per connection. Each connection consumes ~5-10MB of RAM and fd slots. Applications that open connections but do not release them promptly (ORM leaks, no connection pooling) exhaust max_connections (default 100).",
+    "gotchas": [
+      "superuser_reserved_connections (default 3) are always reserved; real limit is max_connections - 3",
+      "PgBouncer in session mode does not help; use transaction mode for connection multiplexing",
+      "LISTEN/NOTIFY and prepared statements are incompatible with PgBouncer transaction mode",
+      "Raising max_connections has diminishing returns beyond ~500 due to lock contention in shared memory"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [
+      "FATAL: remaining connection slots are reserved for non-replication superuser connections",
+      "FATAL: sorry, too many clients already"
+    ],
+    "keywords": ["connection pool", "max_connections", "pg_stat_activity", "idle connections", "PgBouncer", "connection exhaustion"],
+    "severity": "critical",
+    "context": "High-traffic web applications connecting directly to PostgreSQL without a pooler",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- Connection usage summary:\nSELECT max_conn, used, res_for_super,\n  max_conn - used - res_for_super AS available\nFROM\n  (SELECT count(*) used FROM pg_stat_activity) t1,\n  (SELECT setting::int res_for_super FROM pg_settings WHERE name='superuser_reserved_connections') t2,\n  (SELECT setting::int max_conn FROM pg_settings WHERE name='max_connections') t3;",
+        "description": "Single query showing connection headroom"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Table bloat from dead tuples: when VACUUM is not keeping up",
+    "category": "debug",
+    "tags": ["postgresql", "vacuum", "bloat", "autovacuum", "dead-tuples"],
+    "problem": "Tables that receive many UPDATEs or DELETEs grow large on disk even as visible row count stays constant. Queries slow down as PostgreSQL reads more 8KB pages filled with dead tuples.",
+    "solution": "Diagnose and address table bloat:\n\n-- Check dead tuple accumulation:\nSELECT relname, n_live_tup, n_dead_tup,\n  round(n_dead_tup * 100.0 / nullif(n_live_tup + n_dead_tup, 0), 1) AS dead_pct,\n  last_autovacuum, last_autoanalyze\nFROM pg_stat_user_tables\nORDER BY n_dead_tup DESC\nLIMIT 10;\n\n-- Force an immediate VACUUM:\nVACUUM (VERBOSE, ANALYZE) high_churn_table;\n\n-- Reclaim disk space (requires exclusive lock, use pg_repack for zero-downtime):\nVACUUM FULL high_churn_table;\n\n-- Tune autovacuum aggressiveness per table:\nALTER TABLE high_churn_table SET (\n  autovacuum_vacuum_scale_factor = 0.01,\n  autovacuum_vacuum_threshold = 100\n);",
+    "why": "PostgreSQL uses MVCC: UPDATEs write new row versions and mark old ones dead. VACUUM reclaims dead tuples but does not (by default) return space to the OS. Tables grow until VACUUM FULL or pg_repack is run.",
+    "gotchas": [
+      "VACUUM FULL acquires an AccessExclusiveLock; use pg_repack for live production tables",
+      "A long-running transaction prevents VACUUM from cleaning tuples it could see",
+      "autovacuum_vacuum_cost_delay throttles I/O; lower it for write-heavy tables",
+      "pg_stat_user_tables.n_dead_tup resets after VACUUM; monitor trends over time"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["table bloat", "dead tuples", "VACUUM", "autovacuum", "MVCC", "pg_repack", "n_dead_tup"],
+    "severity": "major",
+    "context": "High-update-rate tables like session stores, event queues, or order status tables",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- Estimate physical bloat (requires pgstattuple extension):\nCREATE EXTENSION IF NOT EXISTS pgstattuple;\nSELECT * FROM pgstattuple('high_churn_table');",
+        "description": "Measure actual physical bloat with pgstattuple"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Partial indexes: index only the rows you query",
+    "category": "pattern",
+    "tags": ["postgresql", "partial-index", "index", "performance", "where-clause"],
+    "problem": "A full B-tree index on a status column where 99% of rows are 'completed' makes the index nearly useless for queries filtering on status = 'pending', and wastes disk space and write amplification.",
+    "solution": "Create a partial index with a WHERE clause to index only the relevant subset:\n\n-- Index only unprocessed jobs (tiny index, high selectivity):\nCREATE INDEX idx_jobs_pending\n  ON jobs (created_at)\n  WHERE status = 'pending';\n\n-- This query uses the partial index:\nSELECT * FROM jobs\nWHERE status = 'pending'\nORDER BY created_at\nLIMIT 100;\n\n-- Partial unique index (allow multiple NULLs, enforce unique non-null):\nCREATE UNIQUE INDEX idx_users_email_active\n  ON users (email)\n  WHERE deleted_at IS NULL;",
+    "why": "A partial index stores only the rows matching its WHERE clause. Fewer pages means faster scans, lower memory pressure in the buffer cache, and faster writes because fewer index tuples need updating.",
+    "gotchas": [
+      "The query's WHERE clause must be implied by the index predicate for the planner to use it",
+      "Parameterized queries where the value is not a constant may not use partial indexes",
+      "Partial indexes do not appear in pg_indexes.indexdef but are visible via \\d tablename in psql"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["partial index", "filtered index", "index where clause", "status column index", "selective index"],
+    "severity": "tip",
+    "context": "Tables with a status or soft-delete column where most queries target a small subset of rows",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- Verify partial index is used:\nEXPLAIN (ANALYZE, BUFFERS)\nSELECT * FROM jobs WHERE status = 'pending' ORDER BY created_at LIMIT 10;\n-- Look for: Index Scan using idx_jobs_pending",
+        "description": "Confirm partial index usage with EXPLAIN ANALYZE"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Expression indexes to index computed values and function results",
+    "category": "pattern",
+    "tags": ["postgresql", "expression-index", "functional-index", "lower", "performance"],
+    "problem": "Queries filtering on lower(email) = 'user@example.com' or date_trunc('day', created_at) = '2024-01-01' perform sequential scans because standard indexes on the raw column cannot be used for the transformed value.",
+    "solution": "Create an index on the expression, matching the query exactly:\n\n-- Case-insensitive email lookup:\nCREATE INDEX idx_users_lower_email ON users (lower(email));\nSELECT * FROM users WHERE lower(email) = 'user@example.com';\n\n-- Index on truncated date:\nCREATE INDEX idx_events_day ON events (date_trunc('day', created_at));\nSELECT * FROM events WHERE date_trunc('day', created_at) = '2024-03-15';\n\n-- Index on JSONB extraction:\nCREATE INDEX idx_orders_status ON orders ((metadata->>'status'));\nSELECT * FROM orders WHERE metadata->>'status' = 'shipped';",
+    "why": "PostgreSQL stores the result of the expression in the index during writes. At query time, if the planner detects the WHERE clause expression matches the index expression exactly, it uses the index. The expression must be immutable (no side effects, deterministic output).",
+    "gotchas": [
+      "The expression in the query must match the index expression character-for-character",
+      "Non-immutable functions (now(), random()) cannot be used in expression indexes",
+      "Expression indexes are rebuilt on every VACUUM FULL and pg_repack; rebuilding is slow for large tables",
+      "citext extension provides a case-insensitive text type that avoids needing lower() expression indexes"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["expression index", "functional index", "lower email index", "immutable function", "date_trunc index"],
+    "severity": "moderate",
+    "context": "Queries that apply transformations to columns in WHERE clauses",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- Confirm expression index is used:\nEXPLAIN SELECT * FROM users WHERE lower(email) = 'alice@example.com';\n-- Should show: Index Scan using idx_users_lower_email",
+        "description": "Verify expression index usage"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "LATERAL joins for per-row subqueries and top-N per group",
+    "category": "pattern",
+    "tags": ["postgresql", "lateral", "join", "top-n-per-group", "correlated"],
+    "problem": "Fetching the latest N related rows per parent (e.g., last 3 orders per customer) with a regular subquery or GROUP BY requires complex window functions or produces incorrect results.",
+    "solution": "Use LATERAL to run a correlated subquery for each row of the outer query:\n\n-- Last 3 orders per customer:\nSELECT c.id, c.name, o.id AS order_id, o.created_at\nFROM customers c\nCROSS JOIN LATERAL (\n  SELECT id, created_at\n  FROM orders\n  WHERE customer_id = c.id\n  ORDER BY created_at DESC\n  LIMIT 3\n) o;\n\n-- Join with a function returning a set:\nSELECT u.id, tag\nFROM users u\nCROSS JOIN LATERAL unnest(u.tags) AS t(tag);\n\n-- LEFT JOIN LATERAL to preserve rows with no matches:\nSELECT c.id, o.order_id\nFROM customers c\nLEFT JOIN LATERAL (\n  SELECT id AS order_id FROM orders\n  WHERE customer_id = c.id\n  ORDER BY created_at DESC LIMIT 1\n) o ON true;",
+    "why": "LATERAL allows the subquery to reference columns from the outer FROM clause, executing once per outer row. This enables correlated logic that would otherwise require window functions with complex partitioning.",
+    "gotchas": [
+      "CROSS JOIN LATERAL drops rows where the subquery returns nothing; use LEFT JOIN LATERAL ... ON true to preserve them",
+      "Performance depends on a good index on the inner table's join column and ORDER BY key",
+      "LATERAL is more readable than the equivalent DISTINCT ON or ROW_NUMBER() window approach for top-N"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["LATERAL join", "top N per group", "correlated subquery", "per-row subquery", "unnest lateral"],
+    "severity": "tip",
+    "context": "Fetching a limited number of related records per parent entity",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- Most recent event per user with LATERAL:\nSELECT u.id, e.event_type, e.created_at\nFROM users u\nLEFT JOIN LATERAL (\n  SELECT event_type, created_at\n  FROM events\n  WHERE user_id = u.id\n  ORDER BY created_at DESC\n  LIMIT 1\n) e ON true;",
+        "description": "Latest event per user using LEFT JOIN LATERAL"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Recursive CTEs for hierarchical data like org trees and comment threads",
+    "category": "pattern",
+    "tags": ["postgresql", "recursive-cte", "hierarchy", "tree", "with-recursive"],
+    "problem": "Fetching all descendants in an adjacency-list hierarchy (parent_id column) requires multiple round trips to the database or application-level recursion, both of which are slow and fragile.",
+    "solution": "Use WITH RECURSIVE to traverse the hierarchy in a single query:\n\n-- Fetch entire subtree rooted at node 5:\nWITH RECURSIVE subtree AS (\n  -- Base case: start node\n  SELECT id, parent_id, name, 0 AS depth\n  FROM categories\n  WHERE id = 5\n\n  UNION ALL\n\n  -- Recursive case: children of current level\n  SELECT c.id, c.parent_id, c.name, s.depth + 1\n  FROM categories c\n  INNER JOIN subtree s ON c.parent_id = s.id\n)\nSELECT id, name, depth,\n  repeat('  ', depth) || name AS indented_name\nFROM subtree\nORDER BY depth, name;\n\n-- Guard against cycles:\nWITH RECURSIVE safe_tree AS (\n  SELECT id, parent_id, ARRAY[id] AS path\n  FROM nodes WHERE parent_id IS NULL\n  UNION ALL\n  SELECT n.id, n.parent_id, t.path || n.id\n  FROM nodes n\n  JOIN safe_tree t ON n.parent_id = t.id\n  WHERE NOT n.id = ANY(t.path)\n)",
+    "why": "WITH RECURSIVE implements a fixpoint iteration: the recursive term keeps adding rows until it produces no new ones. This is equivalent to a BFS traversal and runs entirely inside PostgreSQL.",
+    "gotchas": [
+      "Infinite loops are possible with cyclic data; guard with a path array and cycle check",
+      "UNION ALL is required (not UNION) for proper recursive semantics; UNION would deduplicate and may terminate early",
+      "Add a depth or iteration counter and a WHERE depth < 100 guard for safety",
+      "ltree extension offers an alternative for very deep or frequently-queried hierarchies"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["recursive CTE", "WITH RECURSIVE", "hierarchy", "tree traversal", "adjacency list", "org chart", "comment thread"],
+    "severity": "tip",
+    "context": "Adjacency-list tables representing category trees, org charts, folder structures, or threaded comments",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- Ancestors (upward traversal):\nWITH RECURSIVE ancestors AS (\n  SELECT id, parent_id, name FROM categories WHERE id = 42\n  UNION ALL\n  SELECT c.id, c.parent_id, c.name\n  FROM categories c\n  JOIN ancestors a ON c.id = a.parent_id\n)\nSELECT * FROM ancestors;",
+        "description": "Traverse upward to find all ancestor nodes"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Materialized views: trade staleness for read performance",
+    "category": "pattern",
+    "tags": ["postgresql", "materialized-view", "performance", "caching", "refresh"],
+    "problem": "Complex aggregate queries (dashboard metrics, reporting) that join many large tables take seconds to execute and are called hundreds of times per minute, overwhelming the database.",
+    "solution": "Create a materialized view and refresh it on a schedule:\n\nCREATE MATERIALIZED VIEW daily_revenue AS\nSELECT\n  date_trunc('day', created_at) AS day,\n  sum(amount) AS revenue,\n  count(*) AS orders\nFROM orders\nWHERE status = 'completed'\nGROUP BY 1;\n\nCREATE UNIQUE INDEX ON daily_revenue (day);\n\n-- Non-blocking refresh (requires unique index):\nREFRESH MATERIALIZED VIEW CONCURRENTLY daily_revenue;\n\n-- Schedule via pg_cron or application cron:\nSELECT cron.schedule('refresh_daily_revenue', '5 * * * *',\n  'REFRESH MATERIALIZED VIEW CONCURRENTLY daily_revenue');",
+    "why": "REFRESH MATERIALIZED VIEW recomputes and replaces the stored result. CONCURRENTLY builds the new version alongside the old one and swaps atomically, allowing reads to continue during refresh.",
+    "gotchas": [
+      "REFRESH without CONCURRENTLY acquires an ExclusiveLock; reads are blocked during refresh",
+      "CONCURRENTLY requires at least one unique index on the materialized view",
+      "Data is stale between refreshes; communicate staleness to users (last_refreshed column)",
+      "Incremental refresh is not natively supported; consider a custom approach with a watermark timestamp"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["materialized view", "REFRESH MATERIALIZED VIEW CONCURRENTLY", "aggregate caching", "dashboard performance", "pg_cron"],
+    "severity": "tip",
+    "context": "Reporting dashboards and analytics queries that are too slow for real-time execution",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- Check when a materialized view was last refreshed:\nSELECT schemaname, matviewname, ispopulated\nFROM pg_matviews\nWHERE matviewname = 'daily_revenue';",
+        "description": "Inspect materialized view status"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Row-level security (RLS) for tenant isolation in multi-tenant apps",
+    "category": "pattern",
+    "tags": ["postgresql", "row-level-security", "rls", "multi-tenant", "security"],
+    "problem": "Multi-tenant applications that filter by tenant_id in every query risk data leakage when a developer forgets to add the WHERE clause. Defense-in-depth requires enforcement at the database layer.",
+    "solution": "Enable RLS and create policies that enforce tenant isolation:\n\n-- Enable RLS on the table:\nALTER TABLE documents ENABLE ROW LEVEL SECURITY;\n\n-- Policy: users can only see their own tenant's rows:\nCREATE POLICY tenant_isolation ON documents\n  USING (tenant_id = current_setting('app.current_tenant_id')::bigint);\n\n-- Set the tenant context at the start of each request:\nSET LOCAL app.current_tenant_id = '42';\n\n-- Bypass RLS for admin role:\nALTER TABLE documents FORCE ROW LEVEL SECURITY;\nCREATE POLICY admin_bypass ON documents TO admin_role USING (true);\n\n-- Verify policies:\nSELECT * FROM pg_policies WHERE tablename = 'documents';",
+    "why": "RLS policies are evaluated by the query executor before any WHERE clause the application provides. Even if the application sends SELECT * FROM documents, it only sees rows satisfying the policy.",
+    "gotchas": [
+      "Table owners bypass RLS by default; use FORCE ROW LEVEL SECURITY to enforce it for owners too",
+      "RLS does not apply to superusers; use a dedicated application role, not a superuser connection",
+      "current_setting() returns an empty string if the GUC is not set; use current_setting('app.tenant', true) to return NULL instead of raising an error",
+      "RLS adds a predicate to every query; ensure the tenant_id column is indexed"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["row level security", "RLS", "tenant isolation", "multi-tenant", "current_setting", "policy"],
+    "severity": "major",
+    "context": "SaaS applications storing multiple tenants' data in shared tables",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- Safe current_setting that returns NULL when unset:\nCREATE POLICY tenant_isolation ON documents\n  USING (\n    tenant_id = current_setting('app.current_tenant_id', true)::bigint\n  );",
+        "description": "RLS policy using safe current_setting with missing-ok flag"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "pg_dump strategies for large databases without downtime",
+    "category": "pattern",
+    "tags": ["postgresql", "pg_dump", "backup", "restore", "large-database"],
+    "problem": "pg_dump of a multi-terabyte database takes so long that the window for a consistent backup conflicts with operational requirements, and restores from plain SQL format are unacceptably slow.",
+    "solution": "Use parallel custom-format dumps and parallel restores:\n\n# Custom format (compressed, supports parallel restore):\npg_dump -Fc -Z 5 -f mydb.dump mydb\n\n# Parallel dump to directory format (fastest for large DBs):\npg_dump -Fd -j 8 -f mydb_dump_dir mydb\n\n# Parallel restore:\npg_restore -Fd -j 8 -d mydb mydb_dump_dir\n\n# Dump only schema (fast, useful for migrations):\npg_dump --schema-only -f schema.sql mydb\n\n# Exclude large tables (dump data separately):\npg_dump --exclude-table=audit_log -f partial.dump mydb\npg_dump -t audit_log --data-only -Fc -f audit_log.dump mydb",
+    "why": "The directory format (-Fd) splits each table into a separate file, enabling pg_dump and pg_restore to use multiple parallel workers (-j) that process different tables simultaneously, dramatically reducing total time.",
+    "gotchas": [
+      "pg_dump takes a consistent snapshot at start time using REPEATABLE READ; long-running transactions on the source can cause it to wait for locks",
+      "Parallel dump (-j) requires PostgreSQL 9.3+; parallel restore requires pg_restore from 9.3+",
+      "Do not use -j with -Fc (custom single-file format); only -Fd (directory) supports parallel dump",
+      "pg_dumpall is needed to dump roles and tablespaces; pg_dump does not include them"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["pg_dump", "pg_restore", "parallel backup", "directory format", "large database backup", "custom format"],
+    "severity": "moderate",
+    "context": "Production databases too large for a simple pg_dump plain text backup within operational windows",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Parallel dump with compression:\npg_dump -Fd -j 8 -Z 5 -f /backups/mydb_$(date +%Y%m%d) mydb\n\n# Parallel restore with pre/post data separation:\npg_restore -Fd -j 8 --no-owner --no-privileges -d mydb /backups/mydb_20240315",
+        "description": "Parallel pg_dump and pg_restore commands"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Logical replication for zero-downtime migrations and selective replication",
+    "category": "pattern",
+    "tags": ["postgresql", "logical-replication", "pglogical", "migration", "replication"],
+    "problem": "Major version upgrades, schema restructuring, and cross-region replication require either long downtime (pg_dump/restore) or complex tooling, with no native way to replicate a subset of tables.",
+    "solution": "Use logical replication to stream changes table-by-table:\n\n-- On the source (primary):\nALTER SYSTEM SET wal_level = logical;\n-- Restart required\n\nCREATE PUBLICATION my_pub\n  FOR TABLE orders, products, customers;\n\n-- On the destination (replica):\nCREATE SUBSCRIPTION my_sub\n  CONNECTION 'host=source_host dbname=mydb user=replicator'\n  PUBLICATION my_pub;\n\n-- Monitor replication lag:\nSELECT slot_name, confirmed_flush_lsn,\n  pg_current_wal_lsn() - confirmed_flush_lsn AS lag_bytes\nFROM pg_replication_slots;",
+    "why": "Logical replication decodes WAL entries into row-level operations (INSERT/UPDATE/DELETE) that can be filtered by table and replayed on a different schema or PostgreSQL version. This enables gradual cutover without locking.",
+    "gotchas": [
+      "wal_level = logical requires a server restart and increases WAL volume",
+      "Tables must have a PRIMARY KEY or REPLICA IDENTITY FULL for UPDATE/DELETE replication",
+      "DDL changes (ALTER TABLE) are not replicated; apply them manually on both sides",
+      "Replication slots retain WAL until consumed; an abandoned slot causes disk fill"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [
+      "ERROR: logical replication slot requires wal_level >= logical",
+      "ERROR: table \"orders\" cannot be replicated because it does not have a primary key or REPLICA IDENTITY"
+    ],
+    "keywords": ["logical replication", "PUBLICATION", "SUBSCRIPTION", "WAL", "zero-downtime migration", "replication slot", "wal_level"],
+    "severity": "major",
+    "context": "Major version upgrades, cross-region replication, or selective table streaming",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- Check replication lag per slot:\nSELECT slot_name,\n  pg_size_pretty(pg_current_wal_lsn() - confirmed_flush_lsn) AS lag\nFROM pg_replication_slots\nWHERE slot_type = 'logical';",
+        "description": "Monitor logical replication lag"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Table partitioning: declarative range and list partitioning",
+    "category": "pattern",
+    "tags": ["postgresql", "partitioning", "range-partition", "list-partition", "partition-pruning"],
+    "problem": "Time-series tables (logs, events, metrics) grow without bound. Deleting old data with DELETE is slow due to MVCC overhead, and queries on recent data still scan old partitions.",
+    "solution": "Use declarative partitioning to split the table by time or category:\n\n-- Range partitioning by month:\nCREATE TABLE events (\n  id bigserial,\n  created_at timestamptz NOT NULL,\n  payload jsonb\n) PARTITION BY RANGE (created_at);\n\nCREATE TABLE events_2024_01\n  PARTITION OF events\n  FOR VALUES FROM ('2024-01-01') TO ('2024-02-01');\n\nCREATE TABLE events_2024_02\n  PARTITION OF events\n  FOR VALUES FROM ('2024-02-01') TO ('2024-03-01');\n\n-- Drop old data instantly (no VACUUM needed):\nDROP TABLE events_2023_01;\n\n-- Detach without dropping:\nALTER TABLE events DETACH PARTITION events_2023_06;",
+    "why": "Partition pruning allows the query planner to skip partitions that cannot contain matching rows based on the partition key. Dropping an entire partition table is a metadata-only operation and is instant regardless of row count.",
+    "gotchas": [
+      "Partition pruning only applies when the query WHERE clause constrains the partition key",
+      "Indexes must be created on each partition; CREATE INDEX on the parent auto-creates them on all partitions (PG 11+)",
+      "Foreign keys from other tables to a partitioned table are not supported",
+      "pg_partman extension automates partition creation and retention policies"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [
+      "ERROR: no partition of relation \"events\" found for row"
+    ],
+    "keywords": ["table partitioning", "range partition", "partition pruning", "time-series", "DROP TABLE partition", "pg_partman"],
+    "severity": "moderate",
+    "context": "High-volume time-series or log tables that need efficient old-data deletion and bounded query scope",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- Verify partition pruning in EXPLAIN:\nEXPLAIN SELECT * FROM events\nWHERE created_at BETWEEN '2024-03-01' AND '2024-03-31';\n-- Should show only the March partition in the plan",
+        "description": "Confirm partition pruning with EXPLAIN"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "pg_trgm trigram indexes for fast fuzzy and LIKE/ILIKE search",
+    "category": "pattern",
+    "tags": ["postgresql", "pg_trgm", "fuzzy-search", "like", "ilike", "gin", "gist"],
+    "problem": "LIKE '%keyword%' and ILIKE '%keyword%' with a leading wildcard force a sequential scan; standard B-tree indexes cannot be used for infix pattern matching.",
+    "solution": "Use the pg_trgm extension with a GIN or GiST index:\n\nCREATE EXTENSION IF NOT EXISTS pg_trgm;\n\n-- GIN is faster for lookups; GiST is faster to build and supports similarity ORDER BY:\nCREATE INDEX idx_products_name_trgm\n  ON products USING gin(name gin_trgm_ops);\n\n-- Now LIKE, ILIKE, and ~ queries use the index:\nSELECT * FROM products WHERE name ILIKE '%wireless%';\n\n-- Similarity search (fuzzy matching):\nSELECT name, similarity(name, 'wireles') AS sim\nFROM products\nWHERE similarity(name, 'wireles') > 0.3\nORDER BY sim DESC\nLIMIT 10;\n\n-- Nearest-neighbor search (GiST only):\nSELECT name FROM products\nORDER BY name <-> 'wireles'\nLIMIT 10;",
+    "why": "Trigrams are all 3-character substrings of a string. GIN/GiST indexes on trigrams let the planner look up the specific trigrams present in the search pattern and intersect their posting lists, avoiding a full scan.",
+    "gotchas": [
+      "Short search patterns (< 3 characters) cannot use trigram indexes; they fall back to seq scan",
+      "GIN trigram indexes are large (roughly 2-4x the column size); monitor with pg_relation_size()",
+      "pg_trgm.similarity_threshold GUC controls the % operator threshold (default 0.3)",
+      "For full-text search, tsvector/GIN is more precise; pg_trgm is better for autocomplete and typo tolerance"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["pg_trgm", "trigram index", "fuzzy search", "ILIKE index", "similarity", "nearest neighbor", "autocomplete"],
+    "severity": "moderate",
+    "context": "Search boxes, autocomplete, and typo-tolerant lookups on name or description columns",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- Check trigram decomposition:\nSELECT show_trgm('wireless');\n-- {\" w\",\" wi\",\"ess\",\"ire\",\"les\",\"rel\",\"wir\"}",
+        "description": "Inspect trigrams generated from a string"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "COPY vs INSERT: bulk loading performance difference",
+    "category": "principle",
+    "tags": ["postgresql", "copy", "insert", "bulk-load", "performance", "etl"],
+    "problem": "Loading millions of rows with individual INSERT statements or even multi-row INSERT batches is orders of magnitude slower than necessary, causing ETL jobs that take hours instead of minutes.",
+    "solution": "Use COPY for bulk inserts:\n\n-- Load from a CSV file:\nCOPY orders (id, customer_id, amount, created_at)\nFROM '/tmp/orders.csv'\nCSV HEADER;\n\n-- Load from stdin (application pipe):\nCOPY orders FROM STDIN WITH (FORMAT csv, HEADER);\n\n-- From application code (Python psycopg2):\ncursor.copy_expert(\n    \"COPY orders FROM STDIN WITH (FORMAT csv)\",\n    open_csv_file\n)\n\n-- For maximum speed: drop indexes before COPY, recreate after:\nDROP INDEX idx_orders_customer;\nCOPY orders FROM '/tmp/orders.csv' CSV HEADER;\nCREATE INDEX idx_orders_customer ON orders(customer_id);\nANALYZE orders;",
+    "why": "COPY bypasses the SQL parser, planner, and per-row trigger overhead. It uses a binary protocol optimized for streaming. A single COPY of 1 million rows can be 10-50x faster than equivalent INSERT statements.",
+    "gotchas": [
+      "COPY does not fire row-level triggers; if triggers are required, use INSERT instead",
+      "Foreign key checks still run per-row during COPY unless deferred",
+      "COPY requires superuser or the pg_read_server_files role for server-side file access; use STDIN for application-controlled data",
+      "\\COPY in psql client copies from the client machine; COPY copies from the server machine"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["COPY", "bulk insert", "ETL", "bulk load", "copy from stdin", "INSERT performance"],
+    "severity": "moderate",
+    "context": "ETL pipelines, data migrations, and seeding large amounts of data into PostgreSQL",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- Benchmark: 1M rows\n-- INSERT (individual): ~300 seconds\n-- INSERT (1000-row batches): ~30 seconds\n-- COPY: ~3 seconds\n\n-- Fastest COPY pattern:\nBEGIN;\nCOPY orders FROM STDIN WITH (FORMAT binary);\nCOMMIT;\nANALYZE orders;",
+        "description": "COPY with binary format for maximum speed"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Enum types: pros, cons, and the ALTER TABLE trap",
+    "category": "gotcha",
+    "tags": ["postgresql", "enum", "alter-table", "schema-migration", "type"],
+    "problem": "PostgreSQL enum types seem convenient for status columns, but adding a new value to an enum mid-list requires a table rewrite in older versions, and removing values is impossible without recreating the type.",
+    "solution": "Use ADD VALUE to append to an enum safely, or prefer CHECK constraints or a lookup table:\n\n-- Safe: add a new value (PG 9.1+, no rewrite needed if appending):\nALTER TYPE order_status ADD VALUE 'refunded' AFTER 'cancelled';\n\n-- DANGER: cannot remove enum values or reorder:\n-- Must recreate the type to do so:\nALTER TABLE orders ALTER COLUMN status TYPE text;\nDROP TYPE order_status;\nCREATE TYPE order_status AS ENUM ('pending','processing','shipped','refunded');\nALTER TABLE orders ALTER COLUMN status TYPE order_status\n  USING status::order_status;\n\n-- Alternative: CHECK constraint (easier to modify):\nALTER TABLE orders ADD CONSTRAINT chk_status\n  CHECK (status IN ('pending','processing','shipped','cancelled'));",
+    "why": "Enum values are stored by OID in pg_enum. Adding a value is a catalog-only operation. Removing one would break existing rows that reference the OID. CHECK constraints are just text comparisons and can be dropped and recreated freely.",
+    "gotchas": [
+      "ALTER TYPE ... ADD VALUE cannot be rolled back inside a transaction (it auto-commits the catalog change in PG < 14)",
+      "Enum comparisons use the declared sort order, not alphabetical; this can surprise ORDER BY queries",
+      "ORMs may cache enum values; restart app servers after altering an enum",
+      "Enums across schemas can collide; qualify with schema name in shared libraries"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [
+      "ERROR: cannot drop type order_status because other objects depend on it",
+      "ERROR: invalid input value for enum order_status: \"refunded\""
+    ],
+    "keywords": ["enum type", "ALTER TYPE ADD VALUE", "enum migration", "CHECK constraint", "pg_enum", "schema migration"],
+    "severity": "moderate",
+    "context": "Designing status or category columns in PostgreSQL where values evolve over time",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- List all enum types and their values:\nSELECT t.typname, e.enumlabel, e.enumsortorder\nFROM pg_type t\nJOIN pg_enum e ON t.oid = e.enumtypid\nWHERE t.typtype = 'e'\nORDER BY t.typname, e.enumsortorder;",
+        "description": "Inspect all enum types and their ordered values"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "NULL comparisons: why = NULL always returns NULL, not false",
+    "category": "gotcha",
+    "tags": ["postgresql", "null", "is-null", "comparison", "three-valued-logic"],
+    "problem": "WHERE column = NULL returns no rows even when NULL values exist in the column. Developers write = NULL expecting it to filter for nulls, but this is a silent logic error.",
+    "solution": "Use IS NULL and IS NOT NULL for null comparisons:\n\n-- WRONG (always returns 0 rows):\nSELECT * FROM users WHERE deleted_at = NULL;\nSELECT * FROM users WHERE deleted_at != NULL;\n\n-- CORRECT:\nSELECT * FROM users WHERE deleted_at IS NULL;\nSELECT * FROM users WHERE deleted_at IS NOT NULL;\n\n-- NULL-safe equality (returns true when both sides are NULL):\nSELECT * FROM users WHERE deleted_at IS NOT DISTINCT FROM NULL;\n\n-- COALESCE for null substitution:\nSELECT coalesce(nickname, first_name, 'Anonymous') FROM users;\n\n-- NULL in aggregations:\nSELECT count(*) AS total, count(deleted_at) AS deleted FROM users;\n-- count(*) counts all rows; count(col) skips NULLs",
+    "why": "SQL uses three-valued logic: TRUE, FALSE, and UNKNOWN. Any comparison with NULL produces UNKNOWN, including NULL = NULL. WHERE clauses only pass rows where the condition is TRUE, so UNKNOWN rows are filtered out silently.",
+    "gotchas": [
+      "NOT IN with a subquery that returns any NULL silently returns no rows due to null propagation",
+      "GROUP BY treats NULL as a distinct group value, unlike equality comparison",
+      "Unique indexes in PostgreSQL allow multiple NULL values (NULL IS NOT DISTINCT FROM NULL is false for unique constraint purposes)",
+      "NULLIF(a, b) returns NULL when a = b, useful for division-by-zero guards"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["NULL comparison", "IS NULL", "IS NOT NULL", "three-valued logic", "NOT IN NULL", "COALESCE", "IS NOT DISTINCT FROM"],
+    "severity": "major",
+    "context": "Any query filtering, joining, or comparing nullable columns",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- NOT IN with NULL in subquery returns nothing:\nSELECT * FROM orders\nWHERE customer_id NOT IN (SELECT id FROM customers WHERE deleted_at IS NULL);\n-- If any customer has id=NULL (impossible with PK, but illustrative), zero rows return.\n\n-- Safe alternative:\nSELECT * FROM orders o\nWHERE NOT EXISTS (\n  SELECT 1 FROM customers c\n  WHERE c.id = o.customer_id AND c.deleted_at IS NULL\n);",
+        "description": "NOT IN vs NOT EXISTS with NULL safety"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "N+1 query problem: detect and fix with EXISTS or JOIN",
+    "category": "debug",
+    "tags": ["postgresql", "n+1", "orm", "performance", "query-optimization"],
+    "problem": "An API endpoint that loads 100 orders and then fires one query per order to fetch customer details executes 101 queries instead of 1, causing 10-100x latency.",
+    "solution": "Replace N+1 with a single JOIN or an IN-list query:\n\n-- N+1 pattern (bad):\n-- SELECT * FROM orders LIMIT 100;\n-- For each order: SELECT * FROM customers WHERE id = $1;\n\n-- Fixed with JOIN:\nSELECT o.id, o.amount, c.name, c.email\nFROM orders o\nJOIN customers c ON c.id = o.customer_id\nLIMIT 100;\n\n-- Fixed with EXISTS check:\nSELECT o.* FROM orders o\nWHERE EXISTS (\n  SELECT 1 FROM customers c\n  WHERE c.id = o.customer_id AND c.active = true\n);\n\n-- Detect in pg_stat_statements:\nSELECT query, calls, mean_exec_time\nFROM pg_stat_statements\nWHERE query LIKE '%customers%'\n  AND calls > 1000\nORDER BY calls DESC;",
+    "why": "Each database round trip has latency (network + parsing + planning + execution). N+1 multiplies this by the result set size. A JOIN or subquery brings all data in one round trip with a single plan.",
+    "gotchas": [
+      "ORMs hide N+1 behind method chains; use query logging (log_min_duration_statement=0) to detect them",
+      "Eager loading in ORMs can produce a Cartesian product for multiple has-many associations; use separate queries per association instead",
+      "pg_stat_statements shows calls count; a query with 10000 calls/minute when the endpoint is called 100 times/minute signals N+1"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["N+1 query", "ORM N+1", "query optimization", "JOIN instead of loop", "eager loading", "lazy loading"],
+    "severity": "major",
+    "context": "ORM-backed REST APIs fetching related records in application loops",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- Find N+1 candidates in pg_stat_statements:\nSELECT left(query, 80), calls,\n  round(mean_exec_time::numeric, 3) AS mean_ms\nFROM pg_stat_statements\nWHERE calls > 10000\n  AND mean_exec_time < 5\nORDER BY calls DESC\nLIMIT 20;",
+        "description": "Identify high-call-count, individually fast queries (classic N+1 signature)"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Transaction isolation levels: read committed vs repeatable read vs serializable",
+    "category": "principle",
+    "tags": ["postgresql", "isolation", "transaction", "serializability", "read-committed"],
+    "problem": "Developers use the default READ COMMITTED isolation level and encounter non-repeatable reads, lost updates, and phantom rows in concurrent workloads without understanding why.",
+    "solution": "Choose the isolation level that matches the consistency requirement:\n\n-- Default (READ COMMITTED): each statement sees committed data at statement start.\n-- Sufficient for simple CRUD but vulnerable to lost updates.\n\n-- REPEATABLE READ: entire transaction sees consistent snapshot from BEGIN.\nBEGIN ISOLATION LEVEL REPEATABLE READ;\nSELECT balance FROM accounts WHERE id = 1; -- 1000\n-- concurrent UPDATE sets balance = 800 and commits\nSELECT balance FROM accounts WHERE id = 1; -- still 1000 (snapshot)\nCOMMIT;\n\n-- SERIALIZABLE: full SSI — prevents write skew and phantom reads.\n-- Transactions may be aborted with serialization_failure; retry in application.\nBEGIN ISOLATION LEVEL SERIALIZABLE;\n-- ...\nCOMMIT; -- may raise ERROR: 40001 serialization failure",
+    "why": "PostgreSQL's MVCC gives each transaction a snapshot of the database. READ COMMITTED refreshes the snapshot per statement. REPEATABLE READ fixes it at transaction start. SERIALIZABLE adds predicate locking to detect write skew.",
+    "gotchas": [
+      "READ COMMITTED does not prevent lost updates; use SELECT ... FOR UPDATE to lock rows",
+      "SERIALIZABLE transactions must be retried on serialization_failure (SQLSTATE 40001)",
+      "REPEATABLE READ in PostgreSQL also prevents phantom reads (unlike the SQL standard which allows them)",
+      "Long-running REPEATABLE READ transactions hold a snapshot, delaying VACUUM's cleanup"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [
+      "ERROR: could not serialize access due to concurrent update",
+      "ERROR: could not serialize access due to read/write dependencies among transactions"
+    ],
+    "keywords": ["transaction isolation", "READ COMMITTED", "REPEATABLE READ", "SERIALIZABLE", "lost update", "write skew", "serialization failure"],
+    "severity": "major",
+    "context": "Financial transactions, inventory management, and any scenario requiring strict consistency",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- Prevent lost update with SELECT FOR UPDATE:\nBEGIN;\nSELECT balance FROM accounts WHERE id = 1 FOR UPDATE;\n-- Now locked; concurrent updaters must wait\nUPDATE accounts SET balance = balance - 100 WHERE id = 1;\nCOMMIT;",
+        "description": "SELECT FOR UPDATE to prevent lost update under READ COMMITTED"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Window functions: running totals, rankings, and lag/lead without self-joins",
+    "category": "pattern",
+    "tags": ["postgresql", "window-functions", "rank", "lag", "running-total", "analytics"],
+    "problem": "Computing running totals, row rankings, or comparing a row to the previous/next row requires self-joins or subqueries that are verbose, slow, and hard to maintain.",
+    "solution": "Use window functions with OVER (PARTITION BY ... ORDER BY ...):\n\n-- Running total:\nSELECT id, amount,\n  sum(amount) OVER (ORDER BY created_at) AS running_total\nFROM orders;\n\n-- Rank within category:\nSELECT id, category, sales,\n  rank() OVER (PARTITION BY category ORDER BY sales DESC) AS rank_in_cat\nFROM products;\n\n-- Compare to previous row:\nSELECT date, revenue,\n  lag(revenue, 1) OVER (ORDER BY date) AS prev_revenue,\n  revenue - lag(revenue, 1) OVER (ORDER BY date) AS delta\nFROM daily_revenue;\n\n-- Moving 7-day average:\nSELECT date, revenue,\n  avg(revenue) OVER (\n    ORDER BY date\n    ROWS BETWEEN 6 PRECEDING AND CURRENT ROW\n  ) AS moving_avg_7d\nFROM daily_revenue;",
+    "why": "Window functions operate on a set of rows related to the current row (the window frame) without collapsing them into a single output row. They are evaluated after WHERE and GROUP BY, making them composable.",
+    "gotchas": [
+      "Window functions cannot be used in WHERE or HAVING; wrap in a subquery or CTE",
+      "Without an ORDER BY in OVER(), the frame defaults to all rows in the partition (unordered); results are non-deterministic",
+      "ROWS vs RANGE frame mode differs when there are ties in the ORDER BY column",
+      "ntile(n) distributes rows into n buckets as evenly as possible, not by value ranges"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["window function", "OVER PARTITION BY", "rank", "lag", "lead", "running total", "moving average", "ROWS BETWEEN"],
+    "severity": "tip",
+    "context": "Analytics queries, reporting, and any computation that requires context from neighboring rows",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- Deduplicate keeping only the latest row per user:\nSELECT DISTINCT ON (user_id) *\nFROM events\nORDER BY user_id, created_at DESC;\n\n-- Equivalent with ROW_NUMBER:\nSELECT * FROM (\n  SELECT *, row_number() OVER (PARTITION BY user_id ORDER BY created_at DESC) AS rn\n  FROM events\n) t WHERE rn = 1;",
+        "description": "DISTINCT ON vs ROW_NUMBER() for latest-per-group"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "CTEs vs subqueries: optimization fence behavior in PostgreSQL",
+    "category": "gotcha",
+    "tags": ["postgresql", "cte", "subquery", "optimization-fence", "query-planner"],
+    "problem": "A complex query rewritten as a CTE for readability suddenly becomes slower than the equivalent subquery because the planner materializes the CTE result and cannot push predicates into it.",
+    "solution": "Understand when CTEs act as optimization fences and use NOT MATERIALIZED:\n\n-- PG 11 and earlier: ALL CTEs are optimization fences (materialized).\n-- PG 12+: non-recursive CTEs are inlined unless they are volatile or referenced multiple times.\n\n-- Force inlining (PG 12+):\nWITH recent_orders AS NOT MATERIALIZED (\n  SELECT * FROM orders WHERE created_at > now() - interval '7 days'\n)\nSELECT * FROM recent_orders WHERE customer_id = 42;\n\n-- Force materialization (evaluate once, good for expensive CTEs referenced multiple times):\nWITH expensive_agg AS MATERIALIZED (\n  SELECT customer_id, sum(amount) AS total FROM orders GROUP BY 1\n)\nSELECT c.name, e.total\nFROM customers c\nJOIN expensive_agg e ON e.customer_id = c.id;",
+    "why": "Materialized CTEs compute their result once and store it in a temporary file, preventing the planner from applying outer WHERE conditions inside. Inlined CTEs are substituted into the main query before planning, letting the planner optimize the whole query at once.",
+    "gotchas": [
+      "In PG 11 and below every CTE is materialized; avoid CTEs in hot paths on older versions",
+      "Recursive CTEs are always materialized regardless of version or hint",
+      "Using a CTE multiple times in one query forces materialization in PG 12+ even without MATERIALIZED keyword",
+      "EXPLAIN output shows 'CTE Scan' for materialized CTEs and inlines the subplan for NOT MATERIALIZED"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["CTE optimization fence", "NOT MATERIALIZED", "MATERIALIZED", "subquery vs CTE", "query planner", "CTE scan"],
+    "severity": "moderate",
+    "context": "Complex queries refactored to use CTEs for readability that regress in performance",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- Check if CTE is materialized:\nEXPLAIN SELECT * FROM (\n  WITH orders_cte AS (SELECT * FROM orders)\n  SELECT * FROM orders_cte WHERE customer_id = 1\n) t;\n-- 'CTE Scan' node = materialized; no CTE Scan = inlined",
+        "description": "EXPLAIN to verify CTE materialization status"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "UPSERT with INSERT ... ON CONFLICT DO UPDATE",
+    "category": "pattern",
+    "tags": ["postgresql", "upsert", "on-conflict", "insert", "update", "idempotent"],
+    "problem": "Applications that need to insert-or-update rows (upsert) often implement this with a SELECT then INSERT or UPDATE, which is not atomic and causes race conditions under concurrent load.",
+    "solution": "Use INSERT ... ON CONFLICT for atomic upsert:\n\n-- Upsert by primary key:\nINSERT INTO products (id, name, price, updated_at)\nVALUES (42, 'Widget', 9.99, now())\nON CONFLICT (id) DO UPDATE\n  SET name = EXCLUDED.name,\n      price = EXCLUDED.price,\n      updated_at = EXCLUDED.updated_at;\n\n-- Upsert only if the new value is more recent:\nINSERT INTO cache (key, value, updated_at)\nVALUES ('session:123', $data, now())\nON CONFLICT (key) DO UPDATE\n  SET value = EXCLUDED.value,\n      updated_at = EXCLUDED.updated_at\n  WHERE EXCLUDED.updated_at > cache.updated_at;\n\n-- Insert and ignore on conflict:\nINSERT INTO idempotency_keys (key, created_at)\nVALUES ('req_abc123', now())\nON CONFLICT (key) DO NOTHING;",
+    "why": "INSERT ... ON CONFLICT is a single atomic operation. The database evaluates the conflict and performs the update or skip within a single lock cycle, eliminating the TOCTOU race condition in application-level read-then-write logic.",
+    "gotchas": [
+      "ON CONFLICT requires specifying the exact conflict target (column or constraint name)",
+      "EXCLUDED refers to the row that was proposed for insertion; use it in the DO UPDATE SET clause",
+      "ON CONFLICT DO UPDATE still counts as a write and fires update triggers",
+      "For multi-row upserts, all rows share the same ON CONFLICT clause"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [
+      "ERROR: there is no unique or exclusion constraint matching the ON CONFLICT specification"
+    ],
+    "keywords": ["upsert", "ON CONFLICT", "INSERT OR UPDATE", "EXCLUDED", "idempotent write", "race condition"],
+    "severity": "moderate",
+    "context": "Any write that should update if the row exists or insert if it does not",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- Atomic increment (counter upsert):\nINSERT INTO page_views (page_id, view_count)\nVALUES (7, 1)\nON CONFLICT (page_id) DO UPDATE\n  SET view_count = page_views.view_count + 1;",
+        "description": "Atomic counter increment with upsert"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Prepared statement caching and the generic plan problem",
+    "category": "gotcha",
+    "tags": ["postgresql", "prepared-statements", "plan-cache", "generic-plan", "custom-plan"],
+    "problem": "After 5 executions, PostgreSQL switches a prepared statement to a generic plan that ignores actual parameter values. This can cause the planner to choose a sequential scan when an index scan would be optimal for specific values.",
+    "solution": "Understand and control the plan caching behavior:\n\n-- PREPARE creates a statement:\nPREPARE find_orders(int) AS\n  SELECT * FROM orders WHERE customer_id = $1;\n\n-- First 5 calls use custom plans (with actual value).\n-- After 5 calls, PostgreSQL may switch to a generic plan.\n\n-- Check which plan is used:\nEXECUTE find_orders(42);\nEXPLAIN EXECUTE find_orders(42);\n\n-- Force custom plans (per session):\nSET plan_cache_mode = force_custom_plan;\n\n-- Force generic plans (consistent behavior, useful for connection poolers):\nSET plan_cache_mode = force_generic_plan;\n\n-- Check prepared statements in the current session:\nSELECT name, statement, parameter_types\nFROM pg_prepared_statements;",
+    "why": "PostgreSQL uses a generic plan when it estimates that the generic plan cost is within 1.1x of the average custom plan cost over 5 executions. Generic plans are faster to produce (no re-planning) but may be suboptimal for skewed distributions.",
+    "gotchas": [
+      "PgBouncer in transaction mode deallocates prepared statements; use protocol-level prepared statements only in session mode",
+      "plan_cache_mode GUC was added in PostgreSQL 12; older versions have no control",
+      "Extended query protocol (binary) always uses prepared statement caching in most drivers",
+      "High-cardinality columns with data skew are most vulnerable to the generic plan problem"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["prepared statement", "plan cache", "generic plan", "custom plan", "plan_cache_mode", "pg_prepared_statements"],
+    "severity": "moderate",
+    "context": "Applications using ORM or driver-level prepared statements on columns with skewed data distribution",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- See generic vs custom plan in EXPLAIN:\nPREPARE q(int) AS SELECT * FROM orders WHERE status_id = $1;\nEXPLAIN EXECUTE q(1);\n-- After 5 execs, check if plan changed:\nEXECUTE q(1); EXECUTE q(1); EXECUTE q(1); EXECUTE q(1); EXECUTE q(1);\nEXPLAIN EXECUTE q(1);",
+        "description": "Observe plan caching progression after 5 executions"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "timestamp with time zone vs timestamp without time zone",
+    "category": "gotcha",
+    "tags": ["postgresql", "timestamp", "timestamptz", "timezone", "utc"],
+    "problem": "Storing timestamps as timestamp (without time zone) in a PostgreSQL database that has multiple application servers in different time zones causes ambiguous data: the stored value has no zone context and can be misinterpreted on read.",
+    "solution": "Always use timestamptz (timestamp with time zone) for wall-clock times:\n\n-- timestamptz stores UTC internally; displays in session timezone:\nCREATE TABLE events (\n  id bigserial PRIMARY KEY,\n  occurred_at timestamptz NOT NULL DEFAULT now()\n);\n\n-- Set session timezone for display (storage is always UTC):\nSET timezone = 'America/New_York';\nSELECT occurred_at FROM events; -- displayed in Eastern time\n\n-- Convert between zones:\nSELECT occurred_at AT TIME ZONE 'UTC' AS utc_time,\n       occurred_at AT TIME ZONE 'Asia/Tokyo' AS tokyo_time\nFROM events;\n\n-- timestamp (no tz) just stores the literal value with no conversion:\n-- Avoid for anything users interact with across timezones",
+    "why": "timestamptz stores the absolute moment in UTC. On insert, PostgreSQL converts the provided value from the session timezone to UTC. On read, it converts back to the session timezone. timestamp (no tz) performs no conversion and stores the literal text value, which becomes ambiguous across timezones.",
+    "gotchas": [
+      "AT TIME ZONE applied to timestamptz returns a timestamp (no tz) in that zone — the result loses zone info",
+      "The PostgreSQL server timezone (postgresql.conf: timezone) affects display but never storage for timestamptz",
+      "date_trunc on a timestamptz respects the session timezone; results vary by zone for daily/weekly truncations",
+      "now() returns timestamptz; current_timestamp is an alias; both return the transaction start time"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["timestamptz", "timestamp with time zone", "UTC", "timezone", "AT TIME ZONE", "date_trunc timezone"],
+    "severity": "major",
+    "context": "Applications with users or servers in multiple time zones storing event or record timestamps",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- Truncate to day in user's local timezone:\nSELECT date_trunc('day', occurred_at AT TIME ZONE 'America/Chicago') AS local_day,\n  count(*)\nFROM events\nGROUP BY 1\nORDER BY 1;",
+        "description": "date_trunc by day in a specific timezone using AT TIME ZONE"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Foreign key cascades: ON DELETE CASCADE vs application-level deletion",
+    "category": "principle",
+    "tags": ["postgresql", "foreign-key", "cascade", "referential-integrity", "delete"],
+    "problem": "Deleting a parent row fails with a foreign key violation because child rows still reference it, or developers silently break referential integrity by deleting in the wrong order without cascade configured.",
+    "solution": "Configure the appropriate cascade behavior on the foreign key:\n\n-- Delete children automatically when parent is deleted:\nALTER TABLE order_items\n  ADD CONSTRAINT fk_order\n  FOREIGN KEY (order_id) REFERENCES orders(id)\n  ON DELETE CASCADE;\n\n-- Set FK to NULL when parent is deleted (orphan preservation):\nALTER TABLE comments\n  ADD CONSTRAINT fk_post\n  FOREIGN KEY (post_id) REFERENCES posts(id)\n  ON DELETE SET NULL;\n\n-- Block deletion if children exist (default behavior):\n-- ON DELETE RESTRICT or ON DELETE NO ACTION (default)\n\n-- Check existing FK constraints:\nSELECT\n  tc.table_name, kcu.column_name,\n  ccu.table_name AS foreign_table,\n  rc.delete_rule\nFROM information_schema.table_constraints tc\nJOIN information_schema.key_column_usage kcu USING (constraint_name)\nJOIN information_schema.constraint_column_usage ccu USING (constraint_name)\nJOIN information_schema.referential_constraints rc USING (constraint_name)\nWHERE tc.constraint_type = 'FOREIGN KEY';",
+    "why": "ON DELETE CASCADE is enforced by the database engine at the storage level, making deletion atomic and consistent. Application-level deletion order is fragile and breaks under concurrent writes or missed code paths.",
+    "gotchas": [
+      "CASCADE can silently delete thousands of rows; always test with a BEGIN/ROLLBACK block first",
+      "Adding a FK constraint to a large table acquires an AccessShareLock and scans for violations; use NOT VALID + VALIDATE CONSTRAINT to avoid locking",
+      "Circular FK references require DEFERRABLE constraints",
+      "ON DELETE SET NULL requires the FK column to be nullable"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [
+      "ERROR: insert or update on table \"order_items\" violates foreign key constraint",
+      "ERROR: update or delete on table \"orders\" violates foreign key constraint on table \"order_items\""
+    ],
+    "keywords": ["foreign key", "ON DELETE CASCADE", "SET NULL", "referential integrity", "NOT VALID", "VALIDATE CONSTRAINT"],
+    "severity": "moderate",
+    "context": "Database schema design and migrations involving parent-child table relationships",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- Add FK without full table scan lock (large tables):\nALTER TABLE order_items\n  ADD CONSTRAINT fk_order\n  FOREIGN KEY (order_id) REFERENCES orders(id)\n  NOT VALID;\n\n-- Validate later (weaker lock, can run concurrently):\nALTER TABLE order_items VALIDATE CONSTRAINT fk_order;",
+        "description": "Low-lock FK addition using NOT VALID + VALIDATE CONSTRAINT"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Reading EXPLAIN ANALYZE output: key nodes and red flags",
+    "category": "pattern",
+    "tags": ["postgresql", "explain-analyze", "query-plan", "performance", "seq-scan"],
+    "problem": "Developers run EXPLAIN ANALYZE but cannot parse the output to identify why a query is slow or which part of the plan is the bottleneck.",
+    "solution": "Learn the key nodes and what to look for:\n\nEXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) SELECT ...;\n\n-- Key node types:\n-- Seq Scan: full table scan. Red flag on large tables.\n-- Index Scan: uses B-tree index. Good.\n-- Index Only Scan: reads index without heap. Best for covered columns.\n-- Bitmap Heap Scan: batches index lookups. Good for medium selectivity.\n-- Hash Join / Merge Join / Nested Loop: join strategies.\n\n-- What to check:\n-- 'rows=X' (estimated) vs 'rows=X' (actual): large divergence = stale stats.\n-- 'Buffers: hit=X read=Y': high 'read' = cache miss, I/O bound.\n-- 'actual time=X..Y loops=Z': if loops is high in Nested Loop, inner side is executed many times.\n-- 'Filter: (...)' below a Seq Scan: column needs an index.\n\nEXPLAIN (ANALYZE, BUFFERS)\nSELECT * FROM orders o\nJOIN customers c ON c.id = o.customer_id\nWHERE o.status = 'pending';",
+    "why": "EXPLAIN ANALYZE executes the query and shows actual row counts and timing alongside the planner's estimates. Divergence between estimates and actuals points to stale statistics (run ANALYZE) or correlated columns requiring multi-column statistics.",
+    "gotchas": [
+      "EXPLAIN ANALYZE actually runs the query; wrap in BEGIN/ROLLBACK for mutating queries",
+      "Use EXPLAIN (ANALYZE, BUFFERS) not just EXPLAIN; BUFFERS reveals I/O vs cache behavior",
+      "explain.depesz.com and explain.dalibo.com provide visual EXPLAIN ANALYZE rendering",
+      "Add CREATE STATISTICS for correlated columns to improve estimate accuracy"
+    ],
+    "language": "sql",
+    "framework": "postgresql",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["EXPLAIN ANALYZE", "query plan", "Seq Scan", "Index Scan", "Buffers", "nested loop", "row estimate", "BUFFERS"],
+    "severity": "tip",
+    "context": "Diagnosing slow query performance and verifying index usage",
+    "code_snippets": [
+      {
+        "lang": "sql",
+        "code": "-- Safe EXPLAIN ANALYZE for write queries:\nBEGIN;\nEXPLAIN (ANALYZE, BUFFERS)\nDELETE FROM sessions WHERE expires_at < now();\nROLLBACK;\n\n-- Add multi-column statistics for correlated columns:\nCREATE STATISTICS stat_orders_status_customer\n  ON status, customer_id FROM orders;\nANALYZE orders;",
+        "description": "Safe EXPLAIN ANALYZE for writes and improving correlation statistics"
+      }
+    ],
+    "version_info": null
+  }
+]

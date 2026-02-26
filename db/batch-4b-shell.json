@@ -1,0 +1,916 @@
+[
+  {
+    "title": "Always quote variables to prevent word splitting and glob expansion",
+    "category": "gotcha",
+    "tags": ["bash", "quoting", "word-splitting", "glob"],
+    "problem": "Unquoted variables undergo word splitting and glob expansion. A variable containing spaces or glob characters will be broken into multiple arguments or expanded to matching filenames unexpectedly. Example: FILE='my file.txt'; rm $FILE tries to remove 'my' and 'file.txt' separately.",
+    "solution": "Always double-quote variable expansions: rm \"$FILE\". Use single quotes for literal strings where no expansion is wanted. Use double quotes when you need variable or command substitution but want to suppress word splitting.\n\n# BAD\nfor f in $FILES; do ...\n\n# GOOD\nfor f in \"$FILES\"; do ...  # if single path\n# Or use an array:\nfiles=(\"file one.txt\" \"file two.txt\")\nfor f in \"${files[@]}\"; do ...",
+    "why": "The shell splits unquoted expansions on characters in $IFS (space, tab, newline by default), then applies glob expansion to each resulting word. Quoting suppresses both steps.",
+    "gotchas": [
+      "\"$@\" preserves individual argument boundaries; $@ without quotes collapses them",
+      "\"$*\" joins all arguments into one string with IFS[0] as separator",
+      "Arrays require \"${arr[@]}\" not \"${arr[*]}\" to preserve element boundaries",
+      "Quoting inside [[ ]] is optional for the right-hand side of = but still good practice"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["quoting", "word splitting", "glob expansion", "IFS", "double quote", "variable expansion"],
+    "severity": "critical",
+    "context": "Any script that handles filenames, user input, or paths containing spaces",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# BAD — word splitting breaks the filename\nfile=\"my report.pdf\"\nrm $file          # tries to rm 'my' and 'report.pdf'\n\n# GOOD\nrm \"$file\"        # treats as single argument\n\n# BAD — glob expansion surprises\npattern=\"*.log\"\nls $pattern       # expands *.log in current dir\n\n# GOOD — explicit glob when you want expansion, quoted when you don't\nls \"$pattern\"     # passes literal *.log to ls",
+        "description": "Word splitting and glob expansion example"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Single quotes vs double quotes: when each is appropriate",
+    "category": "pattern",
+    "tags": ["bash", "quoting", "single-quote", "double-quote"],
+    "problem": "Developers confuse single and double quoting rules, leading to either unwanted expansions or missed expansions. Single quotes prevent ALL interpretation; double quotes allow $var, $(cmd), and \\escapes.",
+    "solution": "Use single quotes for static strings and patterns that must be taken literally. Use double quotes when you need variable or command substitution.\n\n# Static regex — single quotes\ngrep 'error\\|warning' log.txt\n\n# Variable in string — double quotes\ngrep \"$pattern\" log.txt\n\n# Mix them in the same word\ngrep '\\b'\"$word\"'\\b' file.txt",
+    "why": "Inside single quotes the shell performs zero processing. Inside double quotes only $, `, \\, and ! are special. This distinction controls when the shell interprets metacharacters.",
+    "gotchas": [
+      "You cannot embed a single quote inside single-quoted string — use '\\'' or switch to double quotes",
+      "History expansion (!) is active in double quotes in interactive shells but not in scripts",
+      "$'string' syntax allows ANSI C escapes like \\n, \\t and is distinct from both quote styles",
+      "Heredocs with quoted delimiter (<<'EOF') suppress expansion inside the heredoc body"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["single quote", "double quote", "quoting rules", "string literal", "variable expansion", "escape"],
+    "severity": "moderate",
+    "context": "Writing grep/sed/awk patterns or embedding variables in strings",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "name=\"world\"\n\necho 'Hello $name'   # Hello $name  (literal)\necho \"Hello $name\"  # Hello world  (expanded)\n\n# Embed single quote: use $'...' or escape\necho $'it\\'s fine'\necho \"it's fine\"\n\n# Literal backslash-n vs newline\necho 'line\\n'    # line\\n\necho $'line\\n'   # line + actual newline",
+        "description": "Single vs double quoting comparison"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "bash strict mode: set -euo pipefail makes scripts fail loudly",
+    "category": "pattern",
+    "tags": ["bash", "strict-mode", "set -e", "pipefail", "error-handling"],
+    "problem": "By default bash silently ignores command failures, unset variables, and errors in pipelines. A script can delete the wrong data or produce bad output without any error indicator.",
+    "solution": "Put 'set -euo pipefail' at the top of every bash script (after the shebang). Optionally add IFS=$'\\n\\t' to tighten word splitting.\n\n#!/usr/bin/env bash\nset -euo pipefail\nIFS=$'\\n\\t'\n\n-e: exit on first command failure\n-u: exit on unset variable reference\n-o pipefail: pipeline fails if any segment fails\n-E: (optional) ERR traps inherited by functions",
+    "why": "-e catches failures early before they cascade. -u catches typos in variable names. pipefail catches failures hidden inside pipes because without it only the last command's exit code is returned.",
+    "gotchas": [
+      "set -e does not catch failures inside $() subshells used in assignments: x=$(false) does NOT exit",
+      "set -e interacts badly with 'if' and '||' — commands in those positions are exempt",
+      "Use '|| true' to intentionally allow a command to fail: grep pattern file || true",
+      "Array expansion with unset array: set -u triggers on ${arr[@]} if arr is empty — use ${arr[@]+'${arr[@]}'} workaround",
+      "pipefail changes ${PIPESTATUS[@]} behavior — always check it if you need individual pipe statuses"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [
+      "bash: VARNAME: unbound variable"
+    ],
+    "keywords": ["strict mode", "set -e", "set -u", "pipefail", "error exit", "unbound variable", "pipeline failure"],
+    "severity": "critical",
+    "context": "Any production or automation bash script",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "#!/usr/bin/env bash\nset -euo pipefail\nIFS=$'\\n\\t'\n\n# -e: this exits the script\n# false\n\n# -u: this exits the script\n# echo $UNDEFINED_VAR\n\n# pipefail: this exits because grep fails\n# cat /etc/passwd | grep 'nonexistent_user' | wc -l\n\n# Safely allow failures\ngrep 'pattern' file || true\ncount=$(grep -c 'pattern' file || echo 0)",
+        "description": "Bash strict mode setup"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "trap for cleanup: always run teardown code on exit or signal",
+    "category": "pattern",
+    "tags": ["bash", "trap", "cleanup", "signal", "EXIT", "tempfile"],
+    "problem": "Scripts that create temp files, acquire locks, or start background processes leave behind mess when they exit abnormally (Ctrl-C, error, kill). Cleanup code at the bottom of a script is skipped if the script exits early.",
+    "solution": "Use 'trap cleanup EXIT' to register a function that runs whenever the script exits, regardless of how it exits.\n\ncleanup() {\n  rm -f \"$tmpfile\"\n  kill \"$bgpid\" 2>/dev/null || true\n}\ntrap cleanup EXIT\n\ntmpfile=$(mktemp)\nbg_process &\nbgpid=$!",
+    "why": "The EXIT pseudo-signal fires for any exit: normal completion, set -e triggered exit, explicit exit N, and most signals after they are handled. It is the single reliable hook for teardown.",
+    "gotchas": [
+      "trap does NOT fire on SIGKILL (kill -9) — nothing does, by design",
+      "Each trap call replaces the previous one for that signal — chain multiple cleanups inside a single function",
+      "Trap functions inherit the exit code at the time they run; use 'exit $?' at the end to preserve it",
+      "In subshells, traps are inherited but EXIT fires at subshell exit, not parent exit",
+      "Use 'trap - EXIT' inside the cleanup to prevent recursion if the cleanup itself fails with set -e"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["trap", "EXIT trap", "cleanup", "temp file", "signal handling", "teardown", "SIGINT", "SIGTERM"],
+    "severity": "major",
+    "context": "Scripts that create temporary resources, background processes, or exclusive locks",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "#!/usr/bin/env bash\nset -euo pipefail\n\nTMPDIR_WORK=$(mktemp -d)\n\ncleanup() {\n  local exit_code=$?\n  rm -rf \"$TMPDIR_WORK\"\n  echo \"Cleaned up. Exit: $exit_code\" >&2\n  exit \"$exit_code\"\n}\ntrap cleanup EXIT\n\n# Also catch specific signals explicitly if needed\ntrap 'echo \"Interrupted\" >&2' INT TERM\n\n# ... do work in $TMPDIR_WORK ...",
+        "description": "Robust EXIT trap with cleanup"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Process substitution <() feeds command output as a file-like argument",
+    "category": "pattern",
+    "tags": ["bash", "process-substitution", "pipe", "diff", "file descriptor"],
+    "problem": "Many commands expect filename arguments, not stdin. To compare two command outputs with diff, a naive approach requires writing to temp files first.",
+    "solution": "Use process substitution <(command) which creates a named pipe (or /dev/fd/N) that the outer command reads as a file.\n\ndiff <(sort file1) <(sort file2)\ncomm <(sort list1) <(sort list2)\njoin <(sort -k1 a.tsv) <(sort -k1 b.tsv)",
+    "why": "<(...) creates a /dev/fd/N file descriptor or a named FIFO that the shell wires up. The outer command gets a filename it can open and read, while the inner command runs concurrently.",
+    "gotchas": [
+      "Process substitution is bash/zsh only — not POSIX sh",
+      "The substituted process runs in a subshell; variable assignments inside do not propagate to parent",
+      "Exit code of the substituted process is not captured by $? — you need PIPESTATUS or explicit checking",
+      "Cannot seek in process substitution — only sequential reads work",
+      ">() for writing is less common but works: tee >(process1) >(process2) /dev/null"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["process substitution", "named pipe", "diff", "file descriptor", "command output", "concurrent"],
+    "severity": "tip",
+    "context": "When a command needs a filename but you want to feed it command output without temp files",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Compare sorted versions of two files\ndiff <(sort unsorted1.txt) <(sort unsorted2.txt)\n\n# Feed two command outputs to comm\ncomm -12 <(cut -f1 file1.tsv | sort) <(cut -f1 file2.tsv | sort)\n\n# tee to multiple processes simultaneously\ntee >(gzip > output.gz) >(wc -l > count.txt) > /dev/null < input.txt",
+        "description": "Process substitution examples"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Heredoc basics and quoting the delimiter to suppress expansion",
+    "category": "pattern",
+    "tags": ["bash", "heredoc", "here-document", "quoting", "EOF"],
+    "problem": "Heredocs are useful for multi-line strings but developers forget that the delimiter quoting controls whether variable expansion happens inside the body. Unintended expansion or lack of expansion causes subtle bugs.",
+    "solution": "Unquoted delimiter: variables expand inside the heredoc.\nQuoted delimiter ('EOF' or \"EOF\"): body is treated literally — no expansion, no command substitution.\n\n# Expanding heredoc (default)\ncat <<EOF\nHello $USER, today is $(date)\nEOF\n\n# Non-expanding heredoc\ncat <<'EOF'\nThis prints literally: $USER $(date)\nEOF\n\n# Indented heredoc (bash 4+, strip leading tabs with <<-)\nif true; then\n    cat <<-EOF\n        indented body\n    EOF\nfi",
+    "why": "The shell checks only whether the opening delimiter token has any quoting. Quoting any part of it (<<'EOF', <<\"EOF\", <<E'O'F) disables all expansion in the body.",
+    "gotchas": [
+      "<<- strips only leading TABs, not spaces — indent heredoc body with actual tabs",
+      "The closing delimiter must appear alone on a line with no leading whitespace (unless using <<-)",
+      "Heredoc with set -e: if the command consuming the heredoc fails, the script exits",
+      "Piping from a heredoc: cat <<EOF | grep pattern — the heredoc feeds stdin"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["heredoc", "here document", "EOF", "literal string", "multiline", "indented heredoc", "expansion"],
+    "severity": "moderate",
+    "context": "Generating config files, SQL queries, or multi-line strings in scripts",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "USER=alice\n\n# Expanding\ncat <<EOF\nDear $USER,\nToday: $(date +%F)\nEOF\n# Output: Dear alice, Today: 2024-01-15\n\n# Non-expanding (pass to another script literally)\ncat <<'EOF'\nDear $USER,\nToday: $(date +%F)\nEOF\n# Output: Dear $USER, Today: $(date +%F)\n\n# Indented with tabs\nif true; then\n\tcat <<-EOF\n\t\tLine with tab-stripped indent\n\tEOF\nfi",
+        "description": "Heredoc expansion control"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Bash arrays: declaration, access, and slicing syntax",
+    "category": "pattern",
+    "tags": ["bash", "arrays", "parameter-expansion", "indexed-array"],
+    "problem": "Bash array syntax is not intuitive. Common mistakes include treating a space-separated string as an array, forgetting [@] vs [*], or not quoting array expansions.",
+    "solution": "Declare with parentheses, access elements with ${arr[index]}, expand all with \"${arr[@]}\".\n\n# Declare\nfiles=(\"a.txt\" \"b c.txt\" \"d.txt\")\n\n# Length\necho ${#files[@]}\n\n# Iterate safely\nfor f in \"${files[@]}\"; do echo \"$f\"; done\n\n# Slice\necho \"${files[@]:1:2}\"  # elements 1 and 2\n\n# Append\nfiles+=(\"e.txt\")\n\n# Associative array (bash 4+)\ndeclare -A map\nmap[key]=\"value\"\necho \"${map[key]}\"",
+    "why": "\"${arr[@]}\" expands each element as a separate word, preserving elements with spaces. \"${arr[*]}\" joins all elements into one string separated by IFS[0]. The difference matters inside quotes.",
+    "gotchas": [
+      "arr=(one two three) creates an array; arr='one two three' creates a plain string",
+      "${arr[*]} inside double quotes produces one word; ${arr[@]} produces multiple words",
+      "Sparse arrays are allowed — indices need not be consecutive",
+      "Associative arrays require 'declare -A' — not available in bash 3 or POSIX sh",
+      "Passing arrays to functions: functions only receive values, not references — use nameref or global"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["array", "indexed array", "associative array", "bash array", "parameter expansion", "slice", "iterate"],
+    "severity": "moderate",
+    "context": "Handling multiple values, file lists, or argument collections in bash scripts",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Indexed array\nfruits=(\"apple\" \"banana\" \"cherry pie\")\necho ${#fruits[@]}         # 3\necho \"${fruits[2]}\"        # cherry pie\nfor f in \"${fruits[@]}\"; do echo \"$f\"; done\n\n# Append and delete\nfruits+=(\"durian\")\nunset 'fruits[1]'          # removes banana; array stays sparse\n\n# Associative array\ndeclare -A colors\ncolors[red]=\"#FF0000\"\ncolors[blue]=\"#0000FF\"\nfor key in \"${!colors[@]}\"; do\n  echo \"$key = ${colors[$key]}\"\ndone",
+        "description": "Bash array operations"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "IFS manipulation to split strings safely without word splitting side effects",
+    "category": "pattern",
+    "tags": ["bash", "IFS", "word-splitting", "split", "read"],
+    "problem": "Developers abuse word splitting by relying on default IFS to split strings, which breaks on filenames with spaces. Changing IFS globally affects all subsequent splitting in the script.",
+    "solution": "Change IFS locally (in a subshell or with local scoping) or use 'read' with a custom IFS.\n\n# Split a colon-delimited string safely\nIFS=':' read -ra parts <<< \"$PATH\"\nfor p in \"${parts[@]}\"; do echo \"$p\"; done\n\n# Temporarily change IFS with local scoping\nparse_csv() {\n  local IFS=','\n  read -ra fields <<< \"$1\"\n  printf '%s\\n' \"${fields[@]}\"\n}\n\n# Restore IFS explicitly\nold_IFS=\"$IFS\"\nIFS=','\n# ... work ...\nIFS=\"$old_IFS\"",
+    "why": "IFS is a global variable. Changing it affects all unquoted expansions and word splitting until it is restored. Using 'local IFS=...' inside a function scopes the change to that function only.",
+    "gotchas": [
+      "IFS= (empty) disables all word splitting — useful with read to preserve whitespace",
+      "read without IFS= strips leading/trailing whitespace from each field",
+      "IFS changes affect read, for-loop expansion, and unquoted $var but not quoted \"$var\"",
+      "Unsetting IFS restores default behavior (space/tab/newline) same as IFS=$' \\t\\n'"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["IFS", "word splitting", "split string", "read", "delimiter", "CSV", "field separator"],
+    "severity": "moderate",
+    "context": "Parsing delimited strings (CSV, PATH, colon-separated values) in bash",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Split PATH into array\nIFS=':' read -ra path_parts <<< \"$PATH\"\nfor dir in \"${path_parts[@]}\"; do\n  echo \"$dir\"\ndone\n\n# Read CSV line preserving spaces\nline=\"Alice,30,New York\"\nIFS=',' read -r name age city <<< \"$line\"\necho \"Name: $name, City: $city\"\n\n# Read a file line by line without mangling whitespace\nwhile IFS= read -r line; do\n  echo \"Got: $line\"\ndone < file.txt",
+        "description": "IFS manipulation for safe string splitting"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Exit code propagation in pipes: pipefail and PIPESTATUS",
+    "category": "gotcha",
+    "tags": ["bash", "pipefail", "exit-code", "PIPESTATUS", "pipe"],
+    "problem": "In bash without pipefail, a pipeline's exit code is the exit code of the last command only. A failure in an earlier pipeline segment is silently ignored. Example: false | true exits 0.",
+    "solution": "Enable pipefail with 'set -o pipefail'. For finer control, use PIPESTATUS array immediately after the pipeline.\n\nset -o pipefail\nfalse | true  # now exits 1\n\n# Check individual segments\ncmd1 | cmd2 | cmd3\nstatuses=(\"${PIPESTATUS[@]}\")\necho \"cmd1=${statuses[0]} cmd2=${statuses[1]} cmd3=${statuses[2]}\"",
+    "why": "Without pipefail, the shell uses only the rightmost exit code. PIPESTATUS is an array set after each pipeline containing each segment's exit code, but it is overwritten by the next command.",
+    "gotchas": [
+      "PIPESTATUS is overwritten immediately by the next command — save it before doing anything else",
+      "pipefail makes 'cmd | grep pattern' fail if grep finds no matches (exit 1) — use 'grep ... || true'",
+      "pipefail doesn't apply inside $() command substitution — check $? explicitly there",
+      "Subshells reset PIPESTATUS; you must read it in the same shell that ran the pipeline"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["pipefail", "PIPESTATUS", "exit code", "pipeline", "pipe failure", "error propagation"],
+    "severity": "major",
+    "context": "Any script using command pipelines where intermediate failures matter",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "set -o pipefail\n\n# Without pipefail this would exit 0\nfalse | true   # now exits 1\n\n# Save PIPESTATUS immediately\ncat big.log | grep ERROR | sort | uniq -c\npipe_status=(\"${PIPESTATUS[@]}\")\n\nif [[ ${pipe_status[0]} -ne 0 ]]; then\n  echo \"cat failed\" >&2\nelif [[ ${pipe_status[1]} -ne 0 ]] && [[ ${pipe_status[1]} -ne 1 ]]; then\n  echo \"grep error (1=no match is ok)\" >&2\nfi",
+        "description": "PIPESTATUS array usage after a pipeline"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "test vs [ ] vs [[ ]]: always prefer [[ ]] in bash",
+    "category": "pattern",
+    "tags": ["bash", "test", "conditional", "double-bracket", "string comparison"],
+    "problem": "Bash has three conditionals: the 'test' builtin, the POSIX [ ] builtin, and the bash-specific [[ ]] keyword. Using [ ] has subtle pitfalls around quoting, word splitting, and operators that [[ ]] avoids.",
+    "solution": "Use [[ ]] for all conditionals in bash scripts. Reserve [ ] / test for POSIX sh compatibility.\n\n[[ -f \"$file\" ]]            # file exists and is regular file\n[[ -z \"$str\" ]]             # string is empty\n[[ \"$a\" == \"$b\" ]]          # string equality (no quoting required on right side)\n[[ \"$str\" =~ ^[0-9]+$ ]]    # regex match\n[[ \"$str\" == *.txt ]]       # glob match",
+    "why": "[[ ]] is a shell keyword, not a command. It does not perform word splitting or glob expansion on its operands, allows &&/|| inside without escaping, supports =~ for regex, and supports pattern matching with ==.",
+    "gotchas": [
+      "Do NOT quote the right side of =~ in [[ ]] — quoting forces literal string comparison",
+      "[ ] requires quotes around every variable and escaping of ( ) and ||/&&",
+      "[ ] does not support =~ regex or glob pattern matching with ==",
+      "[[ ]] is not POSIX — use [ ] or test if you need /bin/sh compatibility",
+      "Arithmetic: prefer (( )) over [ ] -eq for numeric comparisons"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [
+      "bash: [: too many arguments",
+      "bash: [: missing `]'"
+    ],
+    "keywords": ["test", "conditional", "double bracket", "single bracket", "string comparison", "regex", "glob pattern"],
+    "severity": "moderate",
+    "context": "Writing conditionals in bash scripts",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "file=\"my file.txt\"\n\n# BAD with [ ]: word splitting breaks on spaces\n[ -f $file ] && echo exists    # ERROR if file has spaces\n\n# GOOD with [[ ]]\n[[ -f \"$file\" ]] && echo exists\n\n# Regex match — don't quote the pattern\nver=\"1.2.3\"\n[[ \"$ver\" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+$ ]] && echo valid\n\n# Glob match\n[[ \"$file\" == *.txt ]] && echo is_text\n\n# Compound conditions\n[[ -f \"$file\" && -r \"$file\" ]] && echo readable",
+        "description": "[[ ]] vs [ ] comparison"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Arithmetic evaluation: (( )) and $(( )) for numeric operations",
+    "category": "pattern",
+    "tags": ["bash", "arithmetic", "integer", "numeric", "let"],
+    "problem": "Bash is string-based; arithmetic requires special syntax. Using expr or test -eq is clunky. Developers mix up (( )) for evaluation and $(( )) for substitution.",
+    "solution": "Use (( )) for arithmetic conditionals and side-effecting operations. Use $(( )) when you need the numeric result as a value.\n\n# Conditional arithmetic\n(( count > 0 )) && echo positive\n\n# Increment\n(( i++ ))\n(( total += 5 ))\n\n# Substitution\nresult=$(( a * b + c ))\necho \"$(( 2 ** 10 ))\"   # 1024\n\n# C-style for loop\nfor (( i=0; i<10; i++ )); do echo $i; done",
+    "why": "(( )) creates an arithmetic context where variables don't need $ prefix and the exit code is 1 if the expression is zero (falsy). $(( )) substitutes the numeric result of the expression into the command.",
+    "gotchas": [
+      "(( 0 )) returns exit code 1 (falsy) — set -e will exit if you write '(( var-- ))' when var was 1",
+      "All arithmetic is integer-only in bash; use bc or awk for floating point",
+      "$(( )) does not require quoting — it always produces a single word with no spaces",
+      "Variables inside (( )) can be written without $ but with $ also works",
+      "Avoid 'let' — (( )) is the modern equivalent and clearer"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["arithmetic", "integer", "numeric", "double paren", "let", "expr", "increment", "modulo"],
+    "severity": "moderate",
+    "context": "Counter loops, numeric comparisons, index calculations in bash scripts",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "a=10 b=3\n\n# Arithmetic substitution\necho $(( a + b ))     # 13\necho $(( a % b ))     # 1\necho $(( 2 ** 8 ))    # 256\n\n# Arithmetic conditional\nif (( a > b )); then echo \"$a is bigger\"; fi\n\n# Increment/decrement\ncount=0\n(( count++ ))         # now 1\n(( count += 5 ))      # now 6\n\n# C-style for loop\nfor (( i=1; i<=5; i++ )); do\n  echo \"Item $i\"\ndone\n\n# Floating point: use bc\nresult=$(echo \"scale=2; 10/3\" | bc)",
+        "description": "Arithmetic evaluation in bash"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Parameter expansion: substring, default, replacement, and case modification",
+    "category": "pattern",
+    "tags": ["bash", "parameter-expansion", "string-manipulation", "substring", "default-value"],
+    "problem": "Developers reach for external tools (sed, awk, python) for simple string operations that bash can do natively via parameter expansion, adding unnecessary subshell overhead.",
+    "solution": "Bash parameter expansion covers most common string operations:\n\n${var:-default}      # use default if var is unset or empty\n${var:=default}      # assign and use default if unset or empty\n${var:?error msg}    # exit with message if unset or empty\n${#var}              # length of string\n${var:2:5}           # substring: offset 2, length 5\n${var#prefix}        # remove shortest prefix match\n${var##prefix}       # remove longest prefix match\n${var%suffix}        # remove shortest suffix match\n${var%%suffix}       # remove longest suffix match\n${var/old/new}       # replace first occurrence\n${var//old/new}      # replace all occurrences\n${var^}              # uppercase first char (bash 4+)\n${var^^}             # uppercase all (bash 4+)\n${var,}              # lowercase first char (bash 4+)\n${var,,}             # lowercase all (bash 4+)",
+    "why": "Parameter expansion runs in the current shell with no fork overhead. External tools like sed require a subshell (fork+exec), which is measurably slower in tight loops.",
+    "gotchas": [
+      "${var#pattern} and ${var%pattern} use glob patterns, not regex",
+      "Case modification operators (^, ^^, ,, ,,) are bash 4+ only — not in zsh or older bash",
+      "${var:-} (with empty default) is a common idiom to safely expand possibly-unset vars with set -u",
+      "Nested expansions: ${${var}:-default} does NOT work — use intermediate variable"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["parameter expansion", "string manipulation", "substring", "default value", "prefix strip", "suffix strip", "replace", "uppercase", "lowercase"],
+    "severity": "tip",
+    "context": "String manipulation without forking external processes in bash scripts",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "path=\"/usr/local/bin/myscript.sh\"\n\n# Get filename (remove path prefix)\necho \"${path##*/}\"        # myscript.sh\n\n# Get directory\necho \"${path%/*}\"         # /usr/local/bin\n\n# Remove extension\nname=\"${path##*/}\"\necho \"${name%.*}\"         # myscript\n\n# Default value\necho \"${EDITOR:-vim}\"\n\n# Replace in string\necho \"${path/bin/sbin}\"   # /usr/local/sbin/myscript.sh\n\n# Uppercase\nword=\"hello\"\necho \"${word^^}\"          # HELLO (bash 4+)",
+        "description": "Parameter expansion cheat sheet"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Background jobs management: wait, job IDs, and avoiding zombie processes",
+    "category": "pattern",
+    "tags": ["bash", "background", "jobs", "wait", "parallel", "zombie"],
+    "problem": "Scripts that launch background jobs with & must properly wait for them and collect exit codes. Without wait, the script exits leaving children running or uncollected (zombies), and errors go undetected.",
+    "solution": "Collect PIDs and use 'wait PID' to gather exit codes. Use job control carefully in non-interactive scripts.\n\npids=()\nfor item in \"${items[@]}\"; do\n  process \"$item\" &\n  pids+=(\"$!\")\ndone\n\nfailed=0\nfor pid in \"${pids[@]}\"; do\n  wait \"$pid\" || (( failed++ ))\ndone\n(( failed == 0 )) || { echo \"$failed jobs failed\" >&2; exit 1; }",
+    "why": "'wait' with no arguments waits for all children; 'wait PID' waits for a specific child and returns its exit code. Without waiting, the shell does not collect exit codes and background jobs may outlive the script.",
+    "gotchas": [
+      "In scripts (non-interactive mode) job control is disabled by default; use 'set -m' to enable",
+      "$! gives the PID of the most recently backgrounded command — save it immediately",
+      "wait returns the exit status of the waited process — check it",
+      "Backgrounded pipelines: only the PID of the last pipeline command is available via $!",
+      "Use a SIGTERM trap to kill children when the script is killed: trap 'kill ${pids[*]}' TERM INT"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["background jobs", "wait", "parallel", "PID", "zombie", "exit code", "job control", "fork"],
+    "severity": "major",
+    "context": "Running multiple processes concurrently in bash scripts",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "#!/usr/bin/env bash\nset -euo pipefail\n\nprocess_item() { sleep 1; echo \"done $1\"; }\n\npids=()\nfor i in 1 2 3 4 5; do\n  process_item \"$i\" &\n  pids+=(\"$!\")\ndone\n\nfailed=0\nfor pid in \"${pids[@]}\"; do\n  if ! wait \"$pid\"; then\n    echo \"Process $pid failed\" >&2\n    (( failed++ )) || true\n  fi\ndone\n\n(( failed == 0 )) || exit 1",
+        "description": "Background job management with error collection"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Signal handling: trap SIGTERM/SIGINT for graceful shutdown",
+    "category": "pattern",
+    "tags": ["bash", "signal", "trap", "SIGTERM", "SIGINT", "graceful-shutdown"],
+    "problem": "Long-running scripts killed with SIGTERM or interrupted with Ctrl-C leave resources in an inconsistent state. By default, SIGTERM immediately kills the shell without running any cleanup.",
+    "solution": "Use trap to intercept signals and run controlled shutdown logic.\n\nshutdown=0\ntrap 'shutdown=1' TERM INT\n\nwhile (( !shutdown )); do\n  do_work\ndone\ncleanup\n\n# Or more direct:\ntrap 'echo Caught SIGTERM; cleanup; exit 0' TERM\ntrap 'echo Caught SIGINT; cleanup; exit 130' INT",
+    "why": "When a shell receives a signal, if a trap is set for that signal, it queues the trap handler to run after the current command finishes. This allows controlled teardown rather than abrupt termination.",
+    "gotchas": [
+      "SIGKILL (kill -9) cannot be trapped — design for it by using atomic operations",
+      "Child processes do not automatically inherit signal traps from the parent shell",
+      "In a script, 'trap handler SIGNAME' replaces any existing trap for that signal",
+      "Exit code convention: SIGINT = 130 (128+2), SIGTERM = 143 (128+15)",
+      "Use 'kill -0 $pid' to test if a process is still running without sending a signal"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["signal", "trap", "SIGTERM", "SIGINT", "SIGKILL", "graceful shutdown", "interrupt", "kill"],
+    "severity": "major",
+    "context": "Daemon-like scripts, long-running jobs, or scripts managing external processes",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "#!/usr/bin/env bash\nset -euo pipefail\n\ncleanup() {\n  echo \"Shutting down...\" >&2\n  # kill child processes\n  jobs -p | xargs -r kill 2>/dev/null || true\n  rm -f /tmp/myscript.lock\n}\n\ntrap cleanup EXIT\ntrap 'echo \"SIGINT received\"; exit 130' INT\ntrap 'echo \"SIGTERM received\"; exit 143' TERM\n\necho $$ > /tmp/myscript.lock\n\nwhile true; do\n  do_work\n  sleep 5\ndone",
+        "description": "Graceful signal handling with cleanup"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Redirecting to /dev/null: suppress stdout, stderr, or both",
+    "category": "pattern",
+    "tags": ["bash", "redirection", "/dev/null", "stderr", "stdout", "silence"],
+    "problem": "Developers want to silence specific output streams but use wrong redirection order or forget that 2>&1 must come after the file redirect to have effect.",
+    "solution": "# Suppress stdout only\ncmd > /dev/null\n\n# Suppress stderr only\ncmd 2> /dev/null\n\n# Suppress both\ncmd > /dev/null 2>&1\n# Modern shorthand (bash 4+, not POSIX)\ncmd &> /dev/null\n\n# Redirect stderr to stdout (for piping)\ncmd 2>&1 | grep pattern",
+    "why": "File descriptors are redirected left to right. '> /dev/null 2>&1' first redirects stdout to /dev/null, then redirects stderr to wherever stdout currently points (i.e., /dev/null). Reversing the order '2>&1 > /dev/null' redirects stderr to the original stdout (terminal), then redirects stdout to /dev/null.",
+    "gotchas": [
+      "2>&1 > /dev/null (wrong order) sends stderr to terminal and stdout to /dev/null",
+      "&> /dev/null is bash-specific; use > /dev/null 2>&1 for POSIX compatibility",
+      ">&2 redirects a specific command's stdout to stderr — commonly used for error messages",
+      "echo 'error message' >&2 is the idiomatic way to print to stderr"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["/dev/null", "redirect", "stdout", "stderr", "suppress output", "silence", "file descriptor", "2>&1"],
+    "severity": "moderate",
+    "context": "Suppressing unwanted output from commands in scripts",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Suppress all output\ncmd > /dev/null 2>&1\n\n# Only suppress errors\ncmd 2> /dev/null\n\n# Check exit code without output\nif command -v jq > /dev/null 2>&1; then\n  echo \"jq is available\"\nfi\n\n# Print to stderr (error messages)\necho \"Error: file not found\" >&2\n\n# Pipe stdout+stderr together\ncmd 2>&1 | tee output.log",
+        "description": "Redirection patterns to /dev/null"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "xargs vs GNU parallel: choosing the right tool for parallel execution",
+    "category": "pattern",
+    "tags": ["bash", "xargs", "parallel", "concurrency", "batch-processing"],
+    "problem": "xargs -P runs commands in parallel but gives no progress visibility and poor error handling. GNU parallel has a learning curve. Developers pick the wrong tool for the scale of their problem.",
+    "solution": "Use xargs -P for simple cases where parallelism is needed and errors can be checked via exit code.\nUse GNU parallel for progress bars, retries, rate limiting, or complex argument handling.\n\n# xargs parallel: run 4 workers at once\nfind . -name '*.log' -print0 | xargs -0 -P4 -I{} gzip {}\n\n# GNU parallel: with progress and joblog\nparallel --jobs 4 --progress --joblog /tmp/jobs.log \\\n  gzip ::: *.log\n\n# xargs with null delimiters (safe for filenames)\nfind . -name '*.txt' -print0 | xargs -0 -n1 process_file",
+    "why": "xargs is universally available and sufficient for bulk operations. GNU parallel handles edge cases like retrying failed jobs, throttling, and distributing across machines, but requires installation.",
+    "gotchas": [
+      "xargs -I{} runs one process per item (like -P1 -n1) — don't use with -P without -n",
+      "xargs splits on whitespace by default — always use -print0 / -0 pair for filenames",
+      "GNU parallel's ::: syntax passes literal arguments; use :::: for filenames with argument lists",
+      "xargs -P does not limit total spawned processes, only concurrency — check your system limits",
+      "Without -0, xargs treats quoted strings as multiple arguments"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["xargs", "parallel", "concurrency", "parallel processing", "batch", "find", "workers"],
+    "severity": "tip",
+    "context": "Processing many files or items with parallelism in shell scripts",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Safe parallel compression with xargs\nfind /var/log -name '*.log' -print0 \\\n  | xargs -0 -P$(nproc) gzip\n\n# GNU parallel with retry and progress\nparallel --retries 3 --progress --jobs 8 \\\n  wget -q {} -O /tmp/{/} ::: $(cat urls.txt)\n\n# xargs with function (must export)\nprocess() { echo \"Processing $1\"; sleep 0.1; }\nexport -f process\nfind . -name '*.csv' -print0 \\\n  | xargs -0 -P4 -I{} bash -c 'process \"$@\"' _ {}",
+        "description": "xargs vs GNU parallel usage examples"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "find -exec vs -print0 | xargs -0: when to use each",
+    "category": "pattern",
+    "tags": ["bash", "find", "xargs", "exec", "print0", "null-delimiter", "filenames"],
+    "problem": "Developers use 'find | xargs' without null delimiters, breaking on filenames with spaces, newlines, or special characters. Or they use -exec when xargs would be faster.",
+    "solution": "Use -exec for simple one-off commands. Use -print0 | xargs -0 for performance or when piping to tools that don't integrate with -exec.\n\n# -exec: safe, runs one process per file by default\nfind . -name '*.tmp' -exec rm {} \\;\n\n# -exec with +: batches arguments (like xargs, but native)\nfind . -name '*.log' -exec gzip {} +\n\n# -print0 | xargs -0: pipeline flexibility, parallel option\nfind . -name '*.csv' -print0 | xargs -0 -P4 process_file\n\n# DANGEROUS: newline-split filenames break on spaces\nfind . -name '*.txt' | xargs cat   # BAD",
+    "why": "-print0 outputs filenames separated by null bytes (\\0). xargs -0 reads null-delimited input. Null bytes cannot appear in filenames, making this approach safe for all valid filenames.",
+    "gotchas": [
+      "-exec {} + batches multiple files per invocation (efficient); {} \\; runs once per file (slower)",
+      "xargs without -0 splits on whitespace AND newlines — both are valid in filenames",
+      "find -exec sh -c '...' _ {} \\; is needed when you want shell features per file",
+      "On macOS, xargs does not support -P for parallel execution in all versions — use GNU xargs",
+      "find -delete is faster than -exec rm {} \\; for simple deletion"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["find", "exec", "xargs", "print0", "null delimiter", "filenames with spaces", "batch processing"],
+    "severity": "major",
+    "context": "Processing files found with find, especially when filenames may contain spaces or special characters",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# SAFE: null-delimited pipeline\nfind /data -name '*.log' -mtime +30 -print0 \\\n  | xargs -0 -I{} mv {} /archive/\n\n# FAST: batched exec (fewer forks)\nfind . -name '*.pyc' -exec rm {} +\n\n# DANGEROUS: space in filename breaks this\nfind . -name '*.txt' | xargs wc -l   # breaks on 'my file.txt'\n\n# Shell features per file\nfind . -name '*.json' -print0 \\\n  | xargs -0 -I{} bash -c 'jq . \"$1\" > \"$1.formatted\"' _ {}",
+        "description": "find -exec vs -print0 xargs -0"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "getopts for portable option parsing in bash scripts",
+    "category": "pattern",
+    "tags": ["bash", "getopts", "options", "flags", "argument-parsing", "CLI"],
+    "problem": "Ad-hoc option parsing with 'if [[ $1 == -v ]]' is fragile and doesn't support combined flags (-vf), option arguments, or error reporting. getopt (external) is not portable across systems.",
+    "solution": "Use the builtin 'getopts' for portable option parsing in bash scripts.\n\n#!/usr/bin/env bash\nverbose=0\noutput=\"\"\n\nwhile getopts ':vo:h' opt; do\n  case \"$opt\" in\n    v) verbose=1 ;;\n    o) output=\"$OPTARG\" ;;\n    h) usage; exit 0 ;;\n    :) echo \"Option -$OPTARG requires an argument\" >&2; exit 1 ;;\n    ?) echo \"Unknown option: -$OPTARG\" >&2; exit 1 ;;\n  esac\ndone\nshift $(( OPTIND - 1 ))\n# Remaining args: \"$@\"",
+    "why": "getopts is a bash builtin (also in POSIX sh). It handles option arguments via OPTARG, tracks position via OPTIND, and supports combined flags. Starting the optstring with ':' enables silent error handling.",
+    "gotchas": [
+      "getopts does not support long options (--verbose) — use getopt(1) or manual parsing for that",
+      "Always 'shift $(( OPTIND - 1 ))' after the loop to remove processed options from $@",
+      "Optstring starting with ':' puts getopts in silent mode (you handle errors) — recommended",
+      "OPTIND is global; reset it with OPTIND=1 if calling getopts in a function multiple times",
+      "Combined flags (-vf) work automatically; getopts processes them one at a time"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["getopts", "option parsing", "flags", "CLI arguments", "OPTARG", "OPTIND", "getopt"],
+    "severity": "tip",
+    "context": "Writing CLI scripts that accept options and flags",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "#!/usr/bin/env bash\nusage() { echo \"Usage: $0 [-v] [-o output] files...\"; }\n\nverbose=0\noutput=\"/dev/stdout\"\n\nwhile getopts ':vo:h' opt; do\n  case \"$opt\" in\n    v) verbose=1 ;;\n    o) output=\"$OPTARG\" ;;\n    h) usage; exit 0 ;;\n    :) echo \"Error: -$OPTARG needs an argument\" >&2; exit 1 ;;\n    ?) echo \"Error: unknown option -$OPTARG\" >&2; exit 1 ;;\n  esac\ndone\nshift $(( OPTIND - 1 ))\n\n[[ $# -eq 0 ]] && { usage >&2; exit 1; }\necho \"verbose=$verbose, output=$output, files: $*\"",
+        "description": "getopts option parsing boilerplate"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "ShellCheck: static analysis tool that catches common bash mistakes",
+    "category": "pattern",
+    "tags": ["bash", "shellcheck", "linting", "static-analysis", "CI"],
+    "problem": "Bash scripts have many subtle pitfalls (quoting, word splitting, portability). Manual review misses them. ShellCheck identifies hundreds of common mistakes with precise explanations.",
+    "solution": "Install ShellCheck and run it on every script. Integrate into CI.\n\n# Install\nbrew install shellcheck       # macOS\napt install shellcheck        # Debian/Ubuntu\n\n# Run\nshellcheck myscript.sh\n\n# In CI (GitHub Actions)\n- uses: ludeeus/action-shellcheck@master\n\n# Disable specific warning inline\n# shellcheck disable=SC2086\necho $var   # intentionally unquoted\n\n# Specify shell explicitly when extension is missing\nshellcheck -s bash myfile",
+    "why": "ShellCheck knows about hundreds of bash gotchas and maps each to a numbered SC code with a wiki explanation. It's free, fast, and understands the difference between bash, sh, dash, and ksh.",
+    "gotchas": [
+      "ShellCheck reads the shebang to determine which shell to check for — always set it correctly",
+      "SC2086 (unquoted variable) is the most common warning — understand it before disabling",
+      "ShellCheck can be run in editor via plugins (VSCode, vim, emacs) for real-time feedback",
+      "Some warnings are style-only (info level) — use --severity=warning to reduce noise",
+      "ShellCheck does not catch runtime errors or logic bugs — only syntactic and semantic issues"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [
+      "SC2086: Double quote to prevent globbing and word splitting",
+      "SC2046: Quote this to prevent word splitting",
+      "SC2006: Use $(...) notation instead of legacy backticks"
+    ],
+    "keywords": ["shellcheck", "linting", "static analysis", "bash mistakes", "CI", "code quality", "SC2086"],
+    "severity": "tip",
+    "context": "Any bash scripting project, especially in CI/CD pipelines",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "#!/usr/bin/env bash\n# shellcheck disable=SC2034  # silence 'unused variable' for intentional cases\n\n# Example of common ShellCheck fixes:\n\n# SC2086: quote variables\nfile=\"my file.txt\"\necho \"$file\"      # not echo $file\n\n# SC2006: use $() not backticks\ndate=$(date +%F)   # not date=`date +%F`\n\n# SC2164: use || exit with cd\ncd /some/dir || exit 1\n\n# SC2181: check exit code directly\nif ! grep pattern file; then echo missing; fi\n# not: grep ...; if [[ $? -ne 0 ]]; then",
+        "description": "Common ShellCheck fixes"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Subshell vs command group: ( ) vs { } for scoping",
+    "category": "pattern",
+    "tags": ["bash", "subshell", "command-group", "scoping", "variable", "cd"],
+    "problem": "Developers are unsure when to use ( ) (subshell) vs { } (command group) for grouping commands. Choosing the wrong one either creates unnecessary overhead or leaks variable/directory changes.",
+    "solution": "( commands ) — runs in a forked subshell. Changes to variables, working directory, and traps are isolated.\n{ commands; } — runs in the current shell. No fork, but changes DO propagate.\n\n# Subshell: cd is isolated\n( cd /tmp && ls )\necho \"Still in $PWD\"   # original directory\n\n# Command group: no subshell overhead, but no isolation\n{ cd /tmp && ls; }\necho \"Now in $PWD\"     # /tmp — changed!\n\n# Use subshell for isolated env changes:\n(export VAR=test; external_script)\n\n# Use command group for efficient redirection of multiple commands:\n{ echo header; cat data; echo footer; } > output.txt",
+    "why": "A subshell forks a new process; it is isolated but costs a fork+exec. A command group is just syntactic grouping with no new process. Use subshells when isolation matters, groups when performance matters.",
+    "gotchas": [
+      "{ } requires a semicolon or newline before the closing brace and a space after the opening brace",
+      "Pipes create implicit subshells: 'cmd | while read line; do var=$line; done' — var is lost after pipe",
+      "Use lastpipe option ('shopt -s lastpipe') to run the last pipe segment in the current shell",
+      "Subshells in pipelines prevent variable export back to parent — use temp files or process substitution"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["subshell", "command group", "scoping", "isolation", "fork", "variable scope", "cd isolation"],
+    "severity": "moderate",
+    "context": "Grouping commands, isolating directory changes, or redirecting multiple commands",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Subshell: isolated\n(\n  cd /tmp\n  VAR=\"inside\"\n  echo \"In: $PWD\"\n)\necho \"Out: $PWD\"     # original dir\necho \"${VAR:-unset}\" # unset\n\n# Command group: same shell\n{\n  echo \"line 1\"\n  echo \"line 2\"\n  echo \"line 3\"\n} > /tmp/output.txt  # all three redirected at once\n\n# Pipe subshell gotcha\ncount=0\necho \"a b c\" | while read word; do\n  (( count++ )) || true\ndone\necho $count   # 0! — count modified in subshell",
+        "description": "Subshell vs command group examples"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Named pipes (FIFOs): bidirectional IPC without temp files",
+    "category": "pattern",
+    "tags": ["bash", "FIFO", "named-pipe", "mkfifo", "IPC", "concurrent"],
+    "problem": "Scripts need to communicate between processes without temp files, but anonymous pipes are unidirectional and only work between parent and child. Named pipes solve bidirectional or multi-reader scenarios.",
+    "solution": "Create named pipes with mkfifo. Open them for reading and writing in separate processes.\n\n# Create\nmkfifo /tmp/mypipe\n\n# Writer (background)\necho 'hello' > /tmp/mypipe &\n\n# Reader\ncat /tmp/mypipe\n\n# Cleanup\nrm /tmp/mypipe\n\n# Bidirectional channel between two processes\nmkfifo /tmp/req /tmp/resp\nserver < /tmp/req > /tmp/resp &\nclient > /tmp/req < /tmp/resp",
+    "why": "A FIFO is a special file that acts as a pipe with a name in the filesystem. It blocks readers until a writer opens it, and vice versa. This enables arbitrary process communication without network sockets.",
+    "gotchas": [
+      "Opening a FIFO for reading blocks until a writer opens it, and vice versa — can deadlock if both ends wait",
+      "Use O_NONBLOCK or background the open to avoid deadlock in single-threaded scripts",
+      "Always clean up FIFOs with rm in an EXIT trap — they persist on disk until deleted",
+      "Reading from an empty FIFO with all writers closed returns EOF",
+      "FIFOs don't buffer more than PIPE_BUF bytes atomically (usually 4KB or 64KB)"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["named pipe", "FIFO", "mkfifo", "IPC", "inter-process communication", "concurrent", "bidirectional"],
+    "severity": "tip",
+    "context": "Coordinating concurrent processes or building simple IPC mechanisms in shell scripts",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "#!/usr/bin/env bash\nset -euo pipefail\n\npipe=$(mktemp -u)\nmkfifo \"$pipe\"\ntrap 'rm -f \"$pipe\"' EXIT\n\n# Producer in background\n{\n  for i in {1..5}; do\n    echo \"item $i\"\n    sleep 0.2\n  done\n} > \"$pipe\" &\n\n# Consumer\nwhile IFS= read -r line; do\n  echo \"Got: $line\"\ndone < \"$pipe\"",
+        "description": "Named pipe producer-consumer pattern"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Command substitution: $() vs backticks and handling newlines",
+    "category": "pattern",
+    "tags": ["bash", "command-substitution", "backticks", "newline", "output-capture"],
+    "problem": "Legacy backtick syntax is hard to read, hard to nest, and inconsistent with quoting rules. Additionally, command substitution strips trailing newlines from output, which silently corrupts data.",
+    "solution": "Always use $() for command substitution. Be aware that trailing newlines are stripped.\n\n# Modern: use $()\ndate=$(date +%F)\nfiles=$(find . -name '*.sh')\n\n# Nested (impossible cleanly with backticks)\nowner=$(stat -c '%U' \"$(which python3)\")\n\n# Preserving trailing newlines: add a sentinel\noutput=$(cmd; echo x)\noutput=\"${output%x}\"  # strip sentinel\n\n# Check if command produced output\nif [[ -n \"$(some_command)\" ]]; then ...",
+    "why": "$() creates a subshell, runs the command, captures its stdout, and strips trailing newlines. Backticks do the same but with inconsistent quoting (backslashes are interpreted differently) and no clean nesting.",
+    "gotchas": [
+      "Command substitution strips ALL trailing newlines, not just one",
+      "To preserve newlines, append a character inside $() and strip it after: $(cmd; echo .)",
+      "The subshell in $() runs in a separate process — variable changes don't propagate out",
+      "Backticks require escaping backslashes differently and cannot be cleanly nested",
+      "Large output in $() buffers in memory — pipe directly if output could be huge"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["command substitution", "backticks", "dollar paren", "output capture", "trailing newline", "subshell"],
+    "severity": "moderate",
+    "context": "Capturing command output into variables in bash scripts",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# GOOD: modern syntax\ntoday=$(date +%Y-%m-%d)\necho \"Today: $today\"\n\n# BAD: legacy backticks (hard to nest)\ntoday=`date +%Y-%m-%d`\n\n# Nested substitution — impossible cleanly with backticks\npy_path=$(dirname \"$(which python3)\")\n\n# Trailing newline preservation trick\nresult=$(printf 'line1\\nline2\\n'; echo -n x)\nresult=\"${result%x}\"\nprintf '%s' \"$result\" | wc -l   # 2 (newlines preserved)",
+        "description": "Command substitution best practices"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Brace expansion: generating sequences and Cartesian products without loops",
+    "category": "pattern",
+    "tags": ["bash", "brace-expansion", "sequence", "glob", "one-liner"],
+    "problem": "Developers write verbose loops to generate sequences or file sets that bash brace expansion can produce in one token, leading to unnecessarily long scripts.",
+    "solution": "Use brace expansion for sequences, alternatives, and Cartesian products.\n\n# Numeric sequence\necho {1..10}\necho {01..10}   # zero-padded\n\n# Character sequence\necho {a..z}\n\n# Step value (bash 4+)\necho {0..20..5}  # 0 5 10 15 20\n\n# Alternatives\ncp file.txt{,.bak}   # copies file.txt to file.txt.bak\n\n# Cartesian product\necho {a,b,c}_{1,2}   # a_1 a_2 b_1 b_2 c_1 c_2\n\n# Create directory tree\nmkdir -p src/{main,test}/{java,resources}",
+    "why": "Brace expansion is performed before any other expansion (before glob, before variable expansion). It generates a list of words that the shell then processes normally, enabling compact multi-value expressions.",
+    "gotchas": [
+      "Brace expansion requires no spaces around commas: {a, b} does NOT work (space is literal)",
+      "Brace expansion is not POSIX — it is bash/zsh/ksh specific",
+      "Variables inside braces are NOT expanded before brace expansion: {$start..$end} does not work — use seq or eval",
+      "cp file{,.bak} is a common idiom for backup-in-place",
+      "Sequences with letters work only for single characters: {a..z}, not {aa..zz}"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["brace expansion", "sequence", "range", "Cartesian product", "mkdir", "alternatives", "zero-padded"],
+    "severity": "tip",
+    "context": "Generating file sets, directory structures, or numeric ranges in bash",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Numeric ranges\necho {1..5}           # 1 2 3 4 5\necho {01..05}         # 01 02 03 04 05\necho {0..100..10}     # 0 10 20 30 40 50 60 70 80 90 100\n\n# Quick backup\ncp important.conf{,.bak}\n\n# Create project skeleton\nmkdir -p myapp/{src/{main,test},docs,scripts}\n\n# Cartesian product for test matrix\nfor env in {dev,staging,prod}; do\n  for region in {us,eu,ap}; do\n    echo \"Deploy to $env-$region\"\n  done\ndone",
+        "description": "Brace expansion examples"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "POSIX compatibility: writing scripts that work in /bin/sh",
+    "category": "principle",
+    "tags": ["bash", "POSIX", "sh", "portability", "dash", "compatibility"],
+    "problem": "Scripts with #!/bin/sh shebang use bash-only features (arrays, [[ ]], process substitution, etc.) because /bin/bash is the developer's default shell. On Debian/Ubuntu, /bin/sh is dash, which is strictly POSIX and rejects bash extensions.",
+    "solution": "If portability matters, use #!/bin/sh and restrict to POSIX features only. If you need bash features, use #!/usr/bin/env bash explicitly.\n\nPOSIX-safe features:\n- [ ] for tests (not [[ ]])\n- $(cmd) for substitution\n- for/while/case/if control flow\n- Positional parameters $1..$9, $@, $*\n- Basic parameter expansion ${var:-default}\n\nNon-POSIX (bash-only) to avoid in sh scripts:\n- Arrays\n- [[ ]] and (( ))\n- {a..z} brace sequences\n- Process substitution <()\n- local keyword in functions (not POSIX but widely supported)\n- &> redirection",
+    "why": "Different systems use different default shells. Debian/Ubuntu /bin/sh is dash (fast, POSIX-strict). On macOS, /bin/sh is bash 3.2. Using bash features with #!/bin/sh shebang breaks silently or loudly depending on the system.",
+    "gotchas": [
+      "local is not POSIX but supported by dash, ash, and most modern POSIX shells",
+      "#!/usr/bin/env bash is more portable than #!/bin/bash — bash may not be at /bin/bash",
+      "bash --posix mode is not the same as running sh — it's bash with some POSIX constraints",
+      "Test with 'shellcheck -s sh' or 'dash myscript.sh' to verify POSIX compatibility",
+      "Docker Alpine images use /bin/sh = busybox sh — very minimal POSIX implementation"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [
+      "dash: Syntax error: \"((\" unexpected",
+      "dash: [[: not found",
+      "Syntax error: Bad substitution"
+    ],
+    "keywords": ["POSIX", "sh", "dash", "portability", "compatibility", "shebang", "Alpine", "busybox"],
+    "severity": "major",
+    "context": "Writing shell scripts intended to run across different Unix-like systems or containers",
+    "code_snippets": [
+      {
+        "lang": "sh",
+        "code": "#!/bin/sh\n# POSIX-compatible script\n\n# Use [ ] not [[ ]]\nif [ -f \"$1\" ]; then\n  echo \"File exists\"\nfi\n\n# Use case instead of regex\ncase \"$1\" in\n  *.txt) echo \"text file\" ;;\n  *.sh)  echo \"shell script\" ;;\n  *)     echo \"other\" ;;\nesac\n\n# No arrays: use positional params or IFS splitting\nset -- one two three\nfor arg; do echo \"$arg\"; done",
+        "description": "POSIX-compatible script patterns"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "zsh vs bash differences: key incompatibilities when switching shells",
+    "category": "gotcha",
+    "tags": ["zsh", "bash", "compatibility", "array", "glob", "word-splitting"],
+    "problem": "Developers write scripts or aliases in zsh (the macOS default since Catalina) and assume they work in bash, or vice versa. Arrays, globbing, word splitting, and quoting have significant differences.",
+    "solution": "Key differences to know:\n\n1. Array indexing: bash arrays are 0-indexed; zsh arrays are 1-indexed by default\n2. Word splitting: zsh does NOT split unquoted variables by default\n3. Empty glob: bash leaves unmatched globs literal; zsh throws an error (nomatch)\n4. $(...) expansion: same in both\n5. [[]] vs []: both support it, but syntax nuances differ\n6. Associative arrays: both support 'declare -A' but zsh also has its own 'typeset -A'",
+    "why": "zsh and bash share much syntax but differ in defaults. zsh was designed to be more user-friendly (less surprising word splitting), while bash follows POSIX more closely.",
+    "gotchas": [
+      "arr[0] in bash is the first element; in zsh it's the second (zsh 1-indexed)",
+      "In zsh, *.nonexistent glob raises 'no matches found' error; set 'setopt NULL_GLOB' to change",
+      "zsh 'setopt SH_WORD_SPLIT' enables bash-like word splitting — needed for some scripts",
+      "#!/usr/bin/env bash shebang always gets bash, not zsh — even if your interactive shell is zsh",
+      "zsh =cmd expansion (equivalent to $(which cmd)) doesn't work in bash"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [
+      "zsh: no matches found: *.nonexistent",
+      "zsh: bad pattern: *.{txt,md}",
+      "array parameter accessed as scalar"
+    ],
+    "keywords": ["zsh", "bash", "array indexing", "word splitting", "glob", "null_glob", "shebang", "macOS"],
+    "severity": "major",
+    "context": "Switching between bash and zsh or writing scripts that must work in both",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Bash array (0-indexed)\nbash_arr=(a b c)\necho \"${bash_arr[0]}\"   # a\n\n# Zsh array (1-indexed)\n# zsh_arr=(a b c)\n# echo \"${zsh_arr[1]}\"   # a\n\n# Safe cross-shell: use \"${arr[@]}\" to iterate — works in both\n\n# Glob failure\n# In bash: *.xyz  → literal *.xyz if no match\n# In zsh:  *.xyz  → error 'no matches found'\n# Fix in zsh:\n# setopt NULL_GLOB\n\n# Always use bash shebang for bash scripts:\n#!/usr/bin/env bash",
+        "description": "zsh vs bash key differences"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "coproc: running a persistent coprocess with bidirectional communication",
+    "category": "pattern",
+    "tags": ["bash", "coproc", "coprocess", "bidirectional", "IPC", "async"],
+    "problem": "Scripts need to repeatedly communicate with a subprocess (e.g., a database CLI, interpreter, or long-running tool) without the overhead of spawning a new process for each query.",
+    "solution": "Use bash 'coproc' to launch a persistent background process with stdin/stdout connected to file descriptors.\n\ncoproc DB { sqlite3 mydb.sqlite; }\n\n# Write to coproc stdin\necho 'SELECT count(*) FROM users;' >&\"${DB[1]}\"\n\n# Read from coproc stdout\nread -r result <&\"${DB[0]}\"\necho \"Count: $result\"\n\n# Close when done\nexec {DB[1]}>&-   # close stdin to signal EOF\nwait \"$DB_PID\"",
+    "why": "coproc creates a background process with two file descriptors: ${NAME[0]} for reading its stdout and ${NAME[1]} for writing to its stdin. This enables persistent bidirectional communication without named pipes.",
+    "gotchas": [
+      "Only one anonymous coproc can exist at a time; named coprocs (coproc NAME { cmd; }) can stack",
+      "The coprocess PID is in $NAME_PID (for named) or $COPROC_PID (for anonymous)",
+      "Buffering: if the coprocess buffers output (most programs do), reads will block — look for line-buffered mode flags",
+      "coproc is bash 4.0+ only — not available in bash 3 (macOS default before Ventura)",
+      "Closing the write end (exec {NAME[1]}>&-) signals EOF to the coprocess"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [
+      "bash: coproc: not found"
+    ],
+    "keywords": ["coproc", "coprocess", "bidirectional", "IPC", "persistent subprocess", "file descriptor", "background"],
+    "severity": "tip",
+    "context": "Repeated queries to a persistent CLI tool (sqlite3, python -i, bc, etc.) from a bash script",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "#!/usr/bin/env bash\n# Persistent bc calculator session\ncoproc CALC { bc -l; }\n\nsend_calc() {\n  echo \"$1\" >&\"${CALC[1]}\"\n  read -r result <&\"${CALC[0]}\"\n  echo \"$1 = $result\"\n}\n\nsend_calc \"2^10\"\nsend_calc \"sqrt(144)\"\nsend_calc \"scale=4; 22/7\"\n\nexec {CALC[1]}>&-\nwait \"$CALC_PID\"",
+        "description": "coproc bidirectional communication with bc"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "History expansion gotchas: ! in double-quoted strings and scripts",
+    "category": "gotcha",
+    "tags": ["bash", "history-expansion", "bang", "interactive", "double-quote"],
+    "problem": "An exclamation mark inside double quotes triggers history expansion in interactive bash shells, causing 'event not found' errors or unexpected command substitution. This catches developers embedding ! in strings.",
+    "solution": "In scripts, history expansion is disabled by default — not a concern. In interactive shells:\n\n# These trigger history expansion in interactive bash\necho \"hello!\"\necho \"it's done!\"\n\n# Fixes:\necho 'hello!'           # single quotes disable all expansion\necho \"hello\"'!'         # concatenate single-quoted !\nset +H                  # disable history expansion in current shell\n\n# In .bashrc to permanently disable:\nset +o histexpand",
+    "why": "History expansion is an interactive shell feature (histexpand option). It's enabled by default in interactive bash but disabled in scripts. The ! character in double quotes is interpreted as the history expansion operator.",
+    "gotchas": [
+      "History expansion is ONLY active in interactive shells — not in scripts (#!/usr/bin/env bash)",
+      "set +H or set +o histexpand disables it for the current session",
+      "zsh uses ! for history expansion too, but handles it slightly differently",
+      "HISTIGNORE and HISTCONTROL control what gets recorded but don't affect expansion",
+      "The sequence !! expands to the last command, !$ to the last argument — useful interactively"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [
+      "bash: !: event not found",
+      "bash: !something: event not found"
+    ],
+    "keywords": ["history expansion", "bang", "exclamation mark", "event not found", "interactive shell", "histexpand"],
+    "severity": "minor",
+    "context": "Interactive bash sessions with exclamation marks in strings",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# In interactive bash (NOT in scripts):\n\n# BAD: triggers history expansion\necho \"hello world!\"\n# bash: !: event not found\n\n# FIX 1: single quotes\necho 'hello world!'\n\n# FIX 2: string concatenation\necho \"hello world\"'!'\n\n# FIX 3: disable history expansion\nset +H\necho \"hello world!\"\nset -H   # re-enable if needed\n\n# FIX 4: escape (works but looks odd)\necho \"hello world\\!\"",
+        "description": "History expansion workarounds"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "read builtin: safely reading user input and file lines",
+    "category": "pattern",
+    "tags": ["bash", "read", "input", "stdin", "interactive", "IFS"],
+    "problem": "Using 'read' without options or proper IFS handling causes issues: backslash interpretation mangles input, trailing whitespace is stripped, and reading with a variable name in a loop inside a pipeline creates subshell scope loss.",
+    "solution": "Always use 'read -r' to suppress backslash interpretation. Use 'IFS= read -r' to preserve leading/trailing whitespace.\n\n# Read a line preserving all characters\nIFS= read -r line\n\n# Interactive prompt\nread -rp \"Enter name: \" name\n\n# Read file line by line correctly\nwhile IFS= read -r line; do\n  echo \"Line: $line\"\ndone < file.txt\n\n# Read password silently\nread -rsp \"Password: \" password\necho\n\n# Read with timeout\nif read -rt 5 -p \"Continue? [y/N] \" ans; then\n  echo \"Got: $ans\"\nelse\n  echo \"Timed out\"\nfi",
+    "why": "Without -r, read interprets backslash sequences (\\n becomes newline, \\t becomes tab, trailing \\ continues the line). Without IFS=, leading/trailing spaces are stripped.",
+    "gotchas": [
+      "read inside a pipeline runs in a subshell — variables set inside won't survive: 'cmd | while read ...'",
+      "Use 'while IFS= read -r line; done < file' (redirect) not '| while read' to keep scope",
+      "read -a ARRAY reads words into an array (bash only)",
+      "read -d '' reads until null byte — useful with find -print0",
+      "-t timeout: returns non-zero if timeout occurs — handle with set -e carefully"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["read", "stdin", "input", "line reading", "IFS", "backslash", "interactive", "password", "timeout"],
+    "severity": "moderate",
+    "context": "Reading user input interactively or processing file lines in bash scripts",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Process file preserving all whitespace\nwhile IFS= read -r line; do\n  printf 'Got: [%s]\\n' \"$line\"\ndone < /etc/hosts\n\n# Interactive with prompt\nread -rp \"Enter your name: \" name\necho \"Hello, $name\"\n\n# Silent password input\nread -rsp \"Password: \" pass\necho  # newline after hidden input\n\n# Read into array (splits on IFS)\nread -ra words <<< \"one two three\"\necho \"${#words[@]} words: ${words[*]}\"",
+        "description": "read builtin usage patterns"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Avoid parsing ls output: use glob or find instead",
+    "category": "gotcha",
+    "tags": ["bash", "ls", "glob", "find", "filenames", "antipattern"],
+    "problem": "Developers pipe 'ls' output to process files: 'for f in $(ls *.txt)'. This breaks on filenames with spaces, newlines, or special characters because ls output is text meant for humans, not machines.",
+    "solution": "Use glob expansion directly or find with -print0 / null delimiters.\n\n# NEVER parse ls output\nfor f in $(ls *.txt); do ...   # WRONG\n\n# Direct glob: safe, handles spaces\nfor f in *.txt; do\n  echo \"Processing: $f\"\ndone\n\n# If no files match, handle empty glob\nshopt -s nullglob\nfiles=(*.txt)\n(( ${#files[@]} > 0 )) || { echo 'No files'; exit; }\nfor f in \"${files[@]}\"; do ...\n\n# For complex criteria, use find:\nfind . -maxdepth 1 -name '*.txt' -print0 \\\n  | xargs -0 -I{} process {}",
+    "why": "ls formats its output for human readability (columns, colors, quoting). It is not designed as a data source. Filename characters like spaces, newlines, and special characters corrupt the output when parsed as a list.",
+    "gotchas": [
+      "shopt -s nullglob makes non-matching globs expand to nothing (empty list) instead of the literal pattern",
+      "shopt -s failglob makes non-matching globs an error — useful in strict scripts",
+      "Glob patterns are sorted by default; find order is filesystem-dependent",
+      "ls -1 (one per line) still breaks on filenames with newlines",
+      "ls output differs between macOS and Linux (BSD vs GNU ls)"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["ls", "glob", "find", "parse output", "filenames", "word splitting", "nullglob", "antipattern"],
+    "severity": "major",
+    "context": "Iterating over files in a directory in bash scripts",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# WRONG: parsing ls output\nfor f in $(ls /tmp/*.log); do\n  echo \"$f\"  # breaks on spaces in filenames\ndone\n\n# RIGHT: direct glob\nshopt -s nullglob\nfor f in /tmp/*.log; do\n  echo \"$f\"  # safe for all valid filenames\ndone\n\n# RIGHT: array of matches\nshopt -s nullglob\nfiles=(/tmp/*.log)\nif (( ${#files[@]} == 0 )); then\n  echo \"No log files found\"\n  exit 0\nfi\nfor f in \"${files[@]}\"; do process \"$f\"; done",
+        "description": "Safe file iteration without parsing ls"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "printf vs echo: portability and control over output formatting",
+    "category": "pattern",
+    "tags": ["bash", "printf", "echo", "formatting", "portability", "newline"],
+    "problem": "'echo' behavior is inconsistent across systems. 'echo -e' interprets escapes on some systems and prints '-e' literally on others. 'echo -n' suppresses newlines on some but not all implementations.",
+    "solution": "Use 'printf' for any output where you care about exact formatting. Reserve 'echo' for simple, untransformed strings.\n\n# BAD: inconsistent across systems\necho -e \"Name:\\tAlice\"\necho -n \"no newline\"\n\n# GOOD: printf is POSIX-defined and predictable\nprintf \"Name:\\tAlice\\n\"\nprintf '%s' \"no newline\"\nprintf '%d items\\n' \"$count\"\nprintf '%s\\n' \"${array[@]}\"  # print each element on its own line",
+    "why": "POSIX specifies printf's behavior precisely. echo's behavior with -n and -e flags is explicitly left implementation-defined by POSIX, making it a portability hazard.",
+    "gotchas": [
+      "printf repeats its format string if given more arguments than format specifiers: printf '%s\\n' a b c prints three lines",
+      "printf does not add a newline automatically — always include \\n in the format",
+      "printf '%s' is safe for printing arbitrary strings that may start with -",
+      "echo -- is NOT portable (some implementations print --, others suppress it)",
+      "In bash, echo handles most simple cases fine — only avoid it for escape sequences or -n"
+    ],
+    "language": "bash",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["printf", "echo", "formatting", "portability", "newline", "escape sequences", "output"],
+    "severity": "moderate",
+    "context": "Generating formatted output in scripts that may run on different systems",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Portable formatting\nprintf 'Hello, %s! You have %d messages.\\n' \"$name\" \"$count\"\n\n# Print each array element on its own line\nfruits=(apple banana cherry)\nprintf '%s\\n' \"${fruits[@]}\"\n\n# Right-align numbers in a column\nfor i in 1 10 100 1000; do\n  printf '%6d\\n' \"$i\"\ndone\n\n# Hex dump a value\nprintf '0x%08X\\n' 255   # 0x000000FF\n\n# Write to stderr\nprintf 'Error: %s\\n' \"$message\" >&2",
+        "description": "printf usage patterns"
+      }
+    ],
+    "version_info": null
+  }
+]

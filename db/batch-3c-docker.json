@@ -1,0 +1,923 @@
+[
+  {
+    "title": "localhost inside a container does not reach the host machine",
+    "category": "gotcha",
+    "tags": ["docker", "networking", "localhost", "host"],
+    "problem": "A service running inside a Docker container tries to connect to localhost:5432 (or any port) expecting to reach a database on the host machine, but the connection is refused. Inside a container, localhost resolves to the container itself, not the host.",
+    "solution": "Use the special DNS name `host.docker.internal` (works on Docker Desktop for Mac/Windows) or the host gateway IP. On Linux, pass `--add-host=host.docker.internal:host-gateway` to docker run, or add it to compose:\n\n```yaml\nextra_hosts:\n  - \"host.docker.internal:host-gateway\"\n```\n\nThen connect to `host.docker.internal:5432` instead of `localhost:5432`.",
+    "why": "Each container has its own network namespace. `localhost` (127.0.0.1) resolves within that namespace to the container's loopback interface, completely isolated from the host's loopback.",
+    "gotchas": [
+      "host.docker.internal is not available on Linux by default — you must add it explicitly",
+      "On Linux with host networking mode (`--network host`) localhost does reach the host, but this removes container network isolation",
+      "Docker Compose services should reference each other by service name, not localhost"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": ["linux", "macos", "windows"],
+    "error_messages": ["Connection refused", "connect ECONNREFUSED 127.0.0.1:5432"],
+    "keywords": ["localhost", "host machine", "networking", "host.docker.internal", "host-gateway", "connection refused"],
+    "severity": "major",
+    "context": "When a containerized app needs to reach a service running on the host machine",
+    "code_snippets": [
+      {
+        "lang": "yaml",
+        "code": "# docker-compose.yml\nservices:\n  app:\n    image: myapp\n    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n    environment:\n      DB_HOST: host.docker.internal",
+        "description": "Compose config for reaching host services on Linux"
+      },
+      {
+        "lang": "bash",
+        "code": "# docker run equivalent\ndocker run --add-host=host.docker.internal:host-gateway myapp",
+        "description": "docker run flag for Linux host gateway"
+      }
+    ],
+    "version_info": "host-gateway supported since Docker Engine 20.10"
+  },
+  {
+    "title": "Dockerfile layer cache breaks when frequently-changing files are copied early",
+    "category": "gotcha",
+    "tags": ["docker", "layer-cache", "dockerfile", "build-performance"],
+    "problem": "Every `RUN npm install` or `RUN pip install` re-runs on every build even when dependencies haven't changed, making builds slow. This happens when source code is copied before dependency installation.",
+    "solution": "Copy dependency manifests first, install dependencies, then copy the rest of the source. Docker caches each layer; copying the manifest separately means the install layer is only invalidated when the manifest changes.\n\n```dockerfile\n# GOOD — install layer cached unless package.json changes\nCOPY package.json package-lock.json ./\nRUN npm ci\nCOPY . .\n```",
+    "why": "Docker builds layers sequentially and caches each one based on its inputs. Once any layer is invalidated (because an input changed), all subsequent layers must be rebuilt. Putting volatile files early poisons the cache for expensive steps below them.",
+    "gotchas": [
+      "COPY . . copies everything including source code — put this after dependency installation",
+      "Use .dockerignore to exclude node_modules, .git, and build artifacts so they don't pollute the COPY layer hash",
+      "For monorepos you may need to COPY the workspace root manifest plus the package manifest separately",
+      "ARG values before a RUN also bust the cache — place ARGs after expensive cached layers"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["layer cache", "npm install", "pip install", "build speed", "cache invalidation", "copy order"],
+    "severity": "major",
+    "context": "Any Dockerfile that installs dependencies from a manifest file",
+    "code_snippets": [
+      {
+        "lang": "dockerfile",
+        "code": "# BAD — source copy busts npm install cache on every change\nFROM node:20-alpine\nWORKDIR /app\nCOPY . .          # <-- any file change invalidates everything below\nRUN npm ci\nCMD [\"node\", \"server.js\"]\n\n# GOOD — install layer only rebuilds when package files change\nFROM node:20-alpine\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN npm ci --omit=dev\nCOPY . .\nCMD [\"node\", \"server.js\"]",
+        "description": "Correct dependency-first layer ordering"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "ENTRYPOINT sets the executable; CMD provides default arguments",
+    "category": "principle",
+    "tags": ["docker", "entrypoint", "cmd", "dockerfile"],
+    "problem": "Developers confuse ENTRYPOINT and CMD, leading to containers that ignore arguments passed at runtime, can't be overridden correctly, or fail when used as CLI tools.",
+    "solution": "Use ENTRYPOINT for the fixed executable and CMD for default arguments that users can override:\n\n```dockerfile\nENTRYPOINT [\"python\", \"-m\", \"gunicorn\"]\nCMD [\"--workers\", \"4\", \"app:app\"]\n```\n\n`docker run myimage --workers 2 app:app` replaces CMD but keeps ENTRYPOINT. To override ENTRYPOINT: `docker run --entrypoint python myimage script.py`.",
+    "why": "ENTRYPOINT defines what the container *is*. CMD defines default behavior. Together they compose the final command. Shell form (`CMD python app.py`) spawns a shell process that becomes PID 1, which doesn't receive Unix signals properly — always prefer exec form (JSON array).",
+    "gotchas": [
+      "Shell form ENTRYPOINT (`ENTRYPOINT python app.py`) wraps the process in /bin/sh -c, breaking signal handling",
+      "If only CMD is set, `docker run myimage bash` replaces CMD entirely and runs bash",
+      "If ENTRYPOINT is set, runtime arguments append to it — they do not replace it",
+      "ENTRYPOINT from base image is inherited — override explicitly if needed"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["ENTRYPOINT", "CMD", "exec form", "shell form", "pid 1", "signal handling", "runtime arguments"],
+    "severity": "moderate",
+    "context": "Designing containers that should behave like executables or that need proper signal handling",
+    "code_snippets": [
+      {
+        "lang": "dockerfile",
+        "code": "# Exec form — correct, receives signals\nENTRYPOINT [\"gunicorn\"]\nCMD [\"--workers\", \"4\", \"--bind\", \"0.0.0.0:8000\", \"app:app\"]\n\n# Shell form — wrong, gunicorn is a child of sh, misses SIGTERM\n# ENTRYPOINT gunicorn --workers 4 app:app",
+        "description": "Exec form vs shell form for signal handling"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Docker Compose services communicate via service name, not IP or localhost",
+    "category": "pattern",
+    "tags": ["docker", "compose", "networking", "dns", "service-discovery"],
+    "problem": "Containers in the same Compose project can't connect to each other using localhost or hardcoded IPs. Connections time out or are refused.",
+    "solution": "Docker Compose creates a default bridge network and registers each service name as a DNS entry. Services connect using the service name as the hostname:\n\n```yaml\nservices:\n  db:\n    image: postgres:16\n  app:\n    image: myapp\n    environment:\n      DATABASE_URL: postgres://user:pass@db:5432/mydb\n```\n\nHere `db` resolves to the `db` container's IP automatically.",
+    "why": "Compose creates a user-defined bridge network with an embedded DNS server. Container names and service names are registered in that DNS, enabling service discovery without hardcoded IPs.",
+    "gotchas": [
+      "Services on different Compose projects are on different networks and can't reach each other by default — use external networks",
+      "The DNS name is the service name, not the container name (container_name overrides the container name but not the DNS alias)",
+      "Using `network_mode: host` disables the Compose network and breaks service-name DNS",
+      "Scale replicas (deploy.replicas) get round-robin DNS for the service name"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["getaddrinfo ENOTFOUND db", "could not translate host name \"db\" to address"],
+    "keywords": ["compose networking", "service discovery", "dns", "bridge network", "service name", "hostname"],
+    "severity": "major",
+    "context": "Multi-container Docker Compose setups where services need to communicate",
+    "code_snippets": [
+      {
+        "lang": "yaml",
+        "code": "services:\n  redis:\n    image: redis:7-alpine\n\n  worker:\n    image: myworker\n    environment:\n      REDIS_URL: redis://redis:6379   # 'redis' is the service name\n\n  app:\n    image: myapp\n    environment:\n      REDIS_URL: redis://redis:6379\n      # NOT redis://localhost:6379",
+        "description": "Service name DNS resolution in Compose"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Multi-stage builds reduce final image size dramatically",
+    "category": "pattern",
+    "tags": ["docker", "multi-stage", "image-size", "build"],
+    "problem": "Production images contain build tools, compilers, dev dependencies, and intermediate artifacts, making them hundreds of MB larger than necessary and increasing attack surface.",
+    "solution": "Use multi-stage builds: compile in a full build image, then COPY only the artifacts into a minimal runtime image.\n\n```dockerfile\n# Stage 1: build\nFROM golang:1.22 AS builder\nWORKDIR /app\nCOPY go.mod go.sum ./\nRUN go mod download\nCOPY . .\nRUN CGO_ENABLED=0 go build -o server ./cmd/server\n\n# Stage 2: runtime (no Go toolchain)\nFROM scratch\nCOPY --from=builder /app/server /server\nENTRYPOINT [\"/server\"]\n```",
+    "why": "Each FROM starts a new image. The final stage is what gets tagged and pushed. Earlier stages exist only as build-time intermediates. Docker never includes build-stage layers in the final image.",
+    "gotchas": [
+      "COPY --from=builder uses the stage name or index (0-based) — always name stages with AS for readability",
+      "Don't COPY files with root ownership if the runtime stage runs as non-root — chown at copy time: COPY --chown=appuser:appuser --from=builder ...",
+      "Scratch images have no shell, no libc, no CA certs — copy them explicitly if needed",
+      "You can target a specific stage with: docker build --target builder ."
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["multi-stage", "image size", "scratch", "build artifacts", "production image", "COPY --from"],
+    "severity": "tip",
+    "context": "Building production Docker images for compiled languages or apps with heavy build toolchains",
+    "code_snippets": [
+      {
+        "lang": "dockerfile",
+        "code": "# Node.js multi-stage example\nFROM node:20-alpine AS deps\nWORKDIR /app\nCOPY package*.json ./\nRUN npm ci --omit=dev\n\nFROM node:20-alpine AS runtime\nWORKDIR /app\nCOPY --from=deps /app/node_modules ./node_modules\nCOPY . .\nUSER node\nCMD [\"node\", \"server.js\"]",
+        "description": "Node.js multi-stage build separating dependency install from runtime"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": ".dockerignore is required to prevent cache poisoning and bloated builds",
+    "category": "pattern",
+    "tags": ["docker", "dockerignore", "build-context", "cache", "security"],
+    "problem": "Without .dockerignore, `COPY . .` sends the entire build context to the Docker daemon — including node_modules, .git history, .env files, and local build artifacts. This busts layer caches, inflates image sizes, and risks exposing secrets.",
+    "solution": "Create a `.dockerignore` file in the same directory as your Dockerfile:\n\n```\nnode_modules\n.git\n.env\n.env.*\ndist\nbuild\n*.log\n.DS_Store\nDockerfile\n.dockerignore\n```\n\nThis prevents these paths from being sent in the build context.",
+    "why": "Docker's build context is a tar archive of all files sent to the daemon before the build starts. Without exclusions, every file modification in excluded directories (like node_modules) changes the context hash and invalidates the COPY layer cache even if nothing meaningful changed.",
+    "gotchas": [
+      ".dockerignore syntax is similar to .gitignore but not identical — test with `docker build --no-cache` if uncertain",
+      "Excluding .env prevents secrets from leaking into image layers, even if you don't COPY them explicitly",
+      "node_modules should always be excluded — you want the image to install fresh inside the container",
+      "You can use ! to re-include files excluded by a wildcard pattern"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["dockerignore", "build context", "cache invalidation", "node_modules", "secrets", "git history"],
+    "severity": "major",
+    "context": "Any project using docker build with COPY . .",
+    "code_snippets": [
+      {
+        "lang": "text",
+        "code": "# .dockerignore\nnode_modules\n.git\n.gitignore\n.env\n.env.*\ndist/\nbuild/\ncoverage/\n*.log\n.DS_Store\nDockerfile*\n.dockerignore\nREADME.md",
+        "description": "Minimal .dockerignore for a Node.js project"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "COPY is preferred over ADD; use ADD only for remote URLs and tar extraction",
+    "category": "principle",
+    "tags": ["docker", "copy", "add", "dockerfile"],
+    "problem": "Developers use ADD for all file copying, not realizing ADD has hidden behaviors that can cause surprising results: automatic tar extraction and fetching remote URLs, which are rarely intentional.",
+    "solution": "Use COPY for copying local files and directories — it is explicit and predictable:\n\n```dockerfile\n# Prefer this\nCOPY src/ /app/src/\n\n# Only use ADD for these specific cases:\n# 1. Extract a local tarball\nADD archive.tar.gz /app/\n# 2. Fetch remote file (prefer curl/wget in RUN instead for cache control)\nADD https://example.com/config.json /app/config.json\n```",
+    "why": "ADD's implicit tar-extraction and remote-fetch behaviors reduce transparency. The Dockerfile Best Practices guide explicitly recommends COPY unless ADD's special features are needed. Remote URLs fetched with ADD are not cached across builds in a useful way.",
+    "gotchas": [
+      "ADD with a remote URL always re-fetches on every build — use RUN curl ... if you want caching",
+      "ADD will silently extract .tar, .tar.gz, .tar.bz2, .tar.xz — which can be surprising if you meant to copy the archive as-is",
+      "COPY is more auditable in security reviews because its behavior is purely file copy",
+      "Both COPY and ADD create a new layer"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["COPY", "ADD", "tar extraction", "remote url", "dockerfile best practices"],
+    "severity": "tip",
+    "context": "Writing Dockerfiles that copy files into the image",
+    "code_snippets": [
+      {
+        "lang": "dockerfile",
+        "code": "# Extracting a tarball — valid ADD use case\nADD app-release.tar.gz /opt/app/\n\n# Copying source files — use COPY\nCOPY --chown=app:app src/ /app/src/\nCOPY config.yaml /app/config.yaml\n\n# Remote file — use RUN curl for better cache control\nRUN curl -fsSL https://example.com/tool -o /usr/local/bin/tool && chmod +x /usr/local/bin/tool",
+        "description": "When to use ADD vs COPY vs RUN curl"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Docker health checks prevent traffic from reaching unready containers",
+    "category": "pattern",
+    "tags": ["docker", "healthcheck", "readiness", "compose", "orchestration"],
+    "problem": "Compose starts containers in dependency order but doesn't wait for services to be *ready* — only that they are *running*. A database container marked as started may still be initializing, causing the app container to crash on connection.",
+    "solution": "Add a HEALTHCHECK to your Dockerfile and use `condition: service_healthy` in depends_on:\n\n```dockerfile\nHEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \\\n  CMD pg_isready -U postgres || exit 1\n```\n\n```yaml\nservices:\n  app:\n    depends_on:\n      db:\n        condition: service_healthy\n```",
+    "why": "HEALTHCHECK tells Docker how to test if the container's main process is actually serving requests. Compose uses health status when `condition: service_healthy` is set, delaying dependent containers until the health check passes.",
+    "gotchas": [
+      "Without a HEALTHCHECK instruction, `condition: service_healthy` in Compose will cause the dependent service to never start",
+      "start-period gives the container grace time before health checks begin — essential for slow-starting services",
+      "Health checks run inside the container — tools used must be available in the image",
+      "Docker Swarm and Kubernetes have their own readiness/liveness probe mechanisms that supersede HEALTHCHECK"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["service is not healthy", "dependency failed to start"],
+    "keywords": ["healthcheck", "depends_on", "service_healthy", "readiness", "startup", "pg_isready"],
+    "severity": "major",
+    "context": "Multi-service Compose setups where one service must be ready before another starts",
+    "code_snippets": [
+      {
+        "lang": "dockerfile",
+        "code": "# In postgres Dockerfile or compose override\nHEALTHCHECK --interval=5s --timeout=3s --start-period=20s --retries=5 \\\n  CMD pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-postgres} || exit 1",
+        "description": "Postgres health check"
+      },
+      {
+        "lang": "yaml",
+        "code": "services:\n  db:\n    image: postgres:16\n    healthcheck:\n      test: [\"CMD\", \"pg_isready\", \"-U\", \"postgres\"]\n      interval: 5s\n      timeout: 3s\n      retries: 5\n      start_period: 20s\n\n  app:\n    image: myapp\n    depends_on:\n      db:\n        condition: service_healthy",
+        "description": "Compose healthcheck and conditional depends_on"
+      }
+    ],
+    "version_info": "condition: service_healthy requires Compose v2+"
+  },
+  {
+    "title": "Volume-mounted directories inherit host ownership, breaking container write permissions",
+    "category": "gotcha",
+    "tags": ["docker", "volumes", "permissions", "uid", "gid"],
+    "problem": "A container process runs as a non-root user (e.g., UID 1000) but the mounted host directory is owned by root or a different UID. The container cannot write to the volume and fails with permission denied.",
+    "solution": "Match the UID/GID of the container user to the host directory owner, or use an entrypoint script to chown the volume at startup:\n\n```bash\n# Option 1: build with matching UID\nARG UID=1000\nRUN useradd -u $UID -m appuser\n\n# Option 2: entrypoint chown (requires brief root, then drop)\nchown -R appuser:appuser /data && exec gosu appuser \"$@\"\n```\n\nOr use `docker run -u $(id -u):$(id -g)` to run as the calling host user.",
+    "why": "Linux bind mounts expose the host filesystem with real UIDs/GIDs. The container kernel sees the same UID numbers as the host. If the container process UID doesn't match the directory owner's UID and the directory isn't world-writable, writes fail.",
+    "gotchas": [
+      "Named volumes (not bind mounts) are owned by root by default — fix with a volume init container or entrypoint chown",
+      "Running `docker run -u $(id -u)` works for bind mounts but may break if the container expects a user with a home directory",
+      "On macOS and Windows with Docker Desktop, UID mapping is virtualized and this is less common — it bites mainly on Linux hosts",
+      "Docker's userns-remap feature shifts all UIDs but adds complexity"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": ["linux"],
+    "error_messages": ["Permission denied", "EACCES: permission denied", "open /data/file: permission denied"],
+    "keywords": ["volume permissions", "uid", "gid", "bind mount", "chown", "non-root", "permission denied"],
+    "severity": "major",
+    "context": "Running containers with non-root users and bind-mounted or named volumes",
+    "code_snippets": [
+      {
+        "lang": "dockerfile",
+        "code": "FROM node:20-alpine\n\n# Create user with specific UID matching host\nARG UID=1000\nARG GID=1000\nRUN addgroup -g $GID appgroup && adduser -u $UID -G appgroup -D appuser\n\nWORKDIR /app\nCOPY --chown=appuser:appgroup . .\n\nUSER appuser\nCMD [\"node\", \"server.js\"]",
+        "description": "Dockerfile with configurable UID/GID for volume permission matching"
+      },
+      {
+        "lang": "bash",
+        "code": "# Run as current host user to match bind mount permissions\ndocker run -u $(id -u):$(id -g) -v $(pwd)/data:/data myapp",
+        "description": "Run container as current host user"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Always run containers as a non-root user",
+    "category": "principle",
+    "tags": ["docker", "security", "non-root", "user", "least-privilege"],
+    "problem": "Containers run as root by default. If the application is compromised, the attacker has root access inside the container and may exploit kernel vulnerabilities or escape to the host.",
+    "solution": "Create and switch to a non-root user in your Dockerfile:\n\n```dockerfile\nRUN groupadd -r appgroup && useradd -r -g appgroup appuser\nUSER appuser\n```\n\nFor Alpine:\n```dockerfile\nRUN addgroup -S appgroup && adduser -S appuser -G appgroup\nUSER appuser\n```",
+    "why": "Defense in depth: even if the process is compromised, running as a non-root UID limits what an attacker can do on the host filesystem and reduces the blast radius of a container escape.",
+    "gotchas": [
+      "Some base images already define a non-root user (node image provides `node` user, nginx provides `nginx`)",
+      "Ports below 1024 require root or CAP_NET_BIND_SERVICE — expose on 8080 instead of 80",
+      "Files COPYed before the USER instruction are owned by root — use COPY --chown",
+      "USER instruction in Dockerfile can be overridden at runtime with `docker run -u root` — enforce with Kubernetes securityContext or rootless Docker"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["non-root", "USER", "security", "least privilege", "rootless", "adduser", "useradd"],
+    "severity": "major",
+    "context": "Any production Docker image",
+    "code_snippets": [
+      {
+        "lang": "dockerfile",
+        "code": "FROM python:3.12-slim\n\nWORKDIR /app\n\n# Install deps as root before switching user\nCOPY requirements.txt .\nRUN pip install --no-cache-dir -r requirements.txt\n\nCOPY --chown=nobody:nogroup . .\n\nUSER nobody\n\nEXPOSE 8080\nCMD [\"python\", \"-m\", \"gunicorn\", \"--bind\", \"0.0.0.0:8080\", \"app:app\"]",
+        "description": "Running Python app as nobody user"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "ARG is build-time only; ENV persists into the running container",
+    "category": "principle",
+    "tags": ["docker", "arg", "env", "build-args", "environment-variables", "secrets"],
+    "problem": "Developers use ARG or ENV interchangeably and are surprised when build-time variables aren't available at runtime, or when secrets passed as ARG end up visible in the container environment.",
+    "solution": "Use ARG for build-time parameters (versions, flags). Use ENV for runtime configuration. If you need a build-time value at runtime, explicitly promote it:\n\n```dockerfile\nARG APP_VERSION=1.0\nENV APP_VERSION=${APP_VERSION}   # Now available at runtime too\n\n# SECRET: never put secrets in ARG or ENV\n# They are visible in `docker history` and `docker inspect`\n```",
+    "why": "ARG values exist only during the build process and are not stored in the final image environment. ENV values are baked into the image and available to every process running in the container. Both are visible in image metadata — neither is safe for secrets.",
+    "gotchas": [
+      "ARG values ARE visible in `docker history` — do not use for secrets",
+      "ENV values appear in `docker inspect` output — also not secret",
+      "ARG before the first FROM is a global arg for FROM instructions only — redefine it after FROM to use in build stages",
+      "Use Docker secrets (--secret) or BuildKit secret mounts for credentials that must not appear in history"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["ARG", "ENV", "build args", "environment variables", "runtime", "build-time", "secrets"],
+    "severity": "moderate",
+    "context": "Parameterizing Docker builds and configuring container runtime environment",
+    "code_snippets": [
+      {
+        "lang": "dockerfile",
+        "code": "# ARG: only during build\nARG NODE_VERSION=20\nFROM node:${NODE_VERSION}-alpine\n\n# ARG inside stage: build-time only\nARG BUILD_DATE\nLABEL build-date=${BUILD_DATE}\n\n# ENV: available at runtime\nENV PORT=3000\nENV NODE_ENV=production\n\n# Promote ARG to ENV\nARG API_URL=https://api.example.com\nENV API_URL=${API_URL}",
+        "description": "ARG vs ENV usage in Dockerfile"
+      },
+      {
+        "lang": "bash",
+        "code": "# Pass build arg\ndocker build --build-arg NODE_VERSION=22 --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) .",
+        "description": "Passing ARG values at build time"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "depends_on does not wait for service readiness, only container start",
+    "category": "gotcha",
+    "tags": ["docker", "compose", "depends_on", "startup-order", "readiness"],
+    "problem": "Compose `depends_on` causes services to start in order, but the dependent service starts as soon as the dependency container is running — not when it is ready to accept connections. Apps crash on startup trying to connect to an unready database.",
+    "solution": "Use `condition: service_healthy` with a HEALTHCHECK, or use a wait script like wait-for-it.sh:\n\n```yaml\ndepends_on:\n  db:\n    condition: service_healthy\n```\n\nAlternatively, make the app retry connections with exponential backoff instead of failing immediately.",
+    "why": "Compose v1 `depends_on` only controlled start order. The `condition` field was added to address this gap. Without it, services start in order but race conditions with slow-starting services remain.",
+    "gotchas": [
+      "condition: service_healthy requires the dependency to have a HEALTHCHECK defined in its image or compose config",
+      "condition: service_started (default) = old behavior, only waits for container to start",
+      "condition: service_completed_successfully is for one-shot services like migrations",
+      "Retry logic in your app code is more resilient than relying solely on depends_on"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["Connection refused", "ECONNREFUSED", "dial tcp: connect: connection refused"],
+    "keywords": ["depends_on", "startup order", "service_healthy", "readiness", "race condition", "wait-for-it"],
+    "severity": "major",
+    "context": "Docker Compose setups where services depend on a database or other slow-starting service",
+    "code_snippets": [
+      {
+        "lang": "yaml",
+        "code": "services:\n  db:\n    image: postgres:16\n    healthcheck:\n      test: [\"CMD\", \"pg_isready\", \"-U\", \"postgres\"]\n      interval: 5s\n      timeout: 3s\n      retries: 5\n      start_period: 10s\n\n  migrate:\n    image: myapp\n    command: python manage.py migrate\n    depends_on:\n      db:\n        condition: service_healthy\n\n  app:\n    image: myapp\n    depends_on:\n      migrate:\n        condition: service_completed_successfully\n      db:\n        condition: service_healthy",
+        "description": "Full depends_on chain with healthcheck and migration service"
+      }
+    ],
+    "version_info": "condition key requires Docker Compose v2"
+  },
+  {
+    "title": "docker exec runs a new process; docker attach connects to PID 1's stdio",
+    "category": "principle",
+    "tags": ["docker", "exec", "attach", "debugging", "interactive"],
+    "problem": "Developers use `docker attach` to debug a running container but get a confusing experience: they see the app's stdout/stderr, can't type commands, and Ctrl+C stops the container instead of detaching.",
+    "solution": "Use `docker exec` to open a new shell session inside a running container:\n\n```bash\n# Open interactive shell without affecting the running app\ndocker exec -it mycontainer bash\n# Or with sh for Alpine\ndocker exec -it mycontainer sh\n# Run a single command\ndocker exec mycontainer ps aux\n```\n\nUse `docker attach` only when you specifically want to interact with PID 1's stdin/stdout.",
+    "why": "`docker attach` connects your terminal to the container's PID 1 stdio streams. Ctrl+C sends SIGINT to PID 1, stopping the container. `docker exec` spawns a completely new process in the container's namespaces, independent of PID 1.",
+    "gotchas": [
+      "To detach from docker attach without stopping the container: Ctrl+P then Ctrl+Q",
+      "docker exec requires the container to be running — it fails on stopped or paused containers",
+      "bash may not be available in minimal images — try sh, ash, or busybox sh",
+      "docker exec -it spawns a TTY — omit -t for non-interactive command output piped to host"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["OCI runtime exec failed", "no such container"],
+    "keywords": ["docker exec", "docker attach", "shell", "interactive", "debugging", "bash", "pid 1"],
+    "severity": "moderate",
+    "context": "Debugging or inspecting a running Docker container",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Open a shell in running container\ndocker exec -it my_app bash\n\n# Check environment variables inside container\ndocker exec my_app env\n\n# Run as root even if container USER is non-root\ndocker exec -u root -it my_app bash\n\n# Tail a log file\ndocker exec my_app tail -f /var/log/app.log",
+        "description": "Common docker exec patterns"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Reduce image size with --no-cache, multi-stage, and slim base images",
+    "category": "pattern",
+    "tags": ["docker", "image-size", "optimization", "slim", "alpine"],
+    "problem": "Docker images are bloated with package manager caches, debug tools, documentation, and build dependencies, resulting in hundreds of MB of unnecessary data that slows pulls and increases attack surface.",
+    "solution": "Combine multiple strategies:\n1. Use slim or Alpine base images\n2. Clean package manager caches in the same RUN layer\n3. Use multi-stage builds\n4. Combine RUN commands to minimize layers\n\n```dockerfile\nFROM python:3.12-slim\nRUN pip install --no-cache-dir -r requirements.txt\n\n# For apt-based:\nRUN apt-get update && apt-get install -y --no-install-recommends \\\n    curl \\\n  && rm -rf /var/lib/apt/lists/*\n```",
+    "why": "Each RUN layer is an independent filesystem snapshot. Caches removed in a later RUN layer don't reduce the size of the layer that created them — they must be cleaned in the same RUN command to avoid baking the cache into the image.",
+    "gotchas": [
+      "Cleaning apt cache in a separate RUN does NOT reduce image size — it creates a new layer hiding the files",
+      "Alpine uses musl libc which can cause subtle compatibility issues with some C extensions",
+      "python:3.12-slim vs python:3.12-alpine: slim is Debian-based (more compatible), alpine is smaller but may need build tools",
+      "Use `dive` tool to inspect image layers and find bloat"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["image size", "slim", "alpine", "no-cache", "apt-get", "layer optimization", "dive"],
+    "severity": "moderate",
+    "context": "Optimizing Docker images for production deployment",
+    "code_snippets": [
+      {
+        "lang": "dockerfile",
+        "code": "FROM debian:bookworm-slim\n\n# Install and clean in ONE RUN to avoid baking cache into a layer\nRUN apt-get update \\\n  && apt-get install -y --no-install-recommends \\\n     ca-certificates \\\n     curl \\\n  && rm -rf /var/lib/apt/lists/* \\\n  && apt-get clean",
+        "description": "Correct apt-get with cache cleanup in single RUN"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "BuildKit secrets mount credentials without baking them into image layers",
+    "category": "pattern",
+    "tags": ["docker", "buildkit", "secrets", "security", "ssh"],
+    "problem": "Build steps need access to credentials (npm auth tokens, SSH keys, API keys) but passing them as ARG or ENV bakes them into the image history where they can be recovered with `docker history`.",
+    "solution": "Use BuildKit `--mount=type=secret` to mount secrets only during the specific RUN that needs them:\n\n```dockerfile\n# syntax=docker/dockerfile:1\nFROM node:20-alpine\nRUN --mount=type=secret,id=npm_token \\\n    NPM_TOKEN=$(cat /run/secrets/npm_token) \\\n    npm config set //registry.npmjs.org/:_authToken=$NPM_TOKEN \\\n    && npm ci \\\n    && npm config delete //registry.npmjs.org/:_authToken\n```\n\n```bash\ndocker build --secret id=npm_token,src=$HOME/.npmrc .\n```",
+    "why": "BuildKit secret mounts are never written to the union filesystem or any image layer. The secret is accessible only in the RUN step's execution environment as a tmpfs mount at /run/secrets/.",
+    "gotchas": [
+      "Requires BuildKit (DOCKER_BUILDKIT=1 or Docker 23+ where it's the default)",
+      "The `# syntax=docker/dockerfile:1` comment at the top enables the Dockerfile frontend that supports secrets",
+      "SSH agent forwarding uses `--mount=type=ssh` — useful for private git repos during build",
+      "Secrets are mounted read-only at /run/secrets/<id> by default"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["BuildKit", "secrets", "mount type secret", "npm token", "ssh", "credentials", "docker history"],
+    "severity": "major",
+    "context": "Builds that need credentials to access private package registries or git repos",
+    "code_snippets": [
+      {
+        "lang": "dockerfile",
+        "code": "# syntax=docker/dockerfile:1\nFROM python:3.12-slim\n\n# Mount SSH agent for private git dependencies\nRUN --mount=type=ssh \\\n    pip install git+ssh://git@github.com/myorg/private-lib.git\n\n# Mount a secret file\nRUN --mount=type=secret,id=pip_conf,dst=/etc/pip.conf \\\n    pip install -r requirements.txt",
+        "description": "BuildKit SSH and secret mounts"
+      },
+      {
+        "lang": "bash",
+        "code": "# Enable SSH agent forwarding during build\neval $(ssh-agent)\nssh-add ~/.ssh/id_ed25519\ndocker build --ssh default .\n\n# Pass a secret from a file\ndocker build --secret id=pip_conf,src=$HOME/.pip/pip.conf .",
+        "description": "Build commands with secrets and SSH forwarding"
+      }
+    ],
+    "version_info": "Requires BuildKit (Docker 18.09+), default in Docker 23+"
+  },
+  {
+    "title": "Compose profiles selectively start subsets of services",
+    "category": "pattern",
+    "tags": ["docker", "compose", "profiles", "development", "testing"],
+    "problem": "A docker-compose.yml defines many services (app, db, redis, monitoring, test-runner, mock-server) but developers only want to start a subset for local development. Running all services wastes resources.",
+    "solution": "Assign services to named profiles. Services without a profile always start. Services with a profile only start when that profile is activated:\n\n```yaml\nservices:\n  app:\n    image: myapp   # always starts\n  db:\n    image: postgres:16  # always starts\n  prometheus:\n    image: prom/prometheus\n    profiles: [monitoring]   # only with --profile monitoring\n  e2e:\n    image: playwright\n    profiles: [testing]\n```\n\n```bash\ndocker compose --profile monitoring up\ndocker compose --profile testing run e2e\n```",
+    "why": "Profiles give you a single Compose file that works for multiple scenarios (dev, CI, monitoring, testing) without maintaining separate files or commenting out services.",
+    "gotchas": [
+      "Services without any profile are always started regardless of which profiles are activated",
+      "A service can belong to multiple profiles: `profiles: [dev, testing]`",
+      "depends_on from a profiled service to a non-profiled service works — the dependency starts normally",
+      "COMPOSE_PROFILES env var can set default profiles: `COMPOSE_PROFILES=dev,monitoring`"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["profiles", "compose profiles", "selective startup", "development", "testing", "monitoring"],
+    "severity": "tip",
+    "context": "Projects with many services where different team members or environments need different subsets",
+    "code_snippets": [
+      {
+        "lang": "yaml",
+        "code": "services:\n  app:\n    build: .\n  db:\n    image: postgres:16\n  redis:\n    image: redis:7-alpine\n\n  # Only in dev\n  adminer:\n    image: adminer\n    profiles: [dev]\n    ports:\n      - \"8080:8080\"\n\n  # Only in CI/testing\n  test:\n    image: myapp\n    command: pytest\n    profiles: [test]\n    depends_on:\n      db:\n        condition: service_healthy",
+        "description": "Compose profiles for dev and test services"
+      }
+    ],
+    "version_info": "Docker Compose v2.2+ (Compose spec)"
+  },
+  {
+    "title": "tmpfs mounts provide fast ephemeral in-memory storage",
+    "category": "pattern",
+    "tags": ["docker", "tmpfs", "performance", "ephemeral", "testing"],
+    "problem": "Containers write to disk for temporary files, caches, or test databases, causing unnecessary I/O overhead. Disk writes inside containers go through the overlay filesystem which is slower than native disk.",
+    "solution": "Mount a tmpfs (RAM-backed) filesystem for ephemeral data:\n\n```bash\ndocker run --tmpfs /tmp:rw,size=256m,mode=1777 myapp\n```\n\n```yaml\nservices:\n  app:\n    image: myapp\n    tmpfs:\n      - /tmp:size=256m\n      - /run\n```\n\nFor test databases, mounting the data directory as tmpfs makes tests much faster.",
+    "why": "tmpfs mounts reside in RAM. Reads and writes bypass disk and the overlay filesystem entirely. Data is lost when the container stops, which is desirable for ephemeral caches, session stores, and test data.",
+    "gotchas": [
+      "tmpfs data is lost when the container stops — do not use for persistent data",
+      "size limit prevents a runaway process from exhausting all available RAM",
+      "tmpfs in Compose doesn't support all the options available in docker run --tmpfs",
+      "Secrets can be stored in tmpfs to avoid writing them to disk"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["tmpfs", "in-memory", "performance", "ephemeral", "ram", "overlay filesystem", "test database"],
+    "severity": "tip",
+    "context": "Containers with high-throughput temporary file I/O or test workloads needing fast ephemeral storage",
+    "code_snippets": [
+      {
+        "lang": "yaml",
+        "code": "services:\n  # Fast test database — data doesn't need to persist\n  testdb:\n    image: postgres:16\n    environment:\n      POSTGRES_PASSWORD: test\n    tmpfs:\n      - /var/lib/postgresql/data:size=512m",
+        "description": "In-memory Postgres for fast test execution"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Docker logging drivers control where and how container logs are stored",
+    "category": "pattern",
+    "tags": ["docker", "logging", "log-driver", "fluentd", "json-file"],
+    "problem": "Container logs pile up on disk in /var/lib/docker/containers and eventually exhaust disk space. Or, logs need to go to a centralized system like Elasticsearch or CloudWatch but the default json-file driver only writes locally.",
+    "solution": "Configure the logging driver in docker run or Compose, and always set max-size for the default json-file driver:\n\n```yaml\nservices:\n  app:\n    image: myapp\n    logging:\n      driver: json-file\n      options:\n        max-size: \"10m\"\n        max-file: \"3\"\n```\n\nFor centralized logging:\n```yaml\nlogging:\n  driver: fluentd\n  options:\n    fluentd-address: localhost:24224\n    tag: app.{{.Name}}\n```",
+    "why": "The default json-file driver has no size limit and will consume disk indefinitely. Configuring max-size and max-file prevents disk exhaustion. Alternative drivers like fluentd, awslogs, or splunk send logs directly to external systems.",
+    "gotchas": [
+      "`docker logs` command only works with json-file and journald drivers — not with remote drivers",
+      "The syslog driver sends to the host syslog, which may have its own retention policies",
+      "Setting logging options in daemon.json applies globally; per-container settings override it",
+      "Log drivers that buffer can lose logs on container crash — use mode: non-blocking carefully"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["no space left on device"],
+    "keywords": ["logging driver", "json-file", "log rotation", "max-size", "fluentd", "awslogs", "disk space"],
+    "severity": "major",
+    "context": "Production Docker deployments where log volume and retention matter",
+    "code_snippets": [
+      {
+        "lang": "json",
+        "code": "{\n  \"log-driver\": \"json-file\",\n  \"log-opts\": {\n    \"max-size\": \"10m\",\n    \"max-file\": \"3\"\n  }\n}",
+        "description": "/etc/docker/daemon.json — global default log rotation"
+      },
+      {
+        "lang": "yaml",
+        "code": "services:\n  app:\n    image: myapp\n    logging:\n      driver: json-file\n      options:\n        max-size: \"50m\"\n        max-file: \"5\"\n        labels: \"service,env\"\n    labels:\n      service: myapp\n      env: production",
+        "description": "Per-service log rotation in Compose"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "PID 1 in containers must handle signals and reap zombie processes",
+    "category": "gotcha",
+    "tags": ["docker", "pid1", "signals", "sigterm", "zombie", "init"],
+    "problem": "The main process in a container runs as PID 1 but behaves unexpectedly: it ignores SIGTERM (so `docker stop` waits 10 seconds then sends SIGKILL), or zombie processes accumulate because nothing calls wait() on them.",
+    "solution": "Use an init process as PID 1. Options:\n1. Add `--init` flag to docker run (uses tini)\n2. Use `init: true` in Compose\n3. Install tini explicitly in Dockerfile\n\n```yaml\nservices:\n  app:\n    image: myapp\n    init: true\n```\n\n```dockerfile\nRUN apk add --no-cache tini\nENTRYPOINT [\"/sbin/tini\", \"--\"]\nCMD [\"python\", \"app.py\"]\n```",
+    "why": "Unix PID 1 has special behavior: the kernel does not send default signal handlers to PID 1. If your app doesn't explicitly handle SIGTERM, it's ignored. Also, orphaned child processes are adopted by PID 1 — if PID 1 doesn't call wait(), they become zombies.",
+    "gotchas": [
+      "Shell form ENTRYPOINT makes the shell PID 1, not your app — your app won't receive SIGTERM",
+      "`docker stop` sends SIGTERM and waits 10 seconds (default) before SIGKILL — always handle SIGTERM",
+      "Node.js ignores SIGTERM by default unless you add a handler: `process.on('SIGTERM', () => process.exit(0))`",
+      "tini is included in official Docker base images as /usr/bin/tini or /sbin/tini on recent Alpine"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["Killed", "Error response from daemon: cannot kill container"],
+    "keywords": ["pid 1", "sigterm", "sigkill", "tini", "init process", "zombie", "signal handling", "docker stop"],
+    "severity": "major",
+    "context": "Any containerized process that spawns children or needs graceful shutdown",
+    "code_snippets": [
+      {
+        "lang": "yaml",
+        "code": "services:\n  app:\n    image: myapp\n    init: true        # Docker injects tini as PID 1\n    stop_grace_period: 30s  # Wait up to 30s before SIGKILL",
+        "description": "Compose init and graceful shutdown config"
+      },
+      {
+        "lang": "dockerfile",
+        "code": "FROM node:20-alpine\n\n# tini already available in node image as /usr/bin/tini\nENTRYPOINT [\"/usr/bin/tini\", \"--\"]\nCMD [\"node\", \"server.js\"]",
+        "description": "Explicit tini entrypoint in Node image"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Compose override files let you layer environment-specific config",
+    "category": "pattern",
+    "tags": ["docker", "compose", "override", "dev", "production", "ci"],
+    "problem": "A single docker-compose.yml doesn't suit all environments. Dev needs volume mounts and hot reload; CI needs test commands; production needs resource limits and restart policies. Copy-pasting Compose files leads to drift.",
+    "solution": "Use `docker-compose.override.yml` for automatic dev overrides, and named override files for other environments:\n\n```bash\n# Dev: automatically merges base + override.yml\ndocker compose up\n\n# CI: merge base + ci-specific overrides\ndocker compose -f docker-compose.yml -f docker-compose.ci.yml up\n\n# Production\ndocker compose -f docker-compose.yml -f docker-compose.prod.yml up\n```",
+    "why": "Compose merges multiple files using a deep merge strategy. Lists are appended, scalars are overridden. This lets you maintain a canonical base and layer in environment differences without duplication.",
+    "gotchas": [
+      "docker-compose.override.yml is automatically merged — you don't need to specify it with -f",
+      "Volume lists in Compose are merged by value — overriding a volume requires careful key matching",
+      "Environment variable maps are merged — override file values win on key collision",
+      "The merge order matters: last file wins for scalar values"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["compose override", "docker-compose.override.yml", "environment specific", "dev prod", "merge", "-f flag"],
+    "severity": "tip",
+    "context": "Managing Docker Compose config across multiple environments (dev, CI, staging, production)",
+    "code_snippets": [
+      {
+        "lang": "yaml",
+        "code": "# docker-compose.yml (base)\nservices:\n  app:\n    image: myapp:latest\n    ports:\n      - \"3000:3000\"\n\n---\n# docker-compose.override.yml (auto-applied in dev)\nservices:\n  app:\n    build: .       # build from source in dev\n    volumes:\n      - .:/app     # hot reload\n    environment:\n      NODE_ENV: development\n\n---\n# docker-compose.prod.yml\nservices:\n  app:\n    restart: unless-stopped\n    deploy:\n      resources:\n        limits:\n          cpus: '0.5'\n          memory: 512M",
+        "description": "Base + dev override + prod override pattern"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Docker secrets provide runtime secret injection without env var exposure",
+    "category": "pattern",
+    "tags": ["docker", "secrets", "swarm", "compose", "security"],
+    "problem": "Database passwords and API keys in environment variables appear in `docker inspect`, process lists, and Compose files committed to git. Even with .env files, secrets are too easily exposed.",
+    "solution": "Use Docker secrets for Swarm or file-based secrets in Compose:\n\n```yaml\nservices:\n  app:\n    image: myapp\n    secrets:\n      - db_password\n    environment:\n      DB_PASSWORD_FILE: /run/secrets/db_password\n\nsecrets:\n  db_password:\n    file: ./secrets/db_password.txt  # or `external: true` for Swarm\n```\n\nThe app reads the password from the file rather than an env var.",
+    "why": "Secrets mounted at /run/secrets/ are tmpfs files — they don't appear in env, are not visible in docker inspect environment, and in Swarm mode are encrypted in the Raft log.",
+    "gotchas": [
+      "Compose file-based secrets are still stored on disk — they're convenient but not as secure as Swarm encrypted secrets",
+      "App code must support reading secrets from files (the _FILE convention) or you need an entrypoint that reads the file into an env var",
+      "Secrets are available at /run/secrets/<secret-name> inside the container",
+      "Kubernetes uses a different mechanism (Secret resources) — Docker secrets don't transfer"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["docker secrets", "secret file", "run/secrets", "env var exposure", "swarm secrets", "_FILE convention"],
+    "severity": "moderate",
+    "context": "Injecting credentials into containers without exposing them in environment variables",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Read secret file in entrypoint script\n#!/bin/sh\nif [ -f \"$DB_PASSWORD_FILE\" ]; then\n  export DB_PASSWORD=$(cat \"$DB_PASSWORD_FILE\")\nfi\nexec \"$@\"",
+        "description": "Entrypoint script to promote _FILE secret to env var"
+      }
+    ],
+    "version_info": "File-based secrets: Compose v2; Encrypted secrets: Docker Swarm"
+  },
+  {
+    "title": "Compose Watch enables live sync for development without exec or polling",
+    "category": "pattern",
+    "tags": ["docker", "compose", "watch", "hot-reload", "development"],
+    "problem": "Bind mounts for hot reload cause file system event problems on Linux, have performance issues on macOS (osxfs), and create messy volume configs. Developers want file changes reflected in containers without rebuilding.",
+    "solution": "Use `docker compose watch` (Compose 2.22+) with the `develop.watch` configuration:\n\n```yaml\nservices:\n  app:\n    build: .\n    develop:\n      watch:\n        - action: sync\n          path: ./src\n          target: /app/src\n        - action: rebuild\n          path: package.json\n```\n\nRun with: `docker compose watch`",
+    "why": "Compose Watch uses efficient file watching with explicit rules. `sync` copies changed files into the running container. `rebuild` triggers a full image rebuild and container restart when specified files change.",
+    "gotchas": [
+      "Requires Docker Compose v2.22+ and Docker Desktop 4.24+",
+      "sync action does not trigger a container restart — useful for interpreted code",
+      "rebuild action is expensive — use it only for dependency manifest changes",
+      "sync+restart action syncs files then restarts the container (middle ground)",
+      "Watch is not the same as bind mounts — node_modules in the image are not overwritten"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["compose watch", "hot reload", "live sync", "file sync", "develop watch", "sync action"],
+    "severity": "tip",
+    "context": "Local development with Docker Compose where code changes should be reflected quickly",
+    "code_snippets": [
+      {
+        "lang": "yaml",
+        "code": "services:\n  app:\n    build:\n      context: .\n      target: dev\n    develop:\n      watch:\n        - action: sync\n          path: ./src\n          target: /app/src\n          ignore:\n            - node_modules/\n        - action: sync+restart\n          path: ./config\n          target: /app/config\n        - action: rebuild\n          path: package.json\n        - action: rebuild\n          path: requirements.txt",
+        "description": "Full Compose Watch config with all three action types"
+      }
+    ],
+    "version_info": "Requires Docker Compose v2.22+, Docker Desktop 4.24+"
+  },
+  {
+    "title": "Use tini as init process for proper zombie reaping in containers",
+    "category": "pattern",
+    "tags": ["docker", "tini", "init", "zombie", "pid1"],
+    "problem": "Containers running complex workloads (servers that spawn child processes, shell scripts, test runners) accumulate zombie processes because PID 1 doesn't properly reap children. Over time this consumes PID table entries.",
+    "solution": "Install and use tini as PID 1. Tini reaps orphaned child processes and forwards signals correctly:\n\n```dockerfile\nFROM ubuntu:24.04\nRUN apt-get update && apt-get install -y tini && rm -rf /var/lib/apt/lists/*\nENTRYPOINT [\"/usr/bin/tini\", \"--\"]\nCMD [\"my-application\"]\n```\n\nOr use Docker's built-in tini with `docker run --init` or Compose `init: true`.",
+    "why": "tini is a minimal init system designed for containers. It correctly handles the Unix PID 1 special cases: signal forwarding to child processes and zombie reaping via wait(). It adds essentially no overhead.",
+    "gotchas": [
+      "tini is already bundled in Docker and accessible via --init flag — no need to install it unless you need a specific version",
+      "dumb-init is an alternative from Yelp with similar functionality",
+      "tini passes all signals to the child process group — useful for shell scripts that need to relay signals to subprocesses",
+      "In Kubernetes, the container runtime typically handles zombie reaping — tini is less critical there but still useful"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["zombie", "defunct"],
+    "keywords": ["tini", "dumb-init", "zombie reaping", "init process", "pid 1", "signal forwarding", "wait"],
+    "severity": "moderate",
+    "context": "Containers that spawn multiple processes or use shell scripts as entry points",
+    "code_snippets": [
+      {
+        "lang": "dockerfile",
+        "code": "# Alpine: tini is available as a package\nFROM alpine:3.19\nRUN apk add --no-cache tini\nENTRYPOINT [\"/sbin/tini\", \"--\"]\nCMD [\"/bin/sh\", \"start.sh\"]\n\n# Or rely on Docker's built-in tini\n# docker run --init myimage\n# Compose: init: true",
+        "description": "Installing tini in Alpine vs using Docker's built-in"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Scratch images contain only your binary — minimal but require static linking",
+    "category": "pattern",
+    "tags": ["docker", "scratch", "static-linking", "golang", "image-size"],
+    "problem": "Even Alpine images (~5MB) are larger than necessary for statically compiled binaries. Language runtimes, shells, and system libraries are included but serve no purpose for a self-contained Go or Rust binary.",
+    "solution": "Build a statically linked binary and copy it to `FROM scratch` — an empty image with no OS at all:\n\n```dockerfile\nFROM golang:1.22 AS builder\nWORKDIR /app\nCOPY . .\nRUN CGO_ENABLED=0 GOOS=linux go build -ldflags='-w -s' -o server ./cmd/server\n\nFROM scratch\nCOPY --from=builder /app/server /server\nCOPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/\nENTRYPOINT [\"/server\"]\n```",
+    "why": "A scratch image has zero layers, no shell, no package manager, and no unnecessary binaries. Final image is often under 10MB. No OS means no OS-level vulnerabilities to patch.",
+    "gotchas": [
+      "CGO_ENABLED=0 is required — CGO links against glibc which is not in scratch",
+      "No shell means you cannot use shell form ENTRYPOINT or docker exec into the container for debugging",
+      "CA certificates must be explicitly copied for HTTPS to work",
+      "/etc/passwd must be copied if the binary needs user lookup — or create a static /etc/passwd",
+      "No timezone data — copy from builder if needed: COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["no such file or directory", "certificate signed by unknown authority", "exec format error"],
+    "keywords": ["scratch", "static linking", "golang", "binary", "minimal image", "CGO_ENABLED", "ca-certificates"],
+    "severity": "tip",
+    "context": "Deploying statically compiled Go or Rust services to production",
+    "code_snippets": [
+      {
+        "lang": "dockerfile",
+        "code": "FROM golang:1.22-alpine AS builder\nWORKDIR /app\nCOPY go.mod go.sum ./\nRUN go mod download\nCOPY . .\nRUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \\\n    go build -ldflags='-w -s -extldflags \"-static\"' \\\n    -o server ./cmd/server\n\nFROM scratch\n# Copy CA certs for TLS\nCOPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/\n# Copy timezone data\nCOPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo\n# Copy binary\nCOPY --from=builder /app/server /server\nEXPOSE 8080\nENTRYPOINT [\"/server\"]",
+        "description": "Complete scratch image for Go binary with TLS and timezone support"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Distroless images: smaller than debian, debuggable unlike scratch",
+    "category": "pattern",
+    "tags": ["docker", "distroless", "security", "google", "image-size"],
+    "problem": "Scratch images are hard to debug (no shell) and require fully static binaries. Full Alpine images include apk, shells, and utilities that increase attack surface. There's no middle ground.",
+    "solution": "Google's distroless images include only the language runtime and CA certs — no shell, no package manager:\n\n```dockerfile\nFROM golang:1.22 AS builder\nWORKDIR /app\nCOPY . .\nRUN CGO_ENABLED=0 go build -o server ./cmd/server\n\n# Distroless: runtime + certs, no shell\nFROM gcr.io/distroless/static-debian12\nCOPY --from=builder /app/server /server\nENTRYPOINT [\"/server\"]\n```\n\nFor languages needing a runtime: `gcr.io/distroless/python3-debian12`, `gcr.io/distroless/java21`.",
+    "why": "Distroless images contain only what the application needs to run: language runtime, glibc, CA certs. No shell or package manager means no foothold for an attacker. Smaller than full OS images, larger than scratch but more compatible.",
+    "gotchas": [
+      "Distroless images have no shell — `docker exec mycontainer bash` won't work",
+      "Use the `:debug` tag during development to get a busybox shell: `gcr.io/distroless/static-debian12:debug`",
+      "Distroless images are scanned for CVEs by Google and patched regularly — pin to a SHA for reproducibility",
+      "gcr.io/distroless/static is for fully static binaries; gcr.io/distroless/base includes glibc for CGO"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["distroless", "google distroless", "no shell", "minimal image", "glibc", "static", "security"],
+    "severity": "tip",
+    "context": "Production images that need to be small and secure but may use CGO or need glibc",
+    "code_snippets": [
+      {
+        "lang": "dockerfile",
+        "code": "# Python distroless example\nFROM python:3.12-slim AS builder\nRUN pip install --prefix=/install -r requirements.txt\n\nFROM gcr.io/distroless/python3-debian12\nCOPY --from=builder /install /usr/local\nCOPY app/ /app/\nWORKDIR /app\nCMD [\"server.py\"]",
+        "description": "Python app with distroless runtime image"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Docker build context determines what files are available during build",
+    "category": "principle",
+    "tags": ["docker", "build-context", "dockerfile", "context"],
+    "problem": "Developers try to COPY files from outside the build context (parent directories, sibling directories) and get errors. Or they pass a large directory as context causing slow builds.",
+    "solution": "The build context is the directory sent to the Docker daemon. All COPY/ADD paths are relative to it. To include files from outside, either:\n1. Move up to a parent directory as context\n2. Use `-f` to specify a Dockerfile path separately\n3. Use BuildKit `--build-context` for multiple named contexts\n\n```bash\n# Build from parent with Dockerfile in subdirectory\ndocker build -f services/api/Dockerfile .\n\n# Multiple build contexts (BuildKit)\ndocker build --build-context shared=./shared .\n```",
+    "why": "Docker sends the context as a tar to the daemon, which may be remote. The build context defines the filesystem root accessible to the build. Paths outside it are a security boundary.",
+    "gotchas": [
+      "COPY ../sibling/file . will fail — you cannot escape the build context",
+      "Passing a large directory as context is slow even if .dockerignore excludes most files — the exclusion happens client-side but the context tar is still built",
+      "BuildKit --build-context lets you mount additional named contexts: COPY --from=shared /lib.py /app/",
+      "You can use a URL or git repo as the build context: docker build https://github.com/org/repo.git"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["COPY failed: forbidden path outside the build context", "no such file or directory"],
+    "keywords": ["build context", "COPY path", "parent directory", "context size", "--build-context", "forbidden path"],
+    "severity": "moderate",
+    "context": "Structuring monorepos or multi-service projects for Docker builds",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# Wrong: trying to COPY from parent\n# COPY ../shared/config.py /app/   <-- fails\n\n# Solution 1: use parent as context\ncd /monorepo\ndocker build -f services/api/Dockerfile .\n\n# Solution 2: BuildKit named contexts\ndocker build \\\n  --build-context shared=./shared \\\n  -f services/api/Dockerfile \\\n  services/api/",
+        "description": "Accessing files outside default context"
+      },
+      {
+        "lang": "dockerfile",
+        "code": "# syntax=docker/dockerfile:1\nFROM python:3.12-slim\n\n# Copy from named build context 'shared'\nCOPY --from=shared lib/ /app/lib/\n\n# Copy from default context\nCOPY . /app/src/",
+        "description": "Using named build context in Dockerfile"
+      }
+    ],
+    "version_info": "Named contexts require BuildKit (Docker 23+ default)"
+  },
+  {
+    "title": "docker buildx builds multi-platform images for ARM and AMD64",
+    "category": "pattern",
+    "tags": ["docker", "buildx", "multi-platform", "arm", "amd64", "cross-compilation"],
+    "problem": "Images built on an AMD64 Mac or CI runner don't run on ARM servers (AWS Graviton, Apple Silicon) and vice versa. Teams need to maintain separate image tags or build pipelines for each architecture.",
+    "solution": "Use `docker buildx` to build and push multi-platform manifests in a single command:\n\n```bash\n# Create a builder that supports multi-platform\ndocker buildx create --name multibuilder --use\ndocker buildx inspect --bootstrap\n\n# Build and push for both platforms\ndocker buildx build \\\n  --platform linux/amd64,linux/arm64 \\\n  --push \\\n  -t myregistry/myapp:latest \\\n  .\n```\n\nDocker Hub and registries with manifest lists serve the correct image per architecture automatically.",
+    "why": "buildx uses QEMU emulation (slow but correct) or cross-compilation toolchains to build for non-native architectures. The result is a manifest list pointing to architecture-specific image layers — clients pull the right one automatically.",
+    "gotchas": [
+      "QEMU emulation is slow for heavy compile steps — prefer cross-compilation in your build when possible",
+      "--load only works for single-platform builds; --push is required for multi-platform",
+      "Some base images are not available for all platforms — check Docker Hub supported architectures",
+      "CGO cross-compilation for Go requires proper toolchain: GOARCH=arm64 CC=aarch64-linux-gnu-gcc"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["exec format error", "no match for platform"],
+    "keywords": ["buildx", "multi-platform", "arm64", "amd64", "QEMU", "manifest list", "cross-compilation", "Graviton"],
+    "severity": "moderate",
+    "context": "Building images that must run on both AMD64 and ARM64 architectures",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "# One-time setup\ndocker buildx create --name multibuilder --driver docker-container --use\ndocker buildx inspect --bootstrap\n\n# Multi-platform build and push\ndocker buildx build \\\n  --platform linux/amd64,linux/arm64,linux/arm/v7 \\\n  --tag myorg/myapp:1.0 \\\n  --tag myorg/myapp:latest \\\n  --push \\\n  .\n\n# Inspect the resulting manifest\ndocker buildx imagetools inspect myorg/myapp:latest",
+        "description": "Full multi-platform build workflow"
+      }
+    ],
+    "version_info": "buildx bundled with Docker Desktop; install separately on Linux for Docker Engine"
+  },
+  {
+    "title": "Compose environment files (.env) set variables for Compose itself and containers",
+    "category": "pattern",
+    "tags": ["docker", "compose", "env-file", "environment", "dotenv"],
+    "problem": "Developers hardcode values in docker-compose.yml or don't understand the difference between the .env file (for Compose variable substitution), `env_file` (for container env vars), and `environment` (explicit key-value pairs).",
+    "solution": "There are three distinct mechanisms:\n\n1. `.env` file in project root — variables available for `${VAR}` substitution in docker-compose.yml itself\n2. `env_file:` — file whose contents are injected as env vars into the container\n3. `environment:` — explicit env vars in the Compose file\n\n```yaml\nservices:\n  app:\n    env_file:\n      - .env.local    # injected into container\n    environment:\n      NODE_ENV: production  # explicit, overrides env_file\n```",
+    "why": "Docker Compose reads .env before parsing the YAML and uses it for variable interpolation. env_file contents go directly into the container environment. Mixing them up causes missing variables or accidental exposure.",
+    "gotchas": [
+      ".env is read by Compose for its own interpolation — it's NOT automatically passed to containers unless you use env_file",
+      "env_file: passes all KEY=VALUE lines to the container, including comments-as-env-vars if you use # incorrectly",
+      "environment: values override env_file values for the same key",
+      "Use `--env-file` flag to specify an alternative to .env: `docker compose --env-file .env.staging up`"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["env file", ".env", "env_file", "environment variables", "variable substitution", "compose interpolation"],
+    "severity": "moderate",
+    "context": "Managing environment configuration across Docker Compose services",
+    "code_snippets": [
+      {
+        "lang": "text",
+        "code": "# .env (for Compose interpolation)\nPOSTGRES_VERSION=16\nAPP_IMAGE=myapp\nAPP_TAG=latest",
+        "description": ".env file for Compose variable substitution"
+      },
+      {
+        "lang": "yaml",
+        "code": "services:\n  app:\n    image: ${APP_IMAGE}:${APP_TAG}  # uses .env interpolation\n    env_file:\n      - .env.local    # ALL vars from this file go into container\n    environment:\n      NODE_ENV: production  # explicit, wins over env_file\n      DATABASE_URL: postgres://db:5432/app\n\n  db:\n    image: postgres:${POSTGRES_VERSION}",
+        "description": "All three env mechanisms in one Compose file"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Docker prune strategies for reclaiming disk space safely",
+    "category": "pattern",
+    "tags": ["docker", "prune", "disk-space", "cleanup", "maintenance"],
+    "problem": "Docker accumulates dangling images, stopped containers, unused volumes, and build cache over time. Disks fill up, especially on CI runners. Developers hesitate to prune because they fear losing important data.",
+    "solution": "Use targeted prune commands:\n\n```bash\n# Remove stopped containers only\ndocker container prune -f\n\n# Remove dangling images (untagged)\ndocker image prune -f\n\n# Remove dangling images AND unused images (not referenced by a container)\ndocker image prune -a -f\n\n# Remove unused volumes (CAREFUL — permanent data loss)\ndocker volume prune -f\n\n# Remove unused networks\ndocker network prune -f\n\n# Nuclear option — remove everything unused\ndocker system prune -a --volumes -f\n\n# Safe prune with age filter\ndocker system prune -a --filter \"until=24h\"\n```",
+    "why": "Docker doesn't automatically clean up stopped containers, dangling images, or build cache. On CI systems this causes gradual disk exhaustion. Targeted prune lets you reclaim space without destroying running containers or named volumes.",
+    "gotchas": [
+      "`docker volume prune` removes named volumes not attached to any container — this can permanently delete database data",
+      "`docker system prune -a` removes ALL unused images, not just dangling ones — pulled images you haven't run yet are deleted",
+      "Build cache prune: `docker builder prune` — can be very large on build machines",
+      "The --filter until=24h flag uses creation time, not last-used time"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["no space left on device", "Error response from daemon: write /var/lib/docker"],
+    "keywords": ["prune", "disk space", "dangling images", "cleanup", "system prune", "volume prune", "build cache"],
+    "severity": "moderate",
+    "context": "CI/CD runners and development machines that accumulate Docker artifacts over time",
+    "code_snippets": [
+      {
+        "lang": "bash",
+        "code": "#!/bin/bash\n# Safe CI cleanup script — runs after each job\n\n# Remove stopped containers\ndocker container prune -f\n\n# Remove dangling images only (safe — doesn't delete tagged images)\ndocker image prune -f\n\n# Remove unused networks\ndocker network prune -f\n\n# Remove build cache older than 48h\ndocker builder prune --filter until=48h -f\n\n# Show remaining usage\ndocker system df",
+        "description": "Safe CI cleanup script preserving volumes and named images"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Container resource limits prevent noisy neighbor problems",
+    "category": "pattern",
+    "tags": ["docker", "resources", "limits", "memory", "cpu", "oom"],
+    "problem": "A container with a memory leak or runaway CPU usage starves other containers on the host, causing system instability. Without limits, Docker containers can consume all available resources.",
+    "solution": "Set memory and CPU limits in docker run or Compose:\n\n```yaml\nservices:\n  app:\n    image: myapp\n    deploy:\n      resources:\n        limits:\n          cpus: '0.5'\n          memory: 512M\n        reservations:\n          cpus: '0.25'\n          memory: 256M\n```\n\n```bash\ndocker run --memory=512m --memory-swap=512m --cpus=0.5 myapp\n```",
+    "why": "Linux cgroups enforce resource limits at the kernel level. Memory limits trigger OOM killer when exceeded. CPU limits use CFS bandwidth throttling. Without these, one misbehaving container can take down all services on the host.",
+    "gotchas": [
+      "`--memory` without `--memory-swap` allows the same amount of swap (doubles effective limit) — set them equal to disable swap",
+      "The deploy.resources key in Compose v3 was meant for Swarm — in Compose v2 with Docker Engine, use the direct keys under the service",
+      "OOM kills are silent — check `docker inspect` for OOMKilled: true or use `docker events`",
+      "CPU limits don't reserve CPU — they throttle. A container can burst above its limit when host is idle"
+    ],
+    "language": "docker",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["Killed", "Out of memory: Kill process", "OOMKilled"],
+    "keywords": ["resource limits", "memory limit", "cpu limit", "OOM", "cgroups", "deploy resources", "noisy neighbor"],
+    "severity": "major",
+    "context": "Production multi-container hosts where resource isolation is required",
+    "code_snippets": [
+      {
+        "lang": "yaml",
+        "code": "# Compose v2 with Docker Engine (not Swarm)\nservices:\n  app:\n    image: myapp\n    mem_limit: 512m\n    mem_reservation: 256m\n    cpus: 0.5\n\n  db:\n    image: postgres:16\n    mem_limit: 1g\n    mem_reservation: 512m\n    cpus: 1.0",
+        "description": "Resource limits in Compose for Docker Engine (not Swarm)"
+      },
+      {
+        "lang": "bash",
+        "code": "# Inspect OOM status\ndocker inspect mycontainer --format '{{.State.OOMKilled}}'\n\n# Monitor resource usage\ndocker stats --no-stream",
+        "description": "Checking OOM kills and resource usage"
+      }
+    ],
+    "version_info": "mem_limit/cpus vs deploy.resources depends on Compose target (Engine vs Swarm)"
+  }
+]

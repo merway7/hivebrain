@@ -1,0 +1,898 @@
+[
+  {
+    "title": "useCallback and useMemo — only optimize when you have a measured problem",
+    "category": "principle",
+    "tags": ["react", "hooks", "performance", "useMemo", "useCallback"],
+    "problem": "Developers wrap every function and computed value in useCallback/useMemo by default, believing it always improves performance. In reality, these hooks have overhead (memory for the memoized value, comparison cost on each render) and add cognitive load without benefit in most cases.",
+    "solution": "Use useCallback when a function is a dependency of useEffect or passed to a memoized child component. Use useMemo when a computation is genuinely expensive (sort/filter large arrays, complex math). Skip them everywhere else.\n\n// SKIP useMemo for cheap computations\nconst doubled = value * 2; // just compute it\n\n// SKIP useCallback for inline handlers on non-memoized children\n<button onClick={() => setCount(c => c + 1)}>+</button>\n\n// USE useCallback when child is memoized\nconst Child = React.memo(({ onSave }) => <button onClick={onSave}>Save</button>);\nfunction Parent() {\n  const handleSave = useCallback(() => {\n    api.save(data);\n  }, [data]); // stable reference — Child won't re-render without need\n  return <Child onSave={handleSave} />;\n}\n\n// USE useMemo for expensive computation\nconst sortedList = useMemo(\n  () => items.sort((a, b) => a.name.localeCompare(b.name)),\n  [items]\n);",
+    "why": "useMemo and useCallback trade memory and comparison cost for potentially skipping a render or recomputation. For fast operations, the overhead can exceed the savings. Premature optimization also hides intent and makes code harder to read.",
+    "gotchas": [
+      "useCallback(fn, deps) returns a new function if deps change — it does NOT prevent re-renders on its own",
+      "Profiling with React DevTools Profiler is the correct way to identify expensive renders",
+      "A dependency-free useCallback(() => fn, []) can still hold a stale closure if fn captures state",
+      "useMemo does not guarantee memoization — React may discard cached values in low-memory situations"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["useMemo", "useCallback", "performance", "memoization", "when to optimize", "over-optimization"],
+    "severity": "tip",
+    "context": "When deciding whether to apply useMemo or useCallback to a function or computed value",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// Profile first\n// React DevTools Profiler → record → check what re-renders and why\n\n// Only then add memoization where it matters\nconst expensiveResult = useMemo(() => heavyCompute(data), [data]);",
+        "description": "Profile before optimizing"
+      }
+    ],
+    "version_info": "React 16.8+"
+  },
+  {
+    "title": "forwardRef pattern for exposing DOM refs from custom components",
+    "category": "pattern",
+    "tags": ["react", "forwardRef", "refs", "DOM", "hooks"],
+    "problem": "Passing a ref prop to a custom function component does nothing by default — React ignores it and throws a warning. The ref only works on host elements (div, input, etc.) or class components. To accept a ref in a function component, you must explicitly forward it.",
+    "solution": "Wrap the component with React.forwardRef:\n\nimport { forwardRef, useRef } from 'react';\n\n// Custom input that forwards its ref\nconst FancyInput = forwardRef(function FancyInput(props, ref) {\n  return (\n    <div className=\"fancy-wrapper\">\n      <input ref={ref} {...props} />\n    </div>\n  );\n});\n\n// Usage: ref now points to the inner <input>\nfunction Form() {\n  const inputRef = useRef(null);\n  \n  function focusInput() {\n    inputRef.current.focus();\n  }\n\n  return (\n    <>\n      <FancyInput ref={inputRef} placeholder=\"Type here\" />\n      <button onClick={focusInput}>Focus</button>\n    </>\n  );\n}\n\n// In React 19: forwardRef is no longer needed\n// ref is passed as a regular prop\nfunction FancyInput({ ref, ...props }) {\n  return <input ref={ref} {...props} />;\n}",
+    "why": "React treats ref specially — it is not accessible via props. forwardRef is an escape hatch that lets a parent control a DOM node inside a child component. Common uses: focusing inputs, measuring DOM size, integrating with third-party libraries.",
+    "gotchas": [
+      "forwardRef component displayName defaults to 'ForwardRef' in DevTools — set displayName explicitly: FancyInput.displayName = 'FancyInput'",
+      "In React 19, ref is a plain prop — forwardRef is a no-op shim kept for compatibility",
+      "Don't forward refs unless the parent genuinely needs DOM access — it breaks encapsulation",
+      "TypeScript: use React.ForwardedRef<HTMLInputElement> as the second argument type"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": [],
+    "error_messages": [
+      "Warning: Function components cannot be given refs. Attempts to access this ref will fail.",
+      "Warning: React.forwardRef render functions do not support propTypes or defaultProps."
+    ],
+    "keywords": ["forwardRef", "ref forwarding", "DOM ref", "custom input", "parent access", "React 19 ref prop"],
+    "severity": "moderate",
+    "context": "When a parent component needs to access a DOM node inside a custom child component",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "const TextInput = forwardRef(function TextInput({ label, ...props }, ref) {\n  return (\n    <label>\n      {label}\n      <input ref={ref} {...props} />\n    </label>\n  );\n});\nTextInput.displayName = 'TextInput';",
+        "description": "forwardRef with displayName"
+      }
+    ],
+    "version_info": "React 16.3+ for forwardRef; React 19 makes it unnecessary"
+  },
+  {
+    "title": "useImperativeHandle to expose a limited API through a ref",
+    "category": "pattern",
+    "tags": ["react", "useImperativeHandle", "forwardRef", "refs", "imperative"],
+    "problem": "When a parent holds a ref to a child component, it gets the raw DOM node — giving it unrestricted access to all DOM methods. Sometimes you want to expose only specific methods (like focus or scroll) without leaking the entire DOM node, or expose methods that don't exist on the DOM at all.",
+    "solution": "Combine forwardRef with useImperativeHandle to expose a custom ref object:\n\nimport { forwardRef, useImperativeHandle, useRef } from 'react';\n\nconst VideoPlayer = forwardRef(function VideoPlayer(props, ref) {\n  const videoRef = useRef(null);\n\n  // Expose only these methods — parent can't access videoRef.current directly\n  useImperativeHandle(ref, () => ({\n    play() {\n      videoRef.current.play();\n    },\n    pause() {\n      videoRef.current.pause();\n    },\n    seekTo(time) {\n      videoRef.current.currentTime = time;\n    },\n  }), []); // empty deps — stable API\n\n  return <video ref={videoRef} src={props.src} />;\n});\n\n// Parent usage\nfunction Page() {\n  const playerRef = useRef(null);\n  return (\n    <>\n      <VideoPlayer ref={playerRef} src=\"/movie.mp4\" />\n      <button onClick={() => playerRef.current.play()}>Play</button>\n      <button onClick={() => playerRef.current.seekTo(30)}>Skip 30s</button>\n    </>\n  );\n}",
+    "why": "useImperativeHandle lets you define the exact interface a parent can use, following the principle of least privilege. It also lets you expose non-DOM methods (like a form's validate() or a modal's animateOpen()).",
+    "gotchas": [
+      "useImperativeHandle must be used inside a forwardRef component (or in React 19, a component that receives ref as a prop)",
+      "Dependency array in useImperativeHandle works the same as useEffect — changes recreate the handle",
+      "Avoid this pattern when possible — declarative state and props are preferable to imperative handles",
+      "TypeScript: define the handle type explicitly and pass it as the first generic to forwardRef"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["useImperativeHandle", "forwardRef", "custom ref API", "expose methods", "encapsulation", "imperative handle"],
+    "severity": "tip",
+    "context": "When building component libraries or wrapping media/animation elements that need an imperative API",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "export interface DialogHandle {\n  open: () => void;\n  close: () => void;\n}\n\nconst Dialog = forwardRef<DialogHandle, DialogProps>(function Dialog(props, ref) {\n  const [open, setOpen] = useState(false);\n  useImperativeHandle(ref, () => ({\n    open: () => setOpen(true),\n    close: () => setOpen(false),\n  }), []);\n  return open ? <div className=\"dialog\">{props.children}</div> : null;\n});",
+        "description": "TypeScript typed useImperativeHandle"
+      }
+    ],
+    "version_info": "React 16.8+"
+  },
+  {
+    "title": "useSyncExternalStore for safe external store subscriptions",
+    "category": "pattern",
+    "tags": ["react", "useSyncExternalStore", "external store", "concurrent mode", "subscriptions"],
+    "problem": "Reading from external stores (Redux, Zustand internal, window dimensions, localStorage) inside a useEffect or directly in render can cause tearing in React concurrent mode — different components render with different snapshots of the store during the same update.",
+    "solution": "Use useSyncExternalStore to safely subscribe to any external source:\n\nimport { useSyncExternalStore } from 'react';\n\n// Subscribe to window online status\nfunction useOnlineStatus() {\n  return useSyncExternalStore(\n    (callback) => {\n      window.addEventListener('online', callback);\n      window.addEventListener('offline', callback);\n      return () => {\n        window.removeEventListener('online', callback);\n        window.removeEventListener('offline', callback);\n      };\n    },\n    () => navigator.onLine,       // getSnapshot for browser\n    () => true                    // getServerSnapshot for SSR\n  );\n}\n\n// Subscribe to a custom store\nconst store = createMyStore();\nfunction useStore(selector) {\n  return useSyncExternalStore(\n    store.subscribe,\n    () => selector(store.getState()),\n    () => selector(store.getInitialState())\n  );\n}",
+    "why": "In concurrent mode, React can interrupt and restart renders. If you read from an external source directly (not via React state), different components in the same tree may see different versions of that source, causing visual inconsistencies called tearing. useSyncExternalStore eliminates tearing by synchronizing the snapshot for the entire render.",
+    "gotchas": [
+      "getSnapshot must return a cached/stable value — creating new objects every call causes infinite re-renders",
+      "The third argument (getServerSnapshot) is required if your component renders on the server",
+      "Available in React 18+ natively; use the 'use-sync-external-store' shim for React 16/17",
+      "State management libraries like Zustand and Jotai already use this internally"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": [],
+    "error_messages": [
+      "Warning: The result of getSnapshot should be cached to avoid an infinite loop"
+    ],
+    "keywords": ["useSyncExternalStore", "tearing", "concurrent mode", "external store", "subscription", "zustand"],
+    "severity": "moderate",
+    "context": "When subscribing to external data sources (browser APIs, custom stores) in React 18+ with concurrent features",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "function useWindowWidth() {\n  return useSyncExternalStore(\n    (cb) => {\n      window.addEventListener('resize', cb);\n      return () => window.removeEventListener('resize', cb);\n    },\n    () => window.innerWidth,\n    () => 1024 // SSR fallback\n  );\n}",
+        "description": "Window width with useSyncExternalStore"
+      }
+    ],
+    "version_info": "React 18+ (native); use-sync-external-store shim for older versions"
+  },
+  {
+    "title": "React.lazy and Suspense for code-splitting components",
+    "category": "pattern",
+    "tags": ["react", "lazy", "Suspense", "code-splitting", "performance"],
+    "problem": "All components are bundled into one JavaScript file by default. Large pages load all code upfront even if 80% is never needed on the initial view, increasing Time to Interactive and wasting bandwidth.",
+    "solution": "Use React.lazy with Suspense to split component code into separate chunks:\n\nimport { lazy, Suspense } from 'react';\n\n// The import runs only when ChartPage first renders\nconst ChartPage = lazy(() => import('./ChartPage'));\nconst Settings = lazy(() => import('./Settings'));\n\nfunction App() {\n  return (\n    <Suspense fallback={<div>Loading...</div>}>\n      <Router>\n        <Route path=\"/charts\" element={<ChartPage />} />\n        <Route path=\"/settings\" element={<Settings />} />\n      </Router>\n    </Suspense>\n  );\n}\n\n// Preload on hover to reduce perceived latency\nconst preloadSettings = () => import('./Settings');\n<Link\n  to=\"/settings\"\n  onMouseEnter={preloadSettings}\n>Settings</Link>\n\n// Named exports require a wrapper\nconst { SpecificComponent } = lazy(\n  () => import('./Components').then(m => ({ default: m.SpecificComponent }))\n);",
+    "why": "Dynamic import() creates a split point in the bundle. The chunk is downloaded only when React.lazy's render is triggered. Suspense shows the fallback while the chunk loads, preventing the rest of the app from blocking.",
+    "gotchas": [
+      "React.lazy only works with default exports — named exports need a .then() wrapper",
+      "The Suspense boundary must be an ancestor — not a sibling — of the lazy component",
+      "In React Server Components (Next.js App Router), use dynamic() from next/dynamic instead",
+      "Lazy loading across route boundaries is the highest-value split — component-level splits are usually not worth it"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": ["browser"],
+    "error_messages": [
+      "Error: React.lazy only accepts a function which must return a Promise",
+      "A React component suspended while rendering, but no fallback UI was specified."
+    ],
+    "keywords": ["React.lazy", "Suspense", "code splitting", "dynamic import", "lazy loading", "bundle size"],
+    "severity": "tip",
+    "context": "When optimizing initial load time by splitting large page components or rarely-used features",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// Route-level code splitting\nconst Dashboard = lazy(() => import('./pages/Dashboard'));\n\n<Suspense fallback={<PageSkeleton />}>\n  <Dashboard />\n</Suspense>",
+        "description": "Route-level lazy loading"
+      }
+    ],
+    "version_info": "React 16.6+"
+  },
+  {
+    "title": "Error boundaries catch render errors and prevent full app crashes",
+    "category": "pattern",
+    "tags": ["react", "error-boundary", "class-component", "error-handling", "resilience"],
+    "problem": "An unhandled JavaScript error during rendering, in a lifecycle method, or in a constructor causes the entire React tree to unmount. In production this means users see a blank page with no explanation. React 16+ has no default fallback UI.",
+    "solution": "Create an Error Boundary class component and wrap sections of your UI:\n\nclass ErrorBoundary extends React.Component {\n  state = { hasError: false, error: null };\n\n  static getDerivedStateFromError(error) {\n    return { hasError: true, error };\n  }\n\n  componentDidCatch(error, info) {\n    // Log to error tracking service\n    logErrorToService(error, info.componentStack);\n  }\n\n  render() {\n    if (this.state.hasError) {\n      return this.props.fallback || <h2>Something went wrong.</h2>;\n    }\n    return this.props.children;\n  }\n}\n\n// Usage — isolate sections\n<ErrorBoundary fallback={<ErrorPage />}>\n  <DangerousWidget />\n</ErrorBoundary>\n\n// react-error-boundary library (recommended)\nimport { ErrorBoundary } from 'react-error-boundary';\n<ErrorBoundary\n  FallbackComponent={ErrorFallback}\n  onError={(error, info) => reportToSentry(error)}\n  onReset={() => resetAppState()}\n>\n  <App />\n</ErrorBoundary>",
+    "why": "Error boundaries use getDerivedStateFromError to catch errors during render and update state to show a fallback. Without a boundary, React removes the entire component tree. Boundaries let you isolate failures — a broken widget doesn't crash the header.",
+    "gotchas": [
+      "Error boundaries do NOT catch errors in event handlers — use try/catch there",
+      "Error boundaries do NOT catch async errors (setTimeout, promises) — use global error handlers",
+      "Only class components can be error boundaries — function components cannot (as of React 18)",
+      "React 19 will add a new onCaughtError / onUncaughtError API for global error handling"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": ["browser"],
+    "error_messages": [
+      "The above error occurred in the <ComponentName> component.",
+      "Consider adding an error boundary to your tree to customize error handling behavior."
+    ],
+    "keywords": ["error boundary", "getDerivedStateFromError", "componentDidCatch", "react-error-boundary", "fallback UI", "crash recovery"],
+    "severity": "major",
+    "context": "When any section of your app renders user-generated content or depends on external data that might cause render errors",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// Using react-error-boundary (simplest approach)\nimport { ErrorBoundary } from 'react-error-boundary';\n\nfunction ErrorFallback({ error, resetErrorBoundary }) {\n  return (\n    <div>\n      <p>Error: {error.message}</p>\n      <button onClick={resetErrorBoundary}>Try again</button>\n    </div>\n  );\n}\n\n<ErrorBoundary FallbackComponent={ErrorFallback}>\n  <RiskyComponent />\n</ErrorBoundary>",
+        "description": "react-error-boundary with reset"
+      }
+    ],
+    "version_info": "React 16+ for error boundaries"
+  },
+  {
+    "title": "React portals for modals, tooltips, and overlays outside the DOM hierarchy",
+    "category": "pattern",
+    "tags": ["react", "portal", "createPortal", "modal", "z-index", "overlay"],
+    "problem": "A modal or tooltip rendered inside a deeply nested component inherits overflow: hidden, z-index stacking contexts, and other CSS constraints from its ancestors. The visual result appears clipped or behind other elements even if z-index is set high.",
+    "solution": "Use createPortal to render children into a DOM node outside the React tree:\n\nimport { createPortal } from 'react-dom';\n\nfunction Modal({ isOpen, onClose, children }) {\n  if (!isOpen) return null;\n\n  return createPortal(\n    <div className=\"modal-backdrop\" onClick={onClose}>\n      <div className=\"modal-panel\" onClick={e => e.stopPropagation()}>\n        {children}\n      </div>\n    </div>,\n    document.body  // renders here in the DOM\n  );\n}\n\n// Usage — Modal is inside a Card but renders at body level in the DOM\nfunction Card() {\n  const [open, setOpen] = useState(false);\n  return (\n    <div style={{ overflow: 'hidden' }}> {/* doesn't clip the modal */}\n      <button onClick={() => setOpen(true)}>Open</button>\n      <Modal isOpen={open} onClose={() => setOpen(false)}>\n        <p>I escape the overflow!</p>\n      </Modal>\n    </div>\n  );\n}\n\n// Create a dedicated portal mount point in index.html\n// <div id=\"modal-root\"></div>\ncreatePortal(content, document.getElementById('modal-root'));",
+    "why": "Portals render the React subtree's output into any DOM node while keeping the React component hierarchy intact. Events bubble through the React tree (not the DOM tree), so context and event handlers work normally. This separates CSS containment from logical component structure.",
+    "gotchas": [
+      "Events bubble up through the React tree, not the DOM tree — a click inside a portal still bubbles to the React parent",
+      "Portals don't affect context — the portal's children can still read context from their React parent",
+      "In Next.js App Router, document is not available during SSR — guard with typeof document !== 'undefined'",
+      "Accessibility: focus management and aria-modal are your responsibility with portals"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": ["browser"],
+    "error_messages": [],
+    "keywords": ["createPortal", "portal", "modal", "tooltip", "overlay", "z-index", "overflow hidden", "DOM escape"],
+    "severity": "tip",
+    "context": "When building modals, tooltips, dropdowns, or notifications that must visually escape their parent's CSS context",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "import { createPortal } from 'react-dom';\n\nfunction Tooltip({ text, children }) {\n  const [show, setShow] = useState(false);\n  return (\n    <span onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>\n      {children}\n      {show && createPortal(\n        <div className=\"tooltip\">{text}</div>,\n        document.body\n      )}\n    </span>\n  );\n}",
+        "description": "Tooltip using createPortal"
+      }
+    ],
+    "version_info": "React 16+"
+  },
+  {
+    "title": "Server Components vs Client Components — the mental model",
+    "category": "principle",
+    "tags": ["react", "server-components", "client-components", "Next.js", "app-router"],
+    "problem": "Developers treat the Server/Client split as arbitrary — adding 'use client' everywhere to silence errors, or putting data fetching in Client Components when it should stay on the server. This leads to large client bundles, unnecessary waterfalls, and security issues (leaking secrets to the browser).",
+    "solution": "Follow the rule: start on the server, push interactivity to the edge of the tree.\n\n// Server Component (default in Next.js App Router)\n// Can: async/await, DB access, use env secrets, reduce bundle\n// Cannot: useState, useEffect, onClick, browser APIs\nexport default async function ProductList() {\n  const products = await db.query('SELECT * FROM products'); // runs on server\n  return <ul>{products.map(p => <ProductCard key={p.id} product={p} />)}</ul>;\n}\n\n// Client Component — only for interactivity\n'use client';\nfunction AddToCartButton({ productId }) {\n  const [added, setAdded] = useState(false);\n  return (\n    <button onClick={() => { addToCart(productId); setAdded(true); }}>\n      {added ? 'Added!' : 'Add to Cart'}\n    </button>\n  );\n}\n\n// Composition pattern — Server renders, Client handles interaction\n// ProductCard.tsx (Server Component)\nexport function ProductCard({ product }) {\n  return (\n    <li>\n      <h2>{product.name}</h2>\n      <AddToCartButton productId={product.id} /> {/* Client island */}\n    </li>\n  );\n}",
+    "why": "Server Components run only on the server — their code never reaches the browser. This means secrets stay safe, database drivers don't ship to the client, and the component itself doesn't add to bundle size. Client Components form 'islands of interactivity' in an otherwise server-rendered tree.",
+    "gotchas": [
+      "A Client Component can receive Server Components as children (props.children) — but cannot import them",
+      "Server Components cannot use context — pass data as props or use a Client Component as the context provider",
+      "Serializable props only: you cannot pass functions, class instances, or Dates from Server to Client Components",
+      "'use client' marks a boundary — all imports below that boundary also become client code"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": ["browser", "nodejs"],
+    "error_messages": [
+      "Error: Functions cannot be passed directly to Client Components unless you explicitly expose it by marking it with 'use server'",
+      "Error: useState only works in Client Components. Add the 'use client' directive."
+    ],
+    "keywords": ["server components", "client components", "use client", "use server", "App Router", "Next.js", "islands", "bundle size"],
+    "severity": "major",
+    "context": "When building with Next.js App Router or any React framework using Server Components",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// Decision tree:\n// Does it need useState/useEffect/onClick/browser APIs? → 'use client'\n// Does it fetch data or access backend? → Server Component\n// Does it do both? → Split into two components",
+        "description": "Server vs Client decision guide"
+      }
+    ],
+    "version_info": "React 18+ with supported frameworks (Next.js 13+)"
+  },
+  {
+    "title": "React Compiler (React 19) automatically memoizes — stop doing it manually",
+    "category": "principle",
+    "tags": ["react", "react-compiler", "react-19", "memoization", "performance"],
+    "problem": "React 19 introduces the React Compiler (formerly React Forget), which automatically inserts useMemo, useCallback, and React.memo at the compiler level. Manually written memoization becomes redundant noise that the compiler still respects but doesn't need.",
+    "solution": "Write plain React code and let the compiler optimize. Remove unnecessary manual memoization:\n\n// Before React Compiler — hand-written memoization\nfunction Parent({ items }) {\n  const sortedItems = useMemo(\n    () => items.slice().sort((a, b) => a.name.localeCompare(b.name)),\n    [items]\n  );\n  const handleClick = useCallback((id) => {\n    setSelected(id);\n  }, []);\n  return <MemoizedList items={sortedItems} onSelect={handleClick} />;\n}\n\n// After React Compiler — write naturally\nfunction Parent({ items }) {\n  const sortedItems = items.slice().sort((a, b) => a.name.localeCompare(b.name));\n  function handleClick(id) { setSelected(id); }\n  return <List items={sortedItems} onSelect={handleClick} />;  // compiler memoizes automatically\n}\n\n// Install the Babel plugin or use Next.js 15+ which enables it by default\n// babel.config.js\nmodule.exports = {\n  plugins: [['babel-plugin-react-compiler', {}]]\n};",
+    "why": "The compiler performs static analysis to identify stable values and functions across renders, inserting memoization precisely where it helps. It handles cases that are difficult to get right manually (like memoizing across component boundaries) and removes the cognitive overhead of the memoization decision.",
+    "gotchas": [
+      "The compiler requires your code to follow the Rules of React — no mutations of props or state, hooks called unconditionally",
+      "Components with violations are opted out automatically with a comment // eslint-disable react-compiler",
+      "You can opt out a specific component with 'use no memo' directive",
+      "The compiler doesn't replace state management — it only optimizes rendering"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["react compiler", "react forget", "auto memoization", "react 19", "babel plugin", "compiler optimization"],
+    "severity": "tip",
+    "context": "When upgrading to React 19 or evaluating whether to continue writing manual memoization",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// next.config.js — enable React Compiler in Next.js 15\nmodule.exports = {\n  experimental: {\n    reactCompiler: true,\n  },\n};",
+        "description": "Enable React Compiler in Next.js 15"
+      }
+    ],
+    "version_info": "React 19 / Next.js 15"
+  },
+  {
+    "title": "use() hook for reading promises and context in React 19",
+    "category": "pattern",
+    "tags": ["react", "use-hook", "react-19", "async", "Suspense", "context"],
+    "problem": "Before React 19, reading a promise inside a component required either useEffect (causing a waterfall) or a data fetching library. Reading context required useContext at the top level of a component — it couldn't be called inside conditions or loops.",
+    "solution": "Use the use() hook to read promises (with Suspense) and context anywhere in a component:\n\nimport { use, Suspense, createContext } from 'react';\n\n// Read a promise — component suspends until resolved\nfunction UserCard({ userPromise }) {\n  const user = use(userPromise); // suspends here\n  return <div>{user.name}</div>;\n}\n\n<Suspense fallback={<Skeleton />}>\n  <UserCard userPromise={fetchUser(id)} />\n</Suspense>\n\n// Read context conditionally (not possible with useContext)\nfunction Toolbar({ showTheme }) {\n  if (showTheme) {\n    const theme = use(ThemeContext); // conditional — allowed with use()\n    return <div className={theme}>...</div>;\n  }\n  return null;\n}\n\n// Server Component passing a promise to a Client Component\nasync function Page() {\n  const dataPromise = fetchData(); // starts fetching but doesn't await\n  return (\n    <Suspense fallback={<Loading />}>\n      <ClientComponent dataPromise={dataPromise} />\n    </Suspense>\n  );\n}",
+    "why": "use() is not a Hook — it can be called inside conditions, loops, and after early returns. For promises, React integrates with Suspense to show fallback UI during loading and with Error Boundaries for rejection. For context, it's a more flexible alternative to useContext.",
+    "gotchas": [
+      "use(promise) re-suspends on every render if you pass a new promise object — cache the promise outside the component",
+      "use() cannot be used in event handlers — only in component render or other hooks",
+      "Rejected promises propagate to the nearest Error Boundary — always have one",
+      "use(Context) and useContext(Context) are equivalent when called at the top level"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["use hook", "react 19", "promise", "Suspense", "context", "async rendering", "use()"],
+    "severity": "tip",
+    "context": "When building with React 19 and needing to read async data or context in a flexible way",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// Cache promise outside component to avoid infinite suspend\nconst userPromise = fetchUser(123); // created once\n\nfunction Profile() {\n  const user = use(userPromise);\n  return <h1>{user.name}</h1>;\n}",
+        "description": "Stable promise reference for use()"
+      }
+    ],
+    "version_info": "React 19"
+  },
+  {
+    "title": "useTransition marks state updates as non-urgent to keep the UI responsive",
+    "category": "pattern",
+    "tags": ["react", "useTransition", "concurrent", "performance", "responsive"],
+    "problem": "Filtering a large list, navigating between heavy pages, or computing expensive derived state blocks the browser during re-render. The UI freezes while React works. The user experiences keystrokes that don't appear immediately or scroll that stutters.",
+    "solution": "Wrap non-urgent state updates in startTransition from useTransition:\n\nimport { useState, useTransition } from 'react';\n\nfunction SearchPage() {\n  const [query, setQuery] = useState('');\n  const [results, setResults] = useState([]);\n  const [isPending, startTransition] = useTransition();\n\n  function handleChange(e) {\n    const value = e.target.value;\n    setQuery(value); // urgent — update input immediately\n\n    startTransition(() => {\n      // non-urgent — React may interrupt this to handle urgent updates\n      setResults(expensiveFilter(allItems, value));\n    });\n  }\n\n  return (\n    <>\n      <input value={query} onChange={handleChange} />\n      {isPending && <Spinner />}\n      <ResultList items={results} />\n    </>\n  );\n}\n\n// Also works with Suspense navigation\nfunction App() {\n  const [page, setPage] = useState('home');\n  const [isPending, startTransition] = useTransition();\n\n  return (\n    <>\n      <nav>\n        <button onClick={() => startTransition(() => setPage('about'))}>\n          {isPending ? 'Loading...' : 'About'}\n        </button>\n      </nav>\n      <Suspense fallback={<Skeleton />}>\n        {page === 'home' ? <Home /> : <About />}\n      </Suspense>\n    </>\n  );\n}",
+    "why": "React's concurrent mode lets it interrupt low-priority renders when higher-priority updates (typing, clicking) arrive. startTransition marks an update as interruptible. React keeps the previous UI visible while computing the transition, making the app feel responsive even during heavy computation.",
+    "gotchas": [
+      "Only state updates inside startTransition are marked as transitions — the update itself must be synchronous",
+      "isPending becomes true immediately and stays true until the transition commits",
+      "Transitions don't work for value updates that can't be interrupted — they only delay committing the new state",
+      "In React 19, async functions in transitions are supported: startTransition(async () => { await save(); })"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["useTransition", "startTransition", "concurrent mode", "isPending", "non-urgent update", "responsive UI"],
+    "severity": "moderate",
+    "context": "When a state update triggers expensive re-renders that cause the UI to feel unresponsive",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "const [isPending, startTransition] = useTransition();\n\nonChange={(e) => {\n  setInputValue(e.target.value); // urgent\n  startTransition(() => {\n    setFilteredList(filter(all, e.target.value)); // deferrable\n  });\n}}",
+        "description": "Separate urgent from non-urgent updates"
+      }
+    ],
+    "version_info": "React 18+"
+  },
+  {
+    "title": "useDeferredValue delays rendering of slow children without blocking input",
+    "category": "pattern",
+    "tags": ["react", "useDeferredValue", "concurrent", "performance", "deferred"],
+    "problem": "A component receives a prop that triggers expensive child renders. You cannot use useTransition here because the value comes from a parent — you don't own the setter. The parent input stays responsive but the expensive child re-render blocks painting.",
+    "solution": "Use useDeferredValue to create a version of a value that lags behind during concurrent rendering:\n\nimport { useState, useDeferredValue, memo } from 'react';\n\nfunction SearchPage({ query }) {\n  // Deferred — will lag behind query during concurrent rendering\n  const deferredQuery = useDeferredValue(query);\n\n  return (\n    <>\n      <input value={query} onChange={...} />\n      {/* SlowList gets the deferred value — renders at low priority */}\n      <SlowList query={deferredQuery} />\n    </>\n  );\n}\n\n// Memoize to make deferred value effective\nconst SlowList = memo(function SlowList({ query }) {\n  // This re-renders with the old query until the new one is ready\n  return <ul>{filterExpensive(allItems, query).map(item => <li key={item.id}>{item.name}</li>)}</ul>;\n});\n\n// Detect stale value to show visual indicator\nfunction SlowPage({ query }) {\n  const deferredQuery = useDeferredValue(query);\n  const isStale = query !== deferredQuery;\n  return (\n    <div style={{ opacity: isStale ? 0.5 : 1 }}>\n      <SlowList query={deferredQuery} />\n    </div>\n  );\n}",
+    "why": "useDeferredValue is the prop-based equivalent of wrapping a state update in startTransition. React renders with the old deferred value first (skipping the expensive re-render) and schedules the update to the new value at low priority. The input remains responsive while the result catches up.",
+    "gotchas": [
+      "Must memoize the child with React.memo — otherwise useDeferredValue has no effect (child re-renders anyway)",
+      "During the deferred render, both old and new values coexist in the tree — only the final commit is shown",
+      "useDeferredValue only helps in concurrent mode — if React isn't in concurrent mode it acts as a passthrough",
+      "For server-rendered initial values, the deferred value starts equal to the initial value (no initial delay)"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["useDeferredValue", "deferred", "concurrent mode", "slow render", "stale indicator", "memo"],
+    "severity": "moderate",
+    "context": "When a prop change triggers a slow re-render in a child component you can't or don't want to modify with useTransition",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "const deferredQuery = useDeferredValue(query);\nconst isStale = deferredQuery !== query;\n\n<div style={{ opacity: isStale ? 0.5 : 1, transition: 'opacity 0.2s' }}>\n  <MemoizedResults query={deferredQuery} />\n</div>",
+        "description": "useDeferredValue with stale indicator"
+      }
+    ],
+    "version_info": "React 18+"
+  },
+  {
+    "title": "useOptimistic for instant UI feedback before server confirmation",
+    "category": "pattern",
+    "tags": ["react", "useOptimistic", "react-19", "optimistic-update", "server-actions"],
+    "problem": "Waiting for a server response before updating the UI makes interactions feel slow. A like button, cart add, or message send should feel instant. Rolling back on failure requires manual bookkeeping of previous state.",
+    "solution": "Use useOptimistic to apply temporary UI state while awaiting confirmation:\n\nimport { useOptimistic, useTransition } from 'react';\n\nfunction LikeButton({ postId, initialLikeCount }) {\n  const [likeCount, addOptimisticLike] = useOptimistic(\n    initialLikeCount,\n    (currentCount, amount) => currentCount + amount\n  );\n  const [isPending, startTransition] = useTransition();\n\n  async function handleLike() {\n    startTransition(async () => {\n      addOptimisticLike(1); // instantly shows +1\n      await likePost(postId); // real request\n      // on success: optimistic state is replaced by server revalidation\n      // on error: optimistic state is automatically reverted\n    });\n  }\n\n  return (\n    <button onClick={handleLike} disabled={isPending}>\n      {likeCount} Likes\n    </button>\n  );\n}\n\n// With a list (add item optimistically)\nfunction MessageList({ messages }) {\n  const [optimisticMessages, addOptimisticMessage] = useOptimistic(\n    messages,\n    (state, newMessage) => [...state, { ...newMessage, pending: true }]\n  );\n  // ...\n}",
+    "why": "useOptimistic provides a separate layer of state that is applied immediately while the async operation runs. When the async operation completes, React drops the optimistic state and uses the real updated state. If the operation throws, the optimistic state is discarded and the original state is restored automatically.",
+    "gotchas": [
+      "useOptimistic only works inside a startTransition — wrap your async action in one",
+      "The optimistic state is reverted automatically on error — you still need to handle error UI if needed",
+      "Available in React 19; do not confuse with third-party optimistic update libraries",
+      "The update function receives the current state and the optimistic value — it must return the new state"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["useOptimistic", "optimistic update", "react 19", "server actions", "instant feedback", "rollback"],
+    "severity": "tip",
+    "context": "When building interactive features (likes, cart, comments) that need immediate UI feedback before server response",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "const [optimisticCart, addOptimistic] = useOptimistic(\n  cart,\n  (state, item) => [...state, { ...item, pending: true }]\n);\n\nstartTransition(async () => {\n  addOptimistic(newItem);\n  await addToCartAPI(newItem);\n});",
+        "description": "Optimistic cart item add"
+      }
+    ],
+    "version_info": "React 19"
+  },
+  {
+    "title": "useFormStatus reads the form's pending state in any child component",
+    "category": "pattern",
+    "tags": ["react", "useFormStatus", "react-19", "forms", "server-actions"],
+    "problem": "With React 19 Server Actions, a form's pending state lives in the form element itself. To disable a submit button or show a spinner while the form submits, you previously had to thread isPending down as a prop from useTransition.",
+    "solution": "Use useFormStatus inside any component that is a descendant of a form element:\n\nimport { useFormStatus } from 'react-dom';\n\n// SubmitButton reads the form's status — no prop drilling\nfunction SubmitButton() {\n  const { pending } = useFormStatus();\n  return (\n    <button type=\"submit\" disabled={pending}>\n      {pending ? 'Saving...' : 'Save'}\n    </button>\n  );\n}\n\n// Parent form — SubmitButton automatically reads its status\nfunction ProfileForm() {\n  async function updateProfile(formData) {\n    'use server';\n    await db.updateProfile({\n      name: formData.get('name'),\n      bio: formData.get('bio'),\n    });\n  }\n\n  return (\n    <form action={updateProfile}>\n      <input name=\"name\" />\n      <textarea name=\"bio\" />\n      <SubmitButton /> {/* no props needed */}\n    </form>\n  );\n}",
+    "why": "useFormStatus uses React context internally to read the pending state of the nearest ancestor form element. This removes the need to thread pending state down through props and keeps the SubmitButton component portable across any form.",
+    "gotchas": [
+      "useFormStatus must be called inside a component that is a child of the form — not in the same component that renders the form",
+      "Only works with forms that have an action prop pointing to a Server Action or an async function",
+      "Imported from 'react-dom' not 'react'",
+      "Returns { pending, data, method, action } — data is the FormData currently being submitted"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": ["browser", "nodejs"],
+    "error_messages": [],
+    "keywords": ["useFormStatus", "react-dom", "form pending", "server actions", "react 19", "submit button", "form status"],
+    "severity": "tip",
+    "context": "When building forms with React 19 Server Actions and needing pending state in child components",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "import { useFormStatus } from 'react-dom';\n\nfunction SubmitButton({ label }) {\n  const { pending } = useFormStatus();\n  return <button disabled={pending}>{pending ? 'Loading...' : label}</button>;\n}",
+        "description": "Reusable submit button with useFormStatus"
+      }
+    ],
+    "version_info": "React 19 / react-dom"
+  },
+  {
+    "title": "React context performance — split state from dispatch",
+    "category": "pattern",
+    "tags": ["react", "context", "performance", "useReducer", "optimization"],
+    "problem": "Putting both state and the dispatch/setter function in the same context value causes every consumer to re-render whenever state changes — even components that only call setters and never read the state value.",
+    "solution": "Separate state context from dispatch context so setter-only consumers don't re-render:\n\nimport { createContext, useContext, useReducer } from 'react';\n\nconst CountStateContext = createContext(null);\nconst CountDispatchContext = createContext(null);\n\nfunction CountProvider({ children }) {\n  const [count, dispatch] = useReducer(reducer, 0);\n  // dispatch is stable — never changes between renders\n  return (\n    <CountStateContext.Provider value={count}>\n      <CountDispatchContext.Provider value={dispatch}>\n        {children}\n      </CountDispatchContext.Provider>\n    </CountStateContext.Provider>\n  );\n}\n\n// Components that only increment — never re-render on count changes\nfunction IncrementButton() {\n  const dispatch = useContext(CountDispatchContext); // stable reference\n  return <button onClick={() => dispatch({ type: 'increment' })}>+</button>;\n}\n\n// Components that display — re-render when count changes\nfunction Display() {\n  const count = useContext(CountStateContext);\n  return <p>{count}</p>;\n}",
+    "why": "useReducer's dispatch function is guaranteed stable across renders. By putting dispatch in its own context, IncrementButton only re-renders when the dispatch context value changes — which it never does. This is the same pattern used by React-Redux (actions and state are separate).",
+    "gotchas": [
+      "This pattern pairs well with useReducer — dispatch is stable, state is a new reference on each update",
+      "For useState, setters are also stable — split them the same way",
+      "Don't split every context by default — only where you've measured unnecessary re-renders",
+      "A third-party state manager (Zustand, Jotai) gives you selector-level subscriptions without this manual split"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["context performance", "split context", "dispatch context", "useReducer", "stable reference", "context optimization"],
+    "severity": "moderate",
+    "context": "When a context object contains both state and setters and components that only set state are re-rendering unnecessarily",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// State and dispatch in separate contexts\n<StateContext.Provider value={state}>\n  <DispatchContext.Provider value={dispatch}>\n    {children}\n  </DispatchContext.Provider>\n</StateContext.Provider>",
+        "description": "Split state and dispatch contexts"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Component composition over prop drilling — slots pattern",
+    "category": "pattern",
+    "tags": ["react", "composition", "prop-drilling", "children", "slots"],
+    "problem": "Passing props five levels deep to reach a component that needs them — prop drilling — makes components fragile (every intermediate component must forward the prop) and harder to refactor.",
+    "solution": "Lift rendering up and pass components as children or named slots:\n\n// BAD: drilling theme through intermediaries\n<App theme={theme}>\n  <Layout theme={theme}>\n    <Sidebar theme={theme}>\n      <NavItem theme={theme} />\n    </Sidebar>\n  </Layout>\n</App>\n\n// GOOD: composition — components receive their dependencies at the call site\n<App>\n  <Layout\n    sidebar={\n      <Sidebar>\n        <NavItem theme={theme} />{/* theme applied here, not drilled */}\n      </Sidebar>\n    }\n    main={<Main />}\n  />\n</App>\n\n// Layout.jsx — doesn't know about theme at all\nfunction Layout({ sidebar, main }) {\n  return (\n    <div className=\"layout\">\n      <aside>{sidebar}</aside>\n      <main>{main}</main>\n    </div>\n  );\n}\n\n// Named slots pattern (more explicit than children)\nfunction Card({ header, body, footer }) {\n  return (\n    <div className=\"card\">\n      <div className=\"card-header\">{header}</div>\n      <div className=\"card-body\">{body}</div>\n      <div className=\"card-footer\">{footer}</div>\n    </div>\n  );\n}",
+    "why": "When a component receives its content as props (children or named slots), it becomes a layout container — it doesn't know or care about the data its content needs. The parent that provides the content also has access to the data, eliminating the need to pass it down through intermediaries.",
+    "gotchas": [
+      "Context is the right tool when you need the same value across many components in a deep tree — composition solves drilling for structural components",
+      "children is a single slot — use named props for multiple independent slots",
+      "This pattern can make parent components more complex — balance flexibility with readability",
+      "Compound components (Tabs.Tab, Tabs.Panel) are an advanced version of this pattern"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["composition", "prop drilling", "slots", "children prop", "named slots", "layout component", "component API"],
+    "severity": "tip",
+    "context": "When props are being passed through multiple intermediary components that don't use them",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// Slots pattern\nfunction Dialog({ title, body, actions }) {\n  return (\n    <div className=\"dialog\">\n      <header>{title}</header>\n      <section>{body}</section>\n      <footer>{actions}</footer>\n    </div>\n  );\n}\n\n<Dialog\n  title={<h2>Confirm Delete</h2>}\n  body={<p>This cannot be undone.</p>}\n  actions={<><Button onClick={cancel}>Cancel</Button><Button onClick={confirm}>Delete</Button></>}\n/>",
+        "description": "Named slots via props"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Render props pattern for sharing stateful logic",
+    "category": "pattern",
+    "tags": ["react", "render-props", "reusability", "hooks", "patterns"],
+    "problem": "Two components need the same stateful behavior (hover detection, data fetching, resize tracking) but render completely different UI. Copy-pasting the logic duplicates code; lifting state up forces an awkward shared ancestor.",
+    "solution": "Render props: pass a function as a prop that the provider calls with the shared state:\n\n// Hover logic extracted into a component with a render prop\nfunction Hoverable({ children }) {\n  const [isHovered, setIsHovered] = useState(false);\n  return (\n    <div\n      onMouseEnter={() => setIsHovered(true)}\n      onMouseLeave={() => setIsHovered(false)}\n    >\n      {children(isHovered)} {/* calls render prop with state */}\n    </div>\n  );\n}\n\n// Usage — two different UIs, same hover logic\n<Hoverable>\n  {(hovered) => <Button style={{ background: hovered ? 'blue' : 'gray' }}>Hover me</Button>}\n</Hoverable>\n\n<Hoverable>\n  {(hovered) => <img src={hovered ? imageHovered : imageNormal} alt=\"\" />}\n</Hoverable>\n\n// Note: In modern React, custom hooks are preferred\nfunction useHover() {\n  const [isHovered, setIsHovered] = useState(false);\n  const ref = useRef(null);\n  useEffect(() => {\n    const el = ref.current;\n    const on = () => setIsHovered(true);\n    const off = () => setIsHovered(false);\n    el.addEventListener('mouseenter', on);\n    el.addEventListener('mouseleave', off);\n    return () => { el.removeEventListener('mouseenter', on); el.removeEventListener('mouseleave', off); };\n  }, []);\n  return [ref, isHovered];\n}",
+    "why": "Render props invert control: the consumer decides what to render while the provider owns the logic. Custom hooks are now the idiomatic alternative for sharing stateful logic, but render props remain useful when the shared logic needs to provide DOM event handlers or when integrating with class components.",
+    "gotchas": [
+      "Inline render prop functions (children={() => ...}) create new function references each render, defeating React.memo on the provider",
+      "Custom hooks are simpler and more readable for most render-prop use cases",
+      "Deeply nested render props create 'callback hell' — flatten with custom hooks",
+      "The children-as-function pattern is the most common form of render props"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["render props", "children as function", "logic reuse", "inversion of control", "custom hooks alternative"],
+    "severity": "tip",
+    "context": "When sharing stateful UI behavior between components that render different JSX",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// render prop\n<DataFetcher url=\"/api/users\">\n  {({ data, loading, error }) => {\n    if (loading) return <Spinner />;\n    if (error) return <Error message={error.message} />;\n    return <UserList users={data} />;\n  }}\n</DataFetcher>",
+        "description": "Data fetcher with render prop"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "HOC pattern pitfalls — display names, prop forwarding, and hooks replacing them",
+    "category": "gotcha",
+    "tags": ["react", "HOC", "higher-order-component", "displayName", "patterns"],
+    "problem": "Higher-Order Components (HOCs) cause multiple issues: the wrapped component loses its displayName in DevTools (shows as 'Component'), static methods are not forwarded, refs are swallowed, and the component tree gains extra wrapper nodes for every HOC applied.",
+    "solution": "If you must write HOCs, follow these rules:\n\n// 1. Set displayName\nfunction withAuth(WrappedComponent) {\n  function WithAuth(props) {\n    const user = useAuth();\n    if (!user) return <Redirect to=\"/login\" />;\n    return <WrappedComponent {...props} user={user} />;\n  }\n  WithAuth.displayName = `withAuth(${WrappedComponent.displayName || WrappedComponent.name})`;\n  return WithAuth;\n}\n\n// 2. Forward refs\nfunction withLogging(WrappedComponent) {\n  const WithLogging = forwardRef(function WithLogging(props, ref) {\n    console.log('render', props);\n    return <WrappedComponent {...props} ref={ref} />;\n  });\n  WithLogging.displayName = `withLogging(${WrappedComponent.name})`;\n  return WithLogging;\n}\n\n// 3. Forward static methods\nimport hoistNonReactStatics from 'hoist-non-react-statics';\nhoistNonReactStatics(WithAuth, WrappedComponent);\n\n// Better: replace HOCs with custom hooks\nfunction useAuth() {\n  const user = useContext(AuthContext);\n  if (!user) throw new Error('Not authenticated');\n  return user;\n}",
+    "why": "HOCs wrap a component in another component, creating indirection in the component tree. Each layer adds a node to the DevTools tree and can swallow props, refs, and statics. Custom hooks achieve the same logic reuse without wrapping — they compose horizontally instead of vertically.",
+    "gotchas": [
+      "Don't apply HOCs inside a render function — a new component type is created every render, causing full unmount/mount",
+      "HOCs don't compose well — five HOCs applied to one component creates five nesting levels",
+      "hoist-non-react-statics is a utility library to copy static methods to the wrapper",
+      "TypeScript types for HOCs are complex — another reason to prefer hooks"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["HOC", "higher order component", "displayName", "hoist statics", "ref forwarding", "hooks replacement"],
+    "severity": "moderate",
+    "context": "When working with or writing higher-order components in a React codebase",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// BAD: HOC applied inside render\nfunction Parent() {\n  const Enhanced = withStyles(Child); // new type every render!\n  return <Enhanced />;\n}\n\n// GOOD: apply outside component\nconst Enhanced = withStyles(Child);\nfunction Parent() {\n  return <Enhanced />;\n}",
+        "description": "Never apply HOCs inside render"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "React Strict Mode double-invokes render and effects — this is intentional",
+    "category": "gotcha",
+    "tags": ["react", "strict-mode", "double-render", "development", "effects"],
+    "problem": "In development with StrictMode, useEffect cleanup and setup run twice on mount (and components render twice). This causes visible issues: network requests fire twice, subscriptions connect and disconnect immediately, and console.log appears twice.",
+    "solution": "Write effects that are resilient to double-invocation — this is what StrictMode is testing:\n\n// BAD: effect not idempotent — doesn't handle double-invoke\nuseEffect(() => {\n  const connection = createConnection();\n  connection.connect();\n  // no cleanup — double-connect leaks\n}, []);\n\n// GOOD: effect with proper cleanup\nuseEffect(() => {\n  const connection = createConnection();\n  connection.connect();\n  return () => connection.disconnect(); // cleanup lets re-mount work correctly\n}, []);\n\n// For fetch — abort controller prevents double-request issues\nuseEffect(() => {\n  const controller = new AbortController();\n  fetch('/api/data', { signal: controller.signal })\n    .then(r => r.json())\n    .then(setData)\n    .catch(e => { if (e.name !== 'AbortError') setError(e); });\n  return () => controller.abort();\n}, []);\n\n// StrictMode wrapping (in index.jsx/main.jsx)\nroot.render(\n  <React.StrictMode>\n    <App />\n  </React.StrictMode>\n);",
+    "why": "React 18 StrictMode simulates unmounting and remounting components in development to surface bugs: effects that don't clean up, state that relies on effect order, and non-idempotent setup code. In production, effects run once. The double-invoke only happens in development.",
+    "gotchas": [
+      "Double-invoke only occurs in development — production is unaffected",
+      "If your effect breaks under double-invoke, the bug is in your code, not StrictMode",
+      "React 18 added the double-effect behavior — React 17 StrictMode only double-rendered, not effects",
+      "Removing StrictMode to silence the issue hides real bugs that will appear in production"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": ["browser"],
+    "error_messages": [],
+    "keywords": ["strict mode", "double render", "double invoke", "development", "effect cleanup", "idempotent"],
+    "severity": "moderate",
+    "context": "When debugging behavior that occurs twice in development but not in production due to React StrictMode",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// React 18 StrictMode effect lifecycle in development:\n// mount → setup → cleanup → setup (simulates remount)\n// Always write effects that survive this cycle",
+        "description": "StrictMode effect lifecycle"
+      }
+    ],
+    "version_info": "React 18 (double-effect); React 16.3+ (double-render)"
+  },
+  {
+    "title": "useId generates stable, unique IDs for accessibility attributes",
+    "category": "pattern",
+    "tags": ["react", "useId", "accessibility", "SSR", "aria"],
+    "problem": "Using Math.random() or a counter module to generate unique IDs for label/input associations (for/id, aria-labelledby, aria-describedby) causes hydration mismatches when the server-rendered ID doesn't match the client-rendered ID. It can also produce collisions when components render multiple times.",
+    "solution": "Use useId() to generate a stable, unique, SSR-safe ID:\n\nimport { useId } from 'react';\n\nfunction PasswordInput() {\n  const id = useId(); // ':r0:' — stable on server and client\n\n  return (\n    <div>\n      <label htmlFor={id}>Password</label>\n      <input id={id} type=\"password\" />\n    </div>\n  );\n}\n\n// Multiple IDs from one useId call\nfunction FormGroup({ label, description }) {\n  const baseId = useId();\n  const labelId = `${baseId}-label`;\n  const descriptionId = `${baseId}-description`;\n\n  return (\n    <div>\n      <label id={labelId}>{label}</label>\n      <p id={descriptionId}>{description}</p>\n      <input\n        aria-labelledby={labelId}\n        aria-describedby={descriptionId}\n      />\n    </div>\n  );\n}",
+    "why": "useId generates a deterministic ID based on the component's position in the tree. The same tree structure produces the same IDs on server and client, preventing hydration mismatches. IDs are globally unique across the component tree because React tracks position.",
+    "gotchas": [
+      "useId IDs start with ':' — they are invalid as CSS selectors (can't use querySelector('#:r0:'))",
+      "Don't use useId for list keys — keys must be data-driven, not position-based",
+      "If you need multiple IDs, derive them from one useId call with string suffixes",
+      "Available since React 18 — use a UUID library for older versions"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": [],
+    "error_messages": [
+      "Warning: Prop `id` did not match. Server: \"id-1\" Client: \"id-3\""
+    ],
+    "keywords": ["useId", "unique ID", "SSR hydration", "accessibility", "aria", "htmlFor", "hydration mismatch"],
+    "severity": "tip",
+    "context": "When generating unique IDs for HTML accessibility attributes in components that render on the server",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "function Checkbox({ label }) {\n  const id = useId();\n  return (\n    <>\n      <input type=\"checkbox\" id={id} />\n      <label htmlFor={id}>{label}</label>\n    </>\n  );\n}",
+        "description": "useId for label/input association"
+      }
+    ],
+    "version_info": "React 18+"
+  },
+  {
+    "title": "flushSync forces a synchronous re-render for third-party DOM integration",
+    "category": "pattern",
+    "tags": ["react", "flushSync", "synchronous", "batching", "DOM"],
+    "problem": "React 18 batches all state updates, including those inside setTimeout, promises, and event handlers. Sometimes you need a DOM update to be visible synchronously before continuing — for example, before calling a measurement API or syncing with a third-party library.",
+    "solution": "Wrap the state update in flushSync to force an immediate synchronous re-render:\n\nimport { flushSync } from 'react-dom';\n\nfunction ScrollToBottom({ messages }) {\n  const bottomRef = useRef(null);\n\n  function handleSendMessage(text) {\n    // Force the new message to render immediately\n    flushSync(() => {\n      setMessages(prev => [...prev, { text, id: Date.now() }]);\n    });\n    // Now the DOM is updated — scroll to the new message\n    bottomRef.current.scrollIntoView({ behavior: 'smooth' });\n  }\n\n  return (\n    <div>\n      {messages.map(m => <p key={m.id}>{m.text}</p>)}\n      <div ref={bottomRef} />\n    </div>\n  );\n}\n\n// Integration with non-React code\nfunction handleThirdPartyEvent(data) {\n  flushSync(() => {\n    setData(data);\n  });\n  // thirdPartyLib reads the DOM after React has updated it\n  thirdPartyLib.measure(containerRef.current);\n}",
+    "why": "React 18's automatic batching defers DOM updates for performance. flushSync opts out of batching for a specific update, committing it to the DOM synchronously. This is an escape hatch for cases where the timing of DOM updates is externally observable.",
+    "gotchas": [
+      "flushSync is expensive — avoid it in render code or inside loops",
+      "Calling flushSync inside a React lifecycle or effect can cause infinite loops",
+      "It forces the batched updates inside it to flush, but may also flush other pending updates",
+      "Only needed in rare integration scenarios — 99% of apps never need this"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": ["browser"],
+    "error_messages": [],
+    "keywords": ["flushSync", "synchronous render", "batching", "DOM measurement", "third party integration", "scroll to bottom"],
+    "severity": "tip",
+    "context": "When you need a state update's DOM effects to be visible before proceeding with DOM measurement or third-party library calls",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "import { flushSync } from 'react-dom';\n\n// Force update then measure\nflushSync(() => setItems(newItems));\nconst height = listRef.current.scrollHeight; // updated DOM",
+        "description": "flushSync then measure"
+      }
+    ],
+    "version_info": "React 18+"
+  },
+  {
+    "title": "React.memo with custom comparison for deep or selective equality",
+    "category": "pattern",
+    "tags": ["react", "memo", "custom-comparison", "performance", "props"],
+    "problem": "React.memo's default shallow comparison re-renders when any prop reference changes. For components receiving large objects where only one nested field matters, shallow comparison fails to prevent re-renders even when the relevant data is identical.",
+    "solution": "Pass a custom comparison function to React.memo:\n\n// Default memo — shallow compares all props\nconst Chart = React.memo(function Chart({ data, title }) {\n  return <svg>...</svg>;\n});\n\n// Custom comparison — only re-render if the chart data values change\nconst Chart = React.memo(\n  function Chart({ data, title }) {\n    return <svg>...</svg>;\n  },\n  function arePropsEqual(prevProps, nextProps) {\n    // Return true to SKIP re-render (props are equal)\n    // Return false to ALLOW re-render (props changed)\n    return (\n      prevProps.title === nextProps.title &&\n      prevProps.data.length === nextProps.data.length &&\n      prevProps.data.every((point, i) => point.value === nextProps.data[i].value)\n    );\n  }\n);\n\n// Warning: Custom comparison is called on every render\n// Keep it fast — don't do deep clone comparisons",
+    "why": "The second argument to React.memo is a comparison function that receives previous and next props and returns a boolean. If it returns true, React skips the re-render. This lets you define exactly what 'equal' means for your component's props, ignoring irrelevant changes.",
+    "gotchas": [
+      "The comparison function is the opposite of shouldComponentUpdate — return true to PREVENT re-render, not to allow it",
+      "Deep comparison with libraries like lodash.isEqual is expensive — profile before using it",
+      "A buggy comparison function that always returns true creates a component that never updates — subtle and hard to debug",
+      "Avoid comparing functions — use useCallback on the parent side to ensure stable references instead"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["React.memo", "custom comparison", "arePropsEqual", "deep comparison", "selective memo", "performance"],
+    "severity": "tip",
+    "context": "When a memoized component re-renders unnecessarily due to complex prop structures where shallow comparison is insufficient",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "const DataGrid = React.memo(\n  function DataGrid({ rows, selectedId }) { /* ... */ },\n  (prev, next) =>\n    prev.selectedId === next.selectedId &&\n    prev.rows === next.rows // reference equality first (fast path)\n);",
+        "description": "Efficient custom comparison"
+      }
+    ],
+    "version_info": "React 16.6+"
+  },
+  {
+    "title": "useRef vs useState — which to use for mutable values",
+    "category": "principle",
+    "tags": ["react", "useRef", "useState", "mutable", "re-render"],
+    "problem": "Developers confuse useRef and useState. Using useState for values that don't need to trigger re-renders (DOM refs, timer IDs, previous values, third-party instances) causes unnecessary renders. Using useRef for values that should trigger renders causes stale UI.",
+    "solution": "Rule: useRef for values that are used for side effects but not for rendering. useState for values that determine what the UI shows.\n\n// useRef: timer ID — changing it should not re-render\nfunction Timer() {\n  const timerRef = useRef(null);\n  \n  function start() {\n    timerRef.current = setInterval(tick, 1000); // no re-render\n  }\n  function stop() {\n    clearInterval(timerRef.current); // no re-render\n  }\n}\n\n// useRef: previous value — only used in effect, not in JSX\nfunction usePrevious(value) {\n  const ref = useRef();\n  useEffect(() => { ref.current = value; }, [value]);\n  return ref.current; // previous render's value\n}\n\n// useState: display count — changing it must re-render\nfunction Counter() {\n  const [count, setCount] = useState(0);\n  return <p>{count}</p>; // used in JSX → must be state\n}\n\n// useState: form input — shown to user\nfunction Form() {\n  const [email, setEmail] = useState('');\n  return <input value={email} onChange={e => setEmail(e.target.value)} />;\n}",
+    "why": "useRef holds a mutable object { current: value } that persists across renders. Mutating .current doesn't trigger re-renders. useState triggers a re-render and schedules a new render cycle when the setter is called. The distinction maps to: does the UI need to change when this value changes?",
+    "gotchas": [
+      "Reading ref.current during render is unreliable in concurrent mode — refs are for effects and event handlers",
+      "useRef(initialValue) only uses the initial value on the first render — subsequent initialValue expressions are evaluated but discarded",
+      "Don't write to ref.current during render — only in effects and event handlers",
+      "useRef is also used for DOM access — assign to the ref prop of a JSX element"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["useRef", "useState", "mutable value", "re-render trigger", "timer ref", "previous value", "DOM ref"],
+    "severity": "moderate",
+    "context": "When deciding whether a mutable value should be stored in useRef or useState",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// Decision rule:\n// Does changing this value need to update the UI? → useState\n// Is this value only used in effects/handlers, not JSX? → useRef\n\nconst count = useState(0);    // shown in JSX → state\nconst timerId = useRef(null); // used in clearInterval → ref",
+        "description": "useRef vs useState decision"
+      }
+    ],
+    "version_info": "React 16.8+"
+  },
+  {
+    "title": "Controlled vs uncontrolled inputs — choose one and be consistent",
+    "category": "principle",
+    "tags": ["react", "controlled", "uncontrolled", "forms", "input", "ref"],
+    "problem": "Mixing controlled and uncontrolled input patterns in the same form causes the 'changing controlled to uncontrolled' warning, inconsistent behavior, and state synchronization issues. Developers also reach for controlled inputs for every form when uncontrolled is simpler.",
+    "solution": "Controlled: value + onChange for every change. Uncontrolled: defaultValue + ref for final value.\n\n// CONTROLLED — React owns the value at all times\nfunction ControlledForm() {\n  const [name, setName] = useState('');\n  \n  function handleSubmit(e) {\n    e.preventDefault();\n    submitData(name); // state is always current\n  }\n  \n  return (\n    <form onSubmit={handleSubmit}>\n      <input value={name} onChange={e => setName(e.target.value)} />\n      <button type=\"submit\">Submit</button>\n    </form>\n  );\n}\n\n// UNCONTROLLED — DOM owns the value, React reads it on submit\nfunction UncontrolledForm() {\n  const nameRef = useRef(null);\n  \n  function handleSubmit(e) {\n    e.preventDefault();\n    submitData(nameRef.current.value);\n  }\n  \n  return (\n    <form onSubmit={handleSubmit}>\n      <input defaultValue=\"\" ref={nameRef} /> {/* DOM owns value */}\n      <button type=\"submit\">Submit</button>\n    </form>\n  );\n}\n\n// For complex forms, prefer react-hook-form (uncontrolled by default, validation built-in)",
+    "why": "Controlled inputs re-render on every keystroke — fine for small forms, but with 50 fields and complex validation, it's costly. Uncontrolled inputs let the DOM own the value and are faster. react-hook-form uses uncontrolled inputs for performance while providing a controlled-like API.",
+    "gotchas": [
+      "Never switch between controlled (value={x}) and uncontrolled (no value prop) for the same input during its lifecycle",
+      "defaultValue sets the initial uncontrolled value and is ignored on subsequent renders",
+      "File inputs are always uncontrolled — value is read-only and controlled by the browser",
+      "For real-time validation, controlled is easier; for submit-time validation, uncontrolled is simpler"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": ["browser"],
+    "error_messages": [
+      "Warning: A component is changing an uncontrolled input to be controlled.",
+      "Warning: A component is changing a controlled input to be uncontrolled."
+    ],
+    "keywords": ["controlled input", "uncontrolled input", "defaultValue", "react-hook-form", "form", "ref", "value prop"],
+    "severity": "moderate",
+    "context": "When building forms in React and choosing between React-managed and DOM-managed input values",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// react-hook-form: uncontrolled performance, controlled DX\nimport { useForm } from 'react-hook-form';\n\nfunction Form() {\n  const { register, handleSubmit } = useForm();\n  return (\n    <form onSubmit={handleSubmit(data => console.log(data))}>\n      <input {...register('name', { required: true })} />\n      <button type=\"submit\">Submit</button>\n    </form>\n  );\n}",
+        "description": "react-hook-form (recommended for complex forms)"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Custom hooks — extract stateful logic, not just logic",
+    "category": "pattern",
+    "tags": ["react", "custom-hooks", "reusability", "abstraction", "patterns"],
+    "problem": "Developers extract functions into custom hooks just because they use useState, even when the hook doesn't encapsulate a reusable behavior. Or they put non-hook logic inside custom hooks unnecessarily, adding the hook call overhead and the 'must be called at top level' restriction.",
+    "solution": "Create custom hooks when you have a reusable stateful behavior pattern:\n\n// GOOD custom hook: encapsulates a complete behavior\nfunction useLocalStorage(key, initialValue) {\n  const [storedValue, setStoredValue] = useState(() => {\n    try {\n      const item = localStorage.getItem(key);\n      return item ? JSON.parse(item) : initialValue;\n    } catch {\n      return initialValue;\n    }\n  });\n\n  const setValue = useCallback((value) => {\n    const valueToStore = value instanceof Function ? value(storedValue) : value;\n    setStoredValue(valueToStore);\n    localStorage.setItem(key, JSON.stringify(valueToStore));\n  }, [key, storedValue]);\n\n  return [storedValue, setValue];\n}\n\n// GOOD: reused in multiple places\nconst [theme, setTheme] = useLocalStorage('theme', 'dark');\nconst [userId, setUserId] = useLocalStorage('userId', null);\n\n// BAD: wrapping a pure calculation — just export a function\nfunction useDouble(n) { // NOT a hook — no state or effects\n  return n * 2;\n}\n// Better: export double as a plain function",
+    "why": "Custom hooks are composable units of stateful behavior. They must start with 'use' so React's linter can enforce the Rules of Hooks. The value is in sharing the state + effect combination, not just abstracting any function. Plain functions are simpler when no hooks are involved.",
+    "gotchas": [
+      "Custom hooks must start with 'use' — React's linter uses this to enforce Rules of Hooks",
+      "Each call to a custom hook creates independent state — hooks are not singletons",
+      "Return both values and setters as a tuple [value, setter] or object {value, update, reset}",
+      "Don't extract into a custom hook prematurely — three or more uses is a good signal to extract"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": [],
+    "error_messages": [
+      "React Hook \"useState\" cannot be called inside a callback.",
+      "React Hook \"useEffect\" is called conditionally."
+    ],
+    "keywords": ["custom hooks", "useLocalStorage", "logic extraction", "reusable state", "hook patterns", "abstraction"],
+    "severity": "tip",
+    "context": "When deciding whether to extract logic into a custom hook or a plain function",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// Complete custom hook pattern\nfunction useFetch(url) {\n  const [data, setData] = useState(null);\n  const [loading, setLoading] = useState(true);\n  const [error, setError] = useState(null);\n  useEffect(() => {\n    const controller = new AbortController();\n    setLoading(true);\n    fetch(url, { signal: controller.signal })\n      .then(r => r.json()).then(setData).catch(e => {\n        if (e.name !== 'AbortError') setError(e);\n      }).finally(() => setLoading(false));\n    return () => controller.abort();\n  }, [url]);\n  return { data, loading, error };\n}",
+        "description": "useFetch custom hook"
+      }
+    ],
+    "version_info": "React 16.8+"
+  },
+  {
+    "title": "React DevTools Profiler — finding expensive renders",
+    "category": "debug",
+    "tags": ["react", "devtools", "profiler", "performance", "debugging"],
+    "problem": "The app feels slow but you don't know which component is causing it. console.log timing is inaccurate and doesn't show the React render tree. Guessing which components to memoize wastes time and adds noise.",
+    "solution": "Use the React DevTools Profiler to identify expensive renders:\n\n// 1. Install React DevTools browser extension\n// 2. Open DevTools → Profiler tab\n// 3. Click Record → interact with the app → Stop Recording\n\n// What to look for:\n// - 'Commit' graph: each bar is a render cycle (height = time taken)\n// - 'Flamegraph': shows all components rendered in a commit (gray = did not render)\n// - 'Ranked': components sorted by render time\n// - 'Why did this render?': shows props/state that changed\n\n// In code: use the Profiler API for production metrics\nimport { Profiler } from 'react';\n\nfunction onRenderCallback(id, phase, actualDuration, baseDuration, startTime, commitTime) {\n  // id: tree identifier\n  // phase: 'mount' | 'update'\n  // actualDuration: time for this commit\n  // baseDuration: estimated time without memoization\n  if (actualDuration > 16) {\n    console.warn(`Slow render in ${id}: ${actualDuration}ms`);\n  }\n}\n\n<Profiler id=\"main-content\" onRender={onRenderCallback}>\n  <MainContent />\n</Profiler>",
+    "why": "The Profiler captures accurate timing from React's internal commit phase. baseDuration shows how long rendering would take without any memoization — comparing this to actualDuration reveals how effective existing memoization is. 'Why did this render' shows exactly which prop or state changed.",
+    "gotchas": [
+      "React DevTools Profiler is only available in development builds — production builds are optimized and don't expose profiling data",
+      "Enable 'Record why each component rendered' in Profiler settings for the 'Why did this render?' panel",
+      "React.Profiler API works in production — useful for tracking slow renders in the field",
+      "Profiling adds overhead — remove Profiler wrappers before shipping to production"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": ["browser"],
+    "error_messages": [],
+    "keywords": ["React DevTools", "Profiler", "performance", "flamegraph", "render time", "why did this render", "memoization"],
+    "severity": "tip",
+    "context": "When the React app has perceived performance issues and you need to identify which components are slow to render",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// Production profiling\nimport { Profiler } from 'react';\n\n<Profiler\n  id=\"ProductList\"\n  onRender={(id, phase, duration) => {\n    analytics.track('slow_render', { id, phase, duration });\n  }}\n>\n  <ProductList />\n</Profiler>",
+        "description": "Production performance tracking with Profiler"
+      }
+    ],
+    "version_info": "React 16.5+ for Profiler API"
+  },
+  {
+    "title": "Key prop reconciliation — how React uses keys to match elements",
+    "category": "principle",
+    "tags": ["react", "key", "reconciliation", "virtual DOM", "fiber"],
+    "problem": "Developers understand that keys must be unique, but don't understand what React actually does with them. This leads to subtle bugs: adding a key to force unmount/remount, removing a key to preserve state, or using the wrong key type.",
+    "solution": "Understand the reconciliation algorithm to use keys correctly:\n\n// Keys tell React which element is which across renders\n// CASE 1: Same position, same type, no key → React updates in place\n// CASE 2: Same position, same type, different key → React unmounts and remounts\n\n// Use case: RESET component state by changing key\nfunction Form({ userId }) {\n  return <UserForm key={userId} />; // changing userId unmounts + remounts → fresh state\n}\n\n// Use case: Animate out old, animate in new\n<AnimatedPanel key={currentStep}> {/* key change forces remount with enter animation */}\n  {stepContent[currentStep]}\n</AnimatedPanel>\n\n// Use case: Preserve state across position changes\nfunction SortableList({ items }) {\n  return items.map(item => (\n    <ListItem key={item.id} item={item} /> // React tracks by id, not position\n  ));\n}\n\n// Understanding the diff:\n// Before: [A, B, C] (keys: 1, 2, 3)\n// After:  [B, A, C] (keys: 2, 1, 3)\n// React moves A and B, doesn't re-create them",
+    "why": "React's reconciler compares the previous and next render outputs. Without keys, it compares by position in the array. With keys, it compares by key identity. This lets React move DOM nodes (reorder) instead of destroying and recreating them, and lets developers force re-creation by changing a key.",
+    "gotchas": [
+      "Changing a key destroys the old component (including its state and refs) and creates a new one — useful for resetting, dangerous if unintentional",
+      "Keys only help React within a list — they don't prevent re-renders of individual keyed components",
+      "Fragment keys: <Fragment key={id}> is valid, <> ... </> syntax doesn't support keys",
+      "Keys must be strings or numbers — objects and arrays as keys are silently coerced to strings"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": [],
+    "error_messages": [
+      "Warning: Each child in a list should have a unique \"key\" prop."
+    ],
+    "keywords": ["key prop", "reconciliation", "fiber", "virtual DOM", "reset state", "unmount remount", "diffing"],
+    "severity": "moderate",
+    "context": "When debugging unexpected state preservation/reset or performance issues with lists",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// Reset child state by changing key\nfunction App({ selectedUser }) {\n  return <ProfileForm key={selectedUser.id} user={selectedUser} />;\n  // Switching users → key changes → ProfileForm fully resets\n}",
+        "description": "Using key to reset component state"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Children API — React.Children, cloneElement, and when to use context instead",
+    "category": "pattern",
+    "tags": ["react", "children", "React.Children", "cloneElement", "compound-components"],
+    "problem": "Compound components (Tabs, Accordion, Select) need to share state between a parent and its children (Tab, AccordionItem, Option) without explicit prop passing. Using React.Children.map and cloneElement to inject props is brittle — it only works for direct children and breaks with fragments or conditional rendering.",
+    "solution": "Prefer context over cloneElement for compound components:\n\n// BRITTLE: cloneElement approach\nfunction Tabs({ children, defaultIndex = 0 }) {\n  const [activeIndex, setActiveIndex] = useState(defaultIndex);\n  return (\n    <div>\n      {React.Children.map(children, (child, i) =>\n        React.cloneElement(child, { active: i === activeIndex, onSelect: () => setActiveIndex(i) })\n      )}\n    </div>\n  );\n}\n// Breaks with: <Tabs><div><Tab /></div></Tabs> — Tab is not a direct child\n\n// ROBUST: context approach\nconst TabsContext = createContext(null);\n\nfunction Tabs({ children, defaultIndex = 0 }) {\n  const [activeIndex, setActiveIndex] = useState(defaultIndex);\n  return (\n    <TabsContext.Provider value={{ activeIndex, setActiveIndex }}>\n      <div className=\"tabs\">{children}</div>\n    </TabsContext.Provider>\n  );\n}\n\nfunction Tab({ index, children }) {\n  const { activeIndex, setActiveIndex } = useContext(TabsContext);\n  return (\n    <button\n      className={activeIndex === index ? 'active' : ''}\n      onClick={() => setActiveIndex(index)}\n    >\n      {children}\n    </button>\n  );\n}\n\nTabs.Tab = Tab; // attach as namespace\n\n// Usage\n<Tabs defaultIndex={0}>\n  <Tabs.Tab index={0}>Overview</Tabs.Tab>\n  <Tabs.Tab index={1}>Details</Tabs.Tab>\n</Tabs>",
+    "why": "React.Children.map only iterates direct children — wrapping children in a div or fragment breaks it. Context-based compound components work regardless of nesting depth, conditional rendering, or wrapper elements. The namespace pattern (Tabs.Tab) keeps the API discoverable.",
+    "gotchas": [
+      "React.Children.count and React.Children.toArray include null/undefined children — filter them",
+      "cloneElement merges props shallowly — if both parent and child define onClick, the child's is overwritten",
+      "The context-based approach requires consumers to be inside the provider — document this requirement",
+      "React.Children utilities are considered legacy — context is the recommended modern alternative"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["React.Children", "cloneElement", "compound components", "children API", "context pattern", "namespace pattern"],
+    "severity": "moderate",
+    "context": "When building compound component APIs where a parent coordinates state across multiple children",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// Namespace compound component\nfunction Accordion({ children }) { /* context provider */ }\nfunction AccordionItem({ id, title, children }) { /* context consumer */ }\nAccordion.Item = AccordionItem;\n\n// Usage\n<Accordion>\n  <Accordion.Item id=\"1\" title=\"Section 1\">Content</Accordion.Item>\n  <Accordion.Item id=\"2\" title=\"Section 2\">Content</Accordion.Item>\n</Accordion>",
+        "description": "Namespace compound component pattern"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "startTransition (standalone import) without the isPending flag",
+    "category": "pattern",
+    "tags": ["react", "startTransition", "concurrent", "navigation", "performance"],
+    "problem": "useTransition requires a component context and returns isPending. But sometimes you need to wrap a navigation update or third-party callback in a transition without needing the pending state — like in a router's navigate function or an event handler outside a component.",
+    "solution": "Import startTransition directly from React when you don't need isPending:\n\nimport { startTransition } from 'react';\n\n// In a utility function (not a component)\nfunction navigateToPage(path) {\n  startTransition(() => {\n    // This is a non-urgent navigation update\n    setCurrentPath(path);\n  });\n}\n\n// In a router (React Router 6+ uses this internally)\nfunction CustomLink({ to, children }) {\n  const navigate = useNavigate();\n  return (\n    <a\n      href={to}\n      onClick={(e) => {\n        e.preventDefault();\n        startTransition(() => navigate(to));\n      }}\n    >\n      {children}\n    </a>\n  );\n}\n\n// In a store callback\nmyStore.subscribe((newState) => {\n  startTransition(() => {\n    setStoreState(newState);\n  });\n});\n\n// Difference from useTransition:\n// useTransition() → [isPending, startTransition] (inside component)\n// import { startTransition } → just the function (anywhere)",
+    "why": "startTransition is available as a standalone import so you can mark updates as non-urgent from anywhere — utility functions, store listeners, third-party callbacks — without requiring a React component hook call context.",
+    "gotchas": [
+      "startTransition doesn't provide the isPending boolean — use useTransition() inside a component if you need loading state",
+      "The callback passed to startTransition must be synchronous — async functions need useTransition with React 19",
+      "setState calls inside startTransition are batched with other concurrent updates",
+      "Not to be confused with the transition in CSS — this is about React render priority"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["startTransition", "import", "standalone", "navigation", "concurrent", "non-urgent", "outside component"],
+    "severity": "tip",
+    "context": "When marking a state update as non-urgent from outside a React component (router, store subscriber, utility)",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "import { startTransition } from 'react';\n\n// Mark store update as non-urgent\nstore.subscribe((state) => {\n  startTransition(() => setAppState(state));\n});",
+        "description": "startTransition in store subscriber"
+      }
+    ],
+    "version_info": "React 18+"
+  },
+  {
+    "title": "useLayoutEffect for DOM measurements — runs synchronously before paint",
+    "category": "pattern",
+    "tags": ["react", "useLayoutEffect", "useEffect", "DOM", "measurement", "paint"],
+    "problem": "useEffect runs after the browser has painted. Reading DOM measurements (offsetWidth, getBoundingClientRect) inside useEffect and immediately setting state based on them causes a visible flash: the browser paints the first state, then React re-renders with the measured state, painting again. Users see a flicker.",
+    "solution": "Use useLayoutEffect for DOM measurements that must happen before paint:\n\nimport { useLayoutEffect, useRef, useState } from 'react';\n\n// Tooltip that positions itself to stay in the viewport\nfunction Tooltip({ children, label }) {\n  const ref = useRef(null);\n  const [tooltipLeft, setTooltipLeft] = useState(0);\n\n  // Runs synchronously after DOM mutation but before paint\n  useLayoutEffect(() => {\n    const rect = ref.current.getBoundingClientRect();\n    const overflowRight = rect.right - window.innerWidth;\n    if (overflowRight > 0) {\n      setTooltipLeft(-overflowRight - 8); // shift left to fit\n    }\n  }, []);\n\n  return (\n    <div ref={ref} style={{ left: tooltipLeft }} className=\"tooltip\">\n      {label}\n    </div>\n  );\n}\n\n// Rule of thumb:\n// useEffect: subscriptions, data fetching, logging — no DOM reads/writes\n// useLayoutEffect: DOM measurement → state → avoid flicker\n\n// SSR warning: useLayoutEffect logs a warning on the server\n// Use useIsomorphicLayoutEffect pattern for SSR-compatible code:\nconst useIsomorphicLayoutEffect =\n  typeof window !== 'undefined' ? useLayoutEffect : useEffect;",
+    "why": "React fires useLayoutEffect after all DOM mutations but before the browser paints. This synchronous execution means any state updates triggered inside it are batched with the current commit — the user only sees the final layout. useEffect fires after paint, so a setState inside it causes a second visible paint.",
+    "gotchas": [
+      "useLayoutEffect blocks the browser from painting until it completes — keep it fast",
+      "Never fetch data in useLayoutEffect — it blocks paint and provides no benefit over useEffect for async work",
+      "On the server (SSR), useLayoutEffect is a no-op and logs a warning — use the useIsomorphicLayoutEffect pattern",
+      "In React 18 concurrent mode, useLayoutEffect fires synchronously after every committed render, including interrupted renders"
+    ],
+    "language": "javascript",
+    "framework": "react",
+    "environment": ["browser"],
+    "error_messages": [
+      "Warning: useLayoutEffect does nothing on the server because its effect cannot be encoded into the server renderer's output format."
+    ],
+    "keywords": ["useLayoutEffect", "useEffect", "DOM measurement", "flicker", "paint", "getBoundingClientRect", "isomorphic"],
+    "severity": "moderate",
+    "context": "When reading DOM dimensions or positions immediately after render and using them to update layout before the user sees the initial state",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// SSR-safe pattern\nconst useIsomorphicLayoutEffect =\n  typeof window !== 'undefined' ? useLayoutEffect : useEffect;\n\n// Usage — same API as useLayoutEffect\nfunction MeasuredBox({ children }) {\n  const ref = useRef(null);\n  const [size, setSize] = useState({ width: 0, height: 0 });\n  useIsomorphicLayoutEffect(() => {\n    const { width, height } = ref.current.getBoundingClientRect();\n    setSize({ width, height });\n  }, []);\n  return <div ref={ref}>{children}</div>;\n}",
+        "description": "useIsomorphicLayoutEffect for SSR compatibility"
+      }
+    ],
+    "version_info": "React 16.8+"
+  }
+]

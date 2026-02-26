@@ -1,0 +1,868 @@
+[
+  {
+    "title": "CSRF Token Validation in Express",
+    "category": "pattern",
+    "tags": ["csrf", "express", "security", "middleware"],
+    "problem": "POST/PUT/DELETE endpoints can be triggered by malicious third-party sites using the victim's authenticated session cookies, leading to Cross-Site Request Forgery attacks.",
+    "solution": "Use the csurf middleware (or csrf npm package) to generate and validate per-session CSRF tokens. Include the token in every state-changing form or AJAX request header.",
+    "why": "CSRF tokens are unpredictable per-session values that a third-party site cannot read due to Same-Origin Policy, so they cannot forge a valid request.",
+    "gotchas": [
+      "CSRF protection is needed even with SameSite=Lax cookies if you support cross-origin navigation flows",
+      "APIs consumed only by mobile apps or server-to-server callers can skip CSRF if they use header-based auth (Bearer token) with no cookies",
+      "Do not put the CSRF token in the URL—it leaks via Referer headers"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["ForbiddenError: invalid csrf token"],
+    "keywords": ["csrf", "csurf", "cross-site request forgery", "token", "form protection", "express middleware"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Express CSRF setup with csurf",
+        "code": "const csrf = require('csurf');\nconst cookieParser = require('cookie-parser');\n\napp.use(cookieParser());\nconst csrfProtection = csrf({ cookie: true });\n\napp.get('/form', csrfProtection, (req, res) => {\n  res.render('form', { csrfToken: req.csrfToken() });\n});\n\napp.post('/form', csrfProtection, (req, res) => {\n  // Request is safe — token was validated by middleware\n  res.send('Form submitted');\n});"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "CORS Configuration: Whitelist Origins Explicitly",
+    "category": "gotcha",
+    "tags": ["cors", "security", "http", "headers"],
+    "problem": "Setting Access-Control-Allow-Origin to '*' or reflecting the request Origin header without validation allows any site to make credentialed cross-origin requests to your API.",
+    "solution": "Maintain an explicit allowlist of trusted origins. Validate the incoming Origin header against the list before reflecting it in the response.",
+    "why": "A wildcard origin combined with Access-Control-Allow-Credentials: true is rejected by browsers, but a naively reflected origin is not—attackers can steal data from authenticated API responses.",
+    "gotchas": [
+      "Never combine '*' with 'credentials: true'—browsers block it, but some frameworks silently drop credentials instead of erroring",
+      "Subdomain wildcards like '*.example.com' are not natively supported by the CORS spec; you must implement subdomain validation manually",
+      "CORS headers do not protect server-to-server requests—only browser enforcement"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["CORS policy: No 'Access-Control-Allow-Origin' header", "Cross-Origin Request Blocked"],
+    "keywords": ["cors", "cross-origin resource sharing", "access-control-allow-origin", "whitelist", "preflight", "credentials"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Safe CORS middleware with origin allowlist",
+        "code": "const allowedOrigins = new Set([\n  'https://app.example.com',\n  'https://admin.example.com'\n]);\n\napp.use((req, res, next) => {\n  const origin = req.headers.origin;\n  if (allowedOrigins.has(origin)) {\n    res.setHeader('Access-Control-Allow-Origin', origin);\n    res.setHeader('Vary', 'Origin');\n  }\n  res.setHeader('Access-Control-Allow-Credentials', 'true');\n  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE');\n  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');\n  if (req.method === 'OPTIONS') return res.sendStatus(204);\n  next();\n});"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Content-Security-Policy Header Setup",
+    "category": "pattern",
+    "tags": ["csp", "security", "headers", "xss"],
+    "problem": "Without a Content-Security-Policy header, browsers allow scripts, styles, and other resources to load from any origin, making reflected or stored XSS attacks far more impactful.",
+    "solution": "Define a strict CSP using the helmet npm package. Start with default-src 'self' and incrementally add trusted external sources only as needed.",
+    "why": "CSP is a browser-enforced allowlist for resources. Even if an attacker injects a script reference, the browser refuses to load it if the source is not in the policy.",
+    "gotchas": [
+      "'unsafe-inline' for scripts defeats most of the protection CSP provides—use nonces instead",
+      "Use Content-Security-Policy-Report-Only first to audit violations before enforcing",
+      "Hash-based CSP for inline scripts breaks when script content changes",
+      "Third-party widgets and ad networks often require 'unsafe-inline'; isolate them in sandboxed iframes instead"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["Refused to load the script because it violates the following Content Security Policy directive"],
+    "keywords": ["csp", "content security policy", "helmet", "nonce", "unsafe-inline", "default-src", "xss prevention"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Strict CSP with nonce via helmet",
+        "code": "const helmet = require('helmet');\nconst crypto = require('crypto');\n\napp.use((req, res, next) => {\n  res.locals.nonce = crypto.randomBytes(16).toString('base64');\n  next();\n});\n\napp.use((req, res, next) => {\n  helmet.contentSecurityPolicy({\n    directives: {\n      defaultSrc: [\"'self'\"],\n      scriptSrc: [\"'self'\", (req, res) => `'nonce-${res.locals.nonce}'`],\n      styleSrc: [\"'self'\", 'https://fonts.googleapis.com'],\n      imgSrc: [\"'self'\", 'data:', 'https:'],\n      connectSrc: [\"'self'\"],\n      fontSrc: [\"'self'\", 'https://fonts.gstatic.com'],\n      objectSrc: [\"'none'\"],\n      frameAncestors: [\"'none'\"]\n    }\n  })(req, res, next);\n});"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "JWT Storage: httpOnly Cookies vs localStorage",
+    "category": "principle",
+    "tags": ["jwt", "cookies", "localstorage", "xss", "session"],
+    "problem": "Storing JWTs in localStorage exposes them to any JavaScript running on the page, meaning an XSS vulnerability can silently exfiltrate all user tokens.",
+    "solution": "Store JWTs in httpOnly, Secure, SameSite=Strict cookies. The browser automatically sends them and JavaScript cannot read them.",
+    "why": "httpOnly cookies are inaccessible to JavaScript by design. Even if an attacker achieves script execution on the page, they cannot extract the token to replay it from another origin.",
+    "gotchas": [
+      "httpOnly cookies are still vulnerable to CSRF—combine with CSRF tokens or SameSite=Strict",
+      "SameSite=Strict breaks OAuth redirect flows that return tokens via cross-site navigation—use Lax for those",
+      "Long-lived JWTs in cookies still need a refresh token rotation strategy",
+      "Token revocation is harder with JWTs; maintain a server-side deny list for logout"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["jwt", "localstorage", "httponly", "cookie", "xss", "token storage", "secure cookie"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Setting JWT in httpOnly cookie on login",
+        "code": "const jwt = require('jsonwebtoken');\n\napp.post('/login', async (req, res) => {\n  const user = await authenticate(req.body);\n  if (!user) return res.sendStatus(401);\n\n  const token = jwt.sign({ sub: user.id, role: user.role }, process.env.JWT_SECRET, {\n    expiresIn: '15m'\n  });\n\n  res.cookie('access_token', token, {\n    httpOnly: true,\n    secure: true,        // HTTPS only\n    sameSite: 'Strict',  // CSRF protection\n    maxAge: 15 * 60 * 1000\n  });\n\n  res.json({ message: 'Logged in' });\n});"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Password Hashing: Prefer argon2 over bcrypt",
+    "category": "principle",
+    "tags": ["password", "hashing", "argon2", "bcrypt", "security"],
+    "problem": "bcrypt is capped at 72 bytes, has a fixed memory cost, and is increasingly vulnerable to GPU-accelerated cracking. Passwords need a memory-hard algorithm.",
+    "solution": "Use argon2id via the argon2 npm package. It is the winner of the Password Hashing Competition and is recommended by OWASP for new systems.",
+    "why": "argon2id is memory-hard, meaning attackers need large amounts of RAM per attempt—this neutralises GPU and ASIC parallelism, making brute-force attacks orders of magnitude slower.",
+    "gotchas": [
+      "argon2 requires native binaries—may need build tools (python3, make, gcc) in Docker images",
+      "Do not implement password comparison manually—always use argon2.verify() to prevent timing attacks",
+      "Tune memory and time cost parameters for your server; OWASP recommends at least 19 MiB memory, 2 iterations for argon2id",
+      "bcrypt silently truncates passwords at 72 bytes—long passphrases may collide"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["argon2", "bcrypt", "password hash", "memory hard", "owasp", "phc", "password competition"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Hashing and verifying passwords with argon2id",
+        "code": "const argon2 = require('argon2');\n\nasync function hashPassword(password) {\n  return argon2.hash(password, {\n    type: argon2.argon2id,\n    memoryCost: 2 ** 16,  // 64 MiB\n    timeCost: 3,\n    parallelism: 1\n  });\n}\n\nasync function verifyPassword(hash, password) {\n  // Uses constant-time comparison internally\n  return argon2.verify(hash, password);\n}\n\n// Usage\nconst hash = await hashPassword('user-password');\nconst valid = await verifyPassword(hash, 'user-password'); // true"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Rate Limiting API Endpoints with express-rate-limit",
+    "category": "pattern",
+    "tags": ["rate-limiting", "express", "security", "dos"],
+    "problem": "Without rate limiting, attackers can brute-force login endpoints, enumerate resources, spam password-reset emails, or exhaust server resources.",
+    "solution": "Apply express-rate-limit globally and with stricter limits on sensitive endpoints like /login, /register, and /reset-password. Use a Redis store for multi-process deployments.",
+    "why": "Rate limiting adds friction that makes automated attacks impractical. Even a modest limit of 5 requests per 15 minutes on login effectively blocks most credential-stuffing tools.",
+    "gotchas": [
+      "Memory store does not share state across multiple Node processes or containers—use rate-limit-redis for production",
+      "Rate limiting by IP fails behind shared NAT (offices, mobile carriers)—prefer rate limiting by user ID after authentication",
+      "The X-Forwarded-For header can be spoofed—configure trustProxy carefully to read the correct client IP"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["429 Too Many Requests"],
+    "keywords": ["rate limit", "brute force", "express-rate-limit", "throttle", "429", "login protection", "redis store"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Strict rate limit on login and global rate limit",
+        "code": "const rateLimit = require('express-rate-limit');\n\n// Global rate limit\nconst globalLimiter = rateLimit({\n  windowMs: 15 * 60 * 1000,\n  max: 200,\n  standardHeaders: true,\n  legacyHeaders: false\n});\n\n// Strict limit for auth endpoints\nconst authLimiter = rateLimit({\n  windowMs: 15 * 60 * 1000,\n  max: 10,\n  message: { error: 'Too many attempts, please try again later' },\n  standardHeaders: true,\n  legacyHeaders: false\n});\n\napp.use(globalLimiter);\napp.use('/auth/login', authLimiter);\napp.use('/auth/register', authLimiter);\napp.use('/auth/reset-password', authLimiter);"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Input Validation with Zod Before Processing",
+    "category": "pattern",
+    "tags": ["validation", "zod", "input", "sanitization"],
+    "problem": "Trusting user-supplied data without validation leads to unexpected types, oversized payloads, and injection vulnerabilities. Unvalidated input is the root cause of most injection attacks.",
+    "solution": "Define strict Zod schemas for every request body, query parameter, and path param. Parse at the route handler boundary before any business logic runs.",
+    "why": "Schema validation enforces shape, type, and bounds at a single choke point. Rejecting invalid input early prevents malformed data from reaching database queries, file paths, or external APIs.",
+    "gotchas": [
+      "Use z.string().max(N) to enforce length limits and prevent denial-of-service via huge inputs",
+      "Use z.string().trim() to normalise inputs before saving to prevent logic bugs with leading/trailing whitespace",
+      "Validate array lengths as well as element contents to prevent memory exhaustion",
+      "z.object() strips unknown keys by default only when using .strict()—add .strip() to explicitly drop unknown fields"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["ZodError: Validation failed"],
+    "keywords": ["zod", "validation", "schema", "input sanitization", "joi", "request body", "type safety"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Zod schema validation middleware",
+        "code": "const { z } = require('zod');\n\nconst createUserSchema = z.object({\n  email: z.string().email().max(254).toLowerCase(),\n  password: z.string().min(12).max(128),\n  name: z.string().min(1).max(100).trim()\n});\n\nfunction validate(schema) {\n  return (req, res, next) => {\n    const result = schema.safeParse(req.body);\n    if (!result.success) {\n      return res.status(400).json({ errors: result.error.flatten() });\n    }\n    req.validated = result.data;\n    next();\n  };\n}\n\napp.post('/users', validate(createUserSchema), async (req, res) => {\n  const { email, password, name } = req.validated;\n  // Safe to use — already validated\n});"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "SQL Injection Prevention via ORM Parameterization",
+    "category": "gotcha",
+    "tags": ["sql-injection", "orm", "prisma", "sequelize", "security"],
+    "problem": "Even when using an ORM, manually interpolating user input into raw query strings bypasses the ORM's parameterization and reintroduces SQL injection.",
+    "solution": "Always use parameterized query methods. In Prisma use the Prisma.sql template tag for raw queries. In Sequelize use replacements or bind parameters, never string interpolation.",
+    "why": "Parameterized queries send the SQL structure and user data as separate messages to the database driver. The database treats user data as a literal value and never interprets it as SQL.",
+    "gotchas": [
+      "Prisma's db.$queryRaw with Prisma.sql is safe, but db.$queryRawUnsafe with string interpolation is not",
+      "Sequelize's Model.findAll with a where clause using objects is safe; Model.query with a concatenated string is not",
+      "Column names and table names cannot be parameterized—validate them against a strict allowlist if dynamic",
+      "ORDER BY clauses are commonly overlooked injection points when the sort column comes from user input"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["sql injection", "parameterized query", "prisma", "sequelize", "raw query", "orm", "bind parameters"],
+    "severity": "critical",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Safe raw query in Prisma using Prisma.sql template tag",
+        "code": "const { PrismaClient, Prisma } = require('@prisma/client');\nconst prisma = new PrismaClient();\n\n// Safe: uses parameterized query\nasync function findUserByEmail(email) {\n  return prisma.$queryRaw`SELECT id, name FROM users WHERE email = ${email}`;\n}\n\n// Also safe: ORM where clause\nasync function findUserById(id) {\n  return prisma.user.findUnique({ where: { id } });\n}\n\n// Safe dynamic ORDER BY via allowlist\nconst ALLOWED_SORT = new Set(['name', 'createdAt', 'email']);\nasync function listUsers(sortBy) {\n  const col = ALLOWED_SORT.has(sortBy) ? sortBy : 'createdAt';\n  return prisma.user.findMany({ orderBy: { [col]: 'asc' } });\n}"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Directory Traversal Prevention for File Serving",
+    "category": "gotcha",
+    "tags": ["directory-traversal", "file-path", "security", "path-traversal"],
+    "problem": "When serving files based on user-supplied paths, attackers can use sequences like '../../../etc/passwd' to escape the intended directory and read arbitrary server files.",
+    "solution": "Resolve the full absolute path and verify it starts with the expected base directory before opening the file. Use path.resolve() and path.normalize() together.",
+    "why": "path.resolve() collapses all '..' segments to produce a canonical absolute path. Checking that this canonical path begins with the allowed base directory ensures the file is within bounds.",
+    "gotchas": [
+      "Do not rely on stripping '../' from the input—URL encoding (%2e%2e%2f) and Unicode normalisation can bypass naive string replacement",
+      "On Windows, both forward slashes and backslashes are path separators—test on the target platform",
+      "Symlinks can escape the base directory even after path resolution—use fs.realpath() to resolve symlinks before checking",
+      "Null bytes in file names can truncate paths in some languages; Node.js throws on null bytes in paths since v7"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["directory traversal", "path traversal", "path.resolve", "base directory", "file serve", "arbitrary file read"],
+    "severity": "critical",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Safe file serving with path traversal prevention",
+        "code": "const path = require('path');\nconst fs = require('fs');\n\nconst BASE_DIR = path.resolve('/var/app/uploads');\n\napp.get('/files/:filename', (req, res) => {\n  const requested = path.resolve(BASE_DIR, req.params.filename);\n\n  if (!requested.startsWith(BASE_DIR + path.sep) && requested !== BASE_DIR) {\n    return res.status(403).json({ error: 'Access denied' });\n  }\n\n  if (!fs.existsSync(requested)) {\n    return res.sendStatus(404);\n  }\n\n  res.sendFile(requested);\n});"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Open Redirect Prevention via Allowlist",
+    "category": "gotcha",
+    "tags": ["open-redirect", "redirect", "security", "phishing"],
+    "problem": "Redirecting users to a URL taken directly from a query parameter (e.g., ?next=) allows attackers to craft phishing links that appear to originate from your trusted domain.",
+    "solution": "Validate redirect targets against an allowlist of known safe paths or origins. Prefer relative paths only; reject any URL with a host component.",
+    "why": "Browsers display the trusted domain in the initial link. If the redirect takes users to an attacker-controlled site, they may enter credentials believing they are still on the original site.",
+    "gotchas": [
+      "URL parsing is tricky—'//evil.com' is treated as a protocol-relative URL and redirects off-site",
+      "URL-encoded and Unicode variations of ':' and '/' can bypass naive string checks",
+      "Rejecting URLs that start with 'http' is not sufficient; check for any host component using the URL constructor",
+      "After login redirects, re-validate the next parameter server-side even if it was set in a hidden form field"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["open redirect", "redirect validation", "next parameter", "phishing", "url validation", "allowlist redirect"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Safe redirect validation allowing only relative paths",
+        "code": "function isSafeRedirect(url) {\n  if (!url || typeof url !== 'string') return false;\n  // Reject anything with a host component\n  try {\n    const parsed = new URL(url, 'http://localhost');\n    // If the parsed host differs from our placeholder, it has an explicit host\n    if (parsed.host !== 'localhost') return false;\n  } catch {\n    return false;\n  }\n  // Only allow relative paths starting with /\n  return url.startsWith('/') && !url.startsWith('//');\n}\n\napp.get('/login', (req, res) => {\n  const next = req.query.next;\n  const target = isSafeRedirect(next) ? next : '/dashboard';\n  res.redirect(302, target);\n});"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "SSRF Prevention: Validate and Block Internal Network Requests",
+    "category": "pattern",
+    "tags": ["ssrf", "security", "http", "internal-network"],
+    "problem": "Server-Side Request Forgery allows attackers to make the server issue HTTP requests to internal services (metadata APIs, databases, admin panels) by supplying crafted URLs.",
+    "solution": "Resolve the target hostname to an IP before fetching. Block private IP ranges (10.x, 172.16-31.x, 192.168.x, 127.x, 169.254.x) and cloud metadata endpoints.",
+    "why": "The server has network access to internal services that external clients cannot reach. SSRF proxies the attacker's requests through the server's internal network context.",
+    "gotchas": [
+      "DNS rebinding can bypass IP checks if you resolve the hostname once and then fetch—resolve again just before connecting",
+      "IPv6 private ranges (::1, fc00::/7) must also be blocked",
+      "Cloud metadata endpoints (169.254.169.254 for AWS/GCP, 100.100.100.200 for Alibaba) are SSRF primary targets",
+      "URL redirects in the fetched resource can redirect to internal addresses—disable follow-redirects or re-validate after each redirect"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["ssrf", "server side request forgery", "metadata endpoint", "internal network", "dns rebinding", "ip allowlist"],
+    "severity": "critical",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "SSRF mitigation by resolving and blocking private IPs",
+        "code": "const dns = require('dns').promises;\nconst ipRangeCheck = require('ip-range-check'); // npm package\n\nconst BLOCKED_RANGES = [\n  '127.0.0.0/8', '10.0.0.0/8', '172.16.0.0/12',\n  '192.168.0.0/16', '169.254.0.0/16', '::1/128'\n];\n\nasync function safeFetch(url) {\n  const parsed = new URL(url);\n  if (!['http:', 'https:'].includes(parsed.protocol)) {\n    throw new Error('Only HTTP/HTTPS allowed');\n  }\n  const addresses = await dns.resolve4(parsed.hostname);\n  for (const addr of addresses) {\n    if (ipRangeCheck(addr, BLOCKED_RANGES)) {\n      throw new Error('Requests to internal addresses are blocked');\n    }\n  }\n  // Proceed with the fetch\n  return fetch(url, { redirect: 'error' });\n}"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Secrets in Environment Variables: Never Hard-Code",
+    "category": "principle",
+    "tags": ["secrets", "environment-variables", "security", "config"],
+    "problem": "Hard-coded secrets (API keys, database passwords, JWT secrets) committed to version control are permanently exposed—even after deletion, they remain in git history.",
+    "solution": "Load all secrets from environment variables or a secrets manager (AWS Secrets Manager, HashiCorp Vault, Doppler). Use dotenv for local development only, and add .env to .gitignore.",
+    "why": "Environment variables are injected at runtime and never appear in source code. If a repository is ever made public or accessed by an unauthorised party, no secrets are exposed.",
+    "gotchas": [
+      "dotenv .env files can still be committed by accident—add a pre-commit hook to detect them",
+      "Process environment variables are visible to all processes on the same host—use a secrets manager for highly sensitive values",
+      "Logging req.env or process.env in error handlers can expose secrets in logs",
+      "Build-time environment variables baked into client-side bundles (e.g., NEXT_PUBLIC_*) are public—never put secrets there"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["secrets", "environment variables", "dotenv", "api key", "hard-coded", "git history", "secrets manager"],
+    "severity": "critical",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Validate required secrets at startup",
+        "code": "// config.js — fail fast if secrets are missing\nconst required = ['DATABASE_URL', 'JWT_SECRET', 'STRIPE_SECRET_KEY'];\n\nfor (const key of required) {\n  if (!process.env[key]) {\n    throw new Error(`Missing required environment variable: ${key}`);\n  }\n}\n\nmodule.exports = {\n  databaseUrl: process.env.DATABASE_URL,\n  jwtSecret: process.env.JWT_SECRET,\n  stripeKey: process.env.STRIPE_SECRET_KEY\n};\n\n// .gitignore\n// .env\n// .env.local\n// .env.*.local"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "API Key Rotation Without Downtime",
+    "category": "pattern",
+    "tags": ["api-key", "rotation", "security", "zero-downtime"],
+    "problem": "API keys exposed in breaches or accidental commits must be rotated immediately, but rotating a single key causes downtime for all clients using the old key.",
+    "solution": "Support multiple valid API keys simultaneously during a transition window. Store keys as hashed values in the database. Issue a new key, mark the old as deprecated, then revoke it after clients have migrated.",
+    "why": "A rotation grace period allows clients to update their configuration without service interruption. Hashing stored keys means a database breach does not expose the keys themselves.",
+    "gotchas": [
+      "Never log full API keys—log only the last 4 characters or a hash for debugging",
+      "Prefix keys with a service identifier (e.g., 'sk_live_') to make them detectable by secret scanning tools like GitGuardian",
+      "Set an expiry date on all keys and build key expiry notifications before forced rotation is needed",
+      "Invalidate keys immediately on security incidents—do not wait for the grace period"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["401 Unauthorized: Invalid API key"],
+    "keywords": ["api key", "rotation", "key management", "hashing", "zero downtime", "revocation", "secret scanning"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Hashed API key storage and validation",
+        "code": "const crypto = require('crypto');\n\nfunction hashApiKey(key) {\n  return crypto.createHash('sha256').update(key).digest('hex');\n}\n\nfunction generateApiKey() {\n  const raw = 'sk_' + crypto.randomBytes(32).toString('base64url');\n  const hashed = hashApiKey(raw);\n  return { raw, hashed }; // store hashed, return raw to user once\n}\n\nasync function validateApiKey(providedKey) {\n  const hashed = hashApiKey(providedKey);\n  const record = await db.apiKey.findUnique({\n    where: { hash: hashed },\n    include: { owner: true }\n  });\n  if (!record || record.revokedAt) return null;\n  await db.apiKey.update({ where: { id: record.id }, data: { lastUsedAt: new Date() } });\n  return record.owner;\n}"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "SameSite Cookie Attribute for CSRF Defence",
+    "category": "pattern",
+    "tags": ["samesite", "cookie", "csrf", "security"],
+    "problem": "Cookies without a SameSite attribute are sent on cross-site requests by default (legacy Lax in modern browsers), enabling CSRF attacks and cross-site information leaks.",
+    "solution": "Set SameSite=Strict on session cookies when cross-site navigation does not need to preserve the session. Use SameSite=Lax for apps where top-level navigations need the cookie.",
+    "why": "SameSite=Strict tells the browser to never send the cookie with requests initiated from other origins, eliminating CSRF without needing a token for most scenarios.",
+    "gotchas": [
+      "SameSite=Strict causes the cookie to be dropped on the first navigation from an external link—users clicking email links will appear logged out",
+      "SameSite does not protect against same-site subdomain attacks—a compromise of one subdomain can still set cookies for the parent domain",
+      "Older browsers ignore SameSite and fall back to SameSite=None—still implement CSRF tokens for defence in depth",
+      "SameSite=None requires Secure=true; without HTTPS, the browser will reject the cookie"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["samesite", "cookie", "csrf", "cross-site", "strict", "lax", "none", "session cookie"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Setting secure session cookie with SameSite",
+        "code": "app.use(session({\n  secret: process.env.SESSION_SECRET,\n  resave: false,\n  saveUninitialized: false,\n  cookie: {\n    httpOnly: true,\n    secure: process.env.NODE_ENV === 'production',\n    sameSite: 'strict',\n    maxAge: 30 * 60 * 1000  // 30 minutes\n  },\n  store: new RedisStore({ client: redisClient })\n}));"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Clickjacking Prevention with X-Frame-Options and CSP",
+    "category": "pattern",
+    "tags": ["clickjacking", "x-frame-options", "csp", "security", "headers"],
+    "problem": "Attackers can embed your site in an invisible iframe on their page, tricking users into clicking UI elements they cannot see, triggering actions on your site under the user's session.",
+    "solution": "Set X-Frame-Options: DENY and Content-Security-Policy: frame-ancestors 'none' via helmet. Use frame-ancestors 'self' only if you legitimately embed your own pages.",
+    "why": "X-Frame-Options is widely supported. The CSP frame-ancestors directive supersedes it in modern browsers and is more flexible. Together they prevent any page from framing your content.",
+    "gotchas": [
+      "X-Frame-Options: SAMEORIGIN allows framing from the same origin—only use this if you actually need it",
+      "CSP frame-ancestors is more granular—you can allow specific trusted origins while blocking all others",
+      "Chrome and Firefox respect CSP frame-ancestors; IE uses X-Frame-Options—include both for full coverage",
+      "Using frame-ancestors in a meta tag has no effect—it must be an HTTP header"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["Refused to display in a frame because an ancestor violates the following Content Security Policy directive"],
+    "keywords": ["clickjacking", "x-frame-options", "frame-ancestors", "csp", "iframe", "ui redressing", "helmet"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Setting anti-clickjacking headers with helmet",
+        "code": "const helmet = require('helmet');\n\napp.use(helmet.frameguard({ action: 'deny' }));\n// Also set via CSP frame-ancestors for modern browsers\napp.use(helmet.contentSecurityPolicy({\n  directives: {\n    frameAncestors: [\"'none'\"]\n  }\n}));"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "HSTS Header to Enforce HTTPS",
+    "category": "pattern",
+    "tags": ["hsts", "https", "security", "headers", "ssl"],
+    "problem": "Without HSTS, users who initially visit via HTTP can be intercepted (SSL stripping) before the server redirects them to HTTPS, exposing credentials and session tokens.",
+    "solution": "Set Strict-Transport-Security with a long max-age (at least one year), and include subdomains. Submit to the HSTS preload list for maximum protection.",
+    "why": "HSTS instructs browsers to never connect via HTTP for the specified duration. After the first secure visit, all subsequent requests go directly to HTTPS—even before the server can redirect.",
+    "gotchas": [
+      "Start with a short max-age (e.g., 300 seconds) when first deploying to avoid locking yourself out if HTTPS breaks",
+      "includeSubDomains covers all subdomains—ensure every subdomain has a valid certificate before enabling",
+      "HSTS preloading is irreversible in the short term—submit only when you are committed to HTTPS forever",
+      "HSTS only protects after the first visit; the very first HTTP request is still vulnerable—use preloading to close this gap"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["hsts", "strict transport security", "https enforcement", "ssl stripping", "preload", "max-age"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "HSTS header via helmet",
+        "code": "const helmet = require('helmet');\n\n// Production: one year, include subdomains, preload-ready\napp.use(helmet.hsts({\n  maxAge: 31536000,          // 1 year in seconds\n  includeSubDomains: true,\n  preload: true              // opt into HSTS preload list\n}));\n\n// Also redirect HTTP to HTTPS at the app level\napp.use((req, res, next) => {\n  if (req.headers['x-forwarded-proto'] !== 'https') {\n    return res.redirect(301, `https://${req.headers.host}${req.url}`);\n  }\n  next();\n});"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Password Hashing Timing Attacks and Safe Comparison",
+    "category": "gotcha",
+    "tags": ["timing-attack", "password", "comparison", "crypto", "security"],
+    "problem": "Using a regular string equality check (===) to compare password hashes leaks timing information. An attacker can measure response times to learn how many characters of a hash match.",
+    "solution": "Use crypto.timingSafeEqual() for any security-sensitive comparison. For passwords specifically, always use the hashing library's built-in verify function which handles this.",
+    "why": "Standard equality checks short-circuit at the first mismatched character. crypto.timingSafeEqual always takes the same time regardless of where the inputs differ, eliminating the timing signal.",
+    "gotchas": [
+      "crypto.timingSafeEqual requires both buffers to be the same length—pre-check or pad, otherwise it throws",
+      "Even with safe comparison, hash the provided value first before comparing—otherwise you are comparing a plaintext to a hash",
+      "HMAC-based comparison is also safe because HMAC operations take constant time for the same input length",
+      "Timing attacks require many samples to be practical—they are still a real threat for APIs that can be queried rapidly"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["timing attack", "timing safe equal", "constant time comparison", "crypto", "password comparison", "side channel"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Constant-time token comparison using crypto.timingSafeEqual",
+        "code": "const crypto = require('crypto');\n\nfunction safeCompare(a, b) {\n  // Ensure same length to prevent length-based timing leaks\n  const bufA = Buffer.from(a, 'utf8');\n  const bufB = Buffer.from(b, 'utf8');\n  if (bufA.length !== bufB.length) {\n    // Compare anyway to prevent short-circuit—but still return false\n    crypto.timingSafeEqual(bufA, Buffer.alloc(bufA.length));\n    return false;\n  }\n  return crypto.timingSafeEqual(bufA, bufB);\n}\n\n// For passwords, prefer argon2.verify() which handles this internally\n// For API tokens and HMAC signatures, use safeCompare"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "OAuth2 PKCE Flow for Public Clients",
+    "category": "pattern",
+    "tags": ["oauth2", "pkce", "security", "authorization"],
+    "problem": "SPAs and mobile apps cannot store a client secret securely. Without PKCE, the authorization code can be intercepted by a malicious app or browser extension and exchanged for tokens.",
+    "solution": "Implement PKCE (Proof Key for Code Exchange). Generate a code_verifier, hash it to produce a code_challenge, send the challenge in the authorization request, and send the verifier in the token request.",
+    "why": "The authorization server links the code to the code_challenge. Even if an attacker intercepts the authorization code, they cannot exchange it without knowing the original code_verifier.",
+    "gotchas": [
+      "Use S256 challenge method, not plain—plain provides no security benefit",
+      "The code_verifier must be cryptographically random, at least 43 characters",
+      "Store the code_verifier in sessionStorage (not localStorage) so it is cleared when the tab closes",
+      "PKCE does not replace client authentication for confidential clients—only for public clients without a secret"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["invalid_grant: code verifier mismatch"],
+    "keywords": ["oauth2", "pkce", "code verifier", "code challenge", "authorization code", "spa", "public client"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "PKCE code_verifier and code_challenge generation in a SPA",
+        "code": "async function generatePKCE() {\n  const verifier = crypto.getRandomValues(new Uint8Array(32));\n  const verifierB64 = btoa(String.fromCharCode(...verifier))\n    .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=/g, '');\n\n  const encoder = new TextEncoder();\n  const data = encoder.encode(verifierB64);\n  const digest = await crypto.subtle.digest('SHA-256', data);\n  const challenge = btoa(String.fromCharCode(...new Uint8Array(digest)))\n    .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=/g, '');\n\n  sessionStorage.setItem('pkce_verifier', verifierB64);\n  return { verifier: verifierB64, challenge };\n}\n\n// Include challenge in authorization URL\n// &code_challenge=<challenge>&code_challenge_method=S256"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Webhook Signature Verification",
+    "category": "pattern",
+    "tags": ["webhook", "hmac", "signature", "security", "verification"],
+    "problem": "Webhook endpoints that accept payloads without signature verification can be spoofed—any attacker knowing the endpoint URL can send fake events to trigger business logic.",
+    "solution": "Compute an HMAC-SHA256 signature over the raw request body using the shared webhook secret. Compare it with the signature in the request header using a constant-time comparison.",
+    "why": "HMAC signatures prove the payload came from the party holding the shared secret. The raw body must be used—parsing JSON first changes whitespace and key ordering, invalidating the signature.",
+    "gotchas": [
+      "Use the raw body buffer for signature computation—body parsers modify the payload",
+      "Add a timestamp to the payload and reject webhooks older than 5 minutes to prevent replay attacks",
+      "Stripe and GitHub use slightly different signature formats—read the provider's specific documentation",
+      "Store the webhook secret in an environment variable, not in code"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["Webhook signature verification failed"],
+    "keywords": ["webhook", "hmac", "sha256", "signature", "verification", "replay attack", "stripe webhook"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Webhook signature verification with HMAC-SHA256",
+        "code": "const crypto = require('crypto');\n\napp.post('/webhooks/payment', express.raw({ type: 'application/json' }), (req, res) => {\n  const signature = req.headers['x-webhook-signature'];\n  const timestamp = req.headers['x-webhook-timestamp'];\n\n  // Reject stale webhooks (replay protection)\n  const age = Date.now() - Number(timestamp);\n  if (age > 5 * 60 * 1000) {\n    return res.status(400).json({ error: 'Webhook too old' });\n  }\n\n  // Compute expected signature over timestamp + raw body\n  const payload = `${timestamp}.${req.body.toString()}`;\n  const expected = crypto\n    .createHmac('sha256', process.env.WEBHOOK_SECRET)\n    .update(payload)\n    .digest('hex');\n\n  const sigBuffer = Buffer.from(signature, 'hex');\n  const expBuffer = Buffer.from(expected, 'hex');\n\n  if (sigBuffer.length !== expBuffer.length || !crypto.timingSafeEqual(sigBuffer, expBuffer)) {\n    return res.status(401).json({ error: 'Invalid signature' });\n  }\n\n  // Safe to process\n  const event = JSON.parse(req.body);\n  processWebhookEvent(event);\n  res.sendStatus(200);\n});"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "File Upload Validation: Type, Size, and Content",
+    "category": "pattern",
+    "tags": ["file-upload", "validation", "security", "mime-type", "multer"],
+    "problem": "Accepting file uploads without validation allows attackers to upload server-executable files, oversized files for DoS, or files with malicious content masquerading as safe types.",
+    "solution": "Validate MIME type from file content (magic bytes), not from the client-supplied Content-Type. Enforce file size limits. Store uploads outside the web root and serve via a controller, not directly.",
+    "why": "The Content-Type header and file extension are both attacker-controlled. Inspecting the first bytes of the file (magic bytes) reveals its actual type regardless of the declared type.",
+    "gotchas": [
+      "Multer's fileFilter only checks the MIME type declared by the client—use the file-type npm package to verify from content",
+      "Rename all uploaded files to random UUIDs to prevent directory traversal via crafted filenames",
+      "Never serve uploaded files from the same origin as your app—use a separate domain or a CDN to isolate execution context",
+      "Scan uploaded files with ClamAV or a cloud malware scanner before making them available to other users",
+      "Set Zip bomb limits—a tiny ZIP can expand to gigabytes"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["file upload", "mime type", "magic bytes", "file-type", "multer", "content validation", "malware upload"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Validating uploaded file type from magic bytes using file-type",
+        "code": "const multer = require('multer');\nconst { fileTypeFromBuffer } = require('file-type');\nconst { v4: uuidv4 } = require('uuid');\n\nconst ALLOWED_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'application/pdf']);\n\nconst upload = multer({\n  storage: multer.memoryStorage(),\n  limits: { fileSize: 5 * 1024 * 1024 } // 5 MB\n});\n\napp.post('/upload', upload.single('file'), async (req, res) => {\n  if (!req.file) return res.status(400).json({ error: 'No file provided' });\n\n  // Validate from content, not client-declared type\n  const detected = await fileTypeFromBuffer(req.file.buffer);\n  if (!detected || !ALLOWED_TYPES.has(detected.mime)) {\n    return res.status(400).json({ error: 'File type not allowed' });\n  }\n\n  const filename = `${uuidv4()}.${detected.ext}`;\n  await saveToStorage(req.file.buffer, filename);\n  res.json({ filename });\n});"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Session Fixation Prevention on Login",
+    "category": "gotcha",
+    "tags": ["session-fixation", "session", "security", "authentication"],
+    "problem": "If a session ID is not regenerated after login, an attacker who set the victim's session ID before login (e.g., via a link) will share the authenticated session after the victim logs in.",
+    "solution": "Always call session.regenerate() immediately after successful authentication. This issues a new session ID while preserving session data.",
+    "why": "Session fixation works when the session ID is the same before and after login. Regenerating the session ID at login invalidates any pre-set session the attacker may have planted.",
+    "gotchas": [
+      "express-session's regenerate() is asynchronous—await it or use a callback to ensure it completes before sending the response",
+      "Also regenerate the session on privilege escalation (e.g., when sudo-ing to admin mode)",
+      "Regenerate on logout as well to prevent session re-use after logout",
+      "Some load balancers use sticky sessions based on session ID—regeneration may break affinity; use a centralised session store instead"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["session fixation", "session regenerate", "session id", "login security", "express-session", "authentication"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Regenerating session ID after successful login",
+        "code": "app.post('/login', async (req, res) => {\n  const user = await authenticate(req.body.email, req.body.password);\n  if (!user) return res.status(401).json({ error: 'Invalid credentials' });\n\n  // Preserve data before regeneration\n  const userData = { id: user.id, role: user.role };\n\n  // Regenerate session ID to prevent fixation\n  req.session.regenerate((err) => {\n    if (err) return res.status(500).json({ error: 'Session error' });\n    req.session.user = userData;\n    req.session.save((saveErr) => {\n      if (saveErr) return res.status(500).json({ error: 'Session save error' });\n      res.json({ message: 'Logged in', user: userData });\n    });\n  });\n});"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Privilege Escalation Prevention with Role Checks",
+    "category": "pattern",
+    "tags": ["privilege-escalation", "authorization", "rbac", "security", "middleware"],
+    "problem": "Missing or incorrectly placed authorization checks allow regular users to access admin endpoints, or users to modify other users' resources by guessing or enumerating IDs.",
+    "solution": "Apply role and ownership checks as middleware on every protected route. Never trust user-supplied IDs to determine ownership—always verify against the authenticated user's session.",
+    "why": "Authorisation must be enforced server-side on every request. Client-side hiding of admin features is not a security control—attackers directly call API endpoints.",
+    "gotchas": [
+      "Horizontal privilege escalation (accessing another user's data with the same role) is as common as vertical escalation—always scope queries to the authenticated user",
+      "Insecure Direct Object Reference (IDOR) happens when object IDs are sequential integers—use UUIDs to make them non-guessable, but still enforce ownership checks",
+      "Admin-only routes should be on a separate router with middleware applied at the router level, not per-route",
+      "Audit logs for privilege changes and admin actions are essential for detecting escalation after the fact"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["403 Forbidden"],
+    "keywords": ["privilege escalation", "rbac", "idor", "authorization", "role check", "ownership", "middleware"],
+    "severity": "critical",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Role and ownership middleware",
+        "code": "function requireRole(...roles) {\n  return (req, res, next) => {\n    if (!req.session.user) return res.sendStatus(401);\n    if (!roles.includes(req.session.user.role)) return res.sendStatus(403);\n    next();\n  };\n}\n\nfunction requireOwnership(getOwnerId) {\n  return async (req, res, next) => {\n    const ownerId = await getOwnerId(req);\n    if (ownerId !== req.session.user.id) return res.sendStatus(403);\n    next();\n  };\n}\n\n// Usage\nconst adminRouter = express.Router();\nadminRouter.use(requireRole('admin'));\nadminRouter.get('/users', listAllUsers);\n\napp.delete(\n  '/posts/:id',\n  requireRole('user', 'admin'),\n  requireOwnership(async (req) => {\n    const post = await db.post.findUnique({ where: { id: req.params.id } });\n    return post?.authorId;\n  }),\n  deletePost\n);"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Dependency Audit in CI with npm audit",
+    "category": "pattern",
+    "tags": ["dependency", "audit", "npm", "security", "ci"],
+    "problem": "Third-party npm packages can contain known vulnerabilities or be silently compromised via supply chain attacks. Without regular auditing, vulnerable dependencies go undetected.",
+    "solution": "Run npm audit --audit-level=high in CI pipelines to fail builds on high/critical vulnerabilities. Use Dependabot or Renovate to automate dependency update PRs.",
+    "why": "Automated auditing catches known CVEs in dependencies before they reach production. Automated updates reduce the window between vulnerability disclosure and patching.",
+    "gotchas": [
+      "npm audit only detects vulnerabilities with published CVEs—novel supply chain attacks are not detected this way",
+      "Lock files (package-lock.json) are essential for reproducible installs—commit them and validate their integrity in CI",
+      "audit-level=moderate can produce too many false positives from dev-only packages—scope to production dependencies with --omit=dev",
+      "Verify the integrity of published packages with npm pack and review the file list before installing unfamiliar packages"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["found N vulnerabilities (X high, Y critical)"],
+    "keywords": ["npm audit", "dependency vulnerability", "cve", "supply chain", "dependabot", "renovate", "ci security"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "yaml",
+        "description": "GitHub Actions step running npm audit",
+        "code": "- name: Security audit\n  run: npm audit --audit-level=high --omit=dev\n\n# Also add to package.json scripts:\n# \"scripts\": {\n#   \"audit:ci\": \"npm audit --audit-level=high --omit=dev\"\n# }"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Subresource Integrity for CDN Scripts",
+    "category": "pattern",
+    "tags": ["sri", "subresource-integrity", "cdn", "security", "headers"],
+    "problem": "Scripts loaded from a CDN can be silently modified by the CDN or an intermediary, injecting malicious code into every page that loads the script.",
+    "solution": "Add the integrity attribute to script and link tags with the SRI hash of the expected file content. The browser rejects the resource if the hash does not match.",
+    "why": "Subresource Integrity allows browsers to verify that a fetched resource has not been tampered with. The hash binds the script to a specific immutable version.",
+    "gotchas": [
+      "SRI hashes must be regenerated whenever the CDN resource version changes—pin both the version in the URL and the hash together",
+      "The resource must be served with CORS headers (Access-Control-Allow-Origin: *) for SRI verification to work with cross-origin resources",
+      "Generate SRI hashes using 'openssl dgst -sha384 -binary file.js | openssl base64 -A' or the srihash.com tool",
+      "SRI only protects integrity, not availability—if the CDN goes down, your page loses the resource"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["Failed to find a valid digest in the 'integrity' attribute"],
+    "keywords": ["subresource integrity", "sri", "cdn", "integrity hash", "sha384", "script integrity", "supply chain"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "html",
+        "description": "Script tag with SRI integrity attribute",
+        "code": "<script\n  src=\"https://cdn.example.com/libs/lodash@4.17.21/lodash.min.js\"\n  integrity=\"sha384-T2yuo9Oe7c3GZ0BHB2uRTFAqDQFuQq3Pn3xQ3A5kJj3ZQ9f3Yy3m8W6n0I7d+A\"\n  crossorigin=\"anonymous\"\n  referrerpolicy=\"no-referrer\"\n></script>"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "CORS Preflight Handling and Caching",
+    "category": "pattern",
+    "tags": ["cors", "preflight", "options", "security", "performance"],
+    "problem": "OPTIONS preflight requests are sent by browsers before any non-simple cross-origin request. Mishandling them causes CORS failures or unnecessarily exposes allowed methods.",
+    "solution": "Handle OPTIONS requests explicitly, return the correct CORS headers, and set Access-Control-Max-Age to cache preflight results and reduce preflight traffic.",
+    "why": "Browsers require a successful preflight before sending the actual request. Caching preflight responses reduces round-trips. Only advertising methods you actually support reduces attack surface.",
+    "gotchas": [
+      "Do not reflect back every method from the request—only advertise methods your endpoint actually supports",
+      "Access-Control-Max-Age is capped at 86400 seconds (24 hours) in Chrome and 600 seconds in Firefox",
+      "Preflight requests do not include cookies—do not reject them for missing auth headers; only validate auth on the actual request",
+      "A missing or incorrect Content-Type on the actual POST request can trigger a preflight that would not otherwise occur"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["Response to preflight request doesn't pass access control check"],
+    "keywords": ["cors", "preflight", "options", "access-control-max-age", "cors caching", "http options", "cross-origin"],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Handling CORS preflight with max-age caching",
+        "code": "app.options('*', (req, res) => {\n  const origin = req.headers.origin;\n  if (allowedOrigins.has(origin)) {\n    res.setHeader('Access-Control-Allow-Origin', origin);\n    res.setHeader('Vary', 'Origin');\n    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,PATCH');\n    res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-CSRF-Token');\n    res.setHeader('Access-Control-Allow-Credentials', 'true');\n    res.setHeader('Access-Control-Max-Age', '600'); // cache for 10 minutes\n  }\n  res.sendStatus(204);\n});"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Origin Validation for WebSocket Connections",
+    "category": "gotcha",
+    "tags": ["websocket", "origin", "security", "csrf"],
+    "problem": "WebSocket connections are not subject to CORS and browsers automatically send cookies with them. Any page can open a WebSocket to your server, enabling cross-site WebSocket hijacking.",
+    "solution": "Validate the Origin header server-side during the WebSocket handshake. Reject connections from origins not in your allowlist.",
+    "why": "WebSocket upgrade requests include the Origin header which is set by the browser and cannot be forged by JavaScript on a different origin. Checking it server-side blocks cross-site connections.",
+    "gotchas": [
+      "Native WebSocket connections from server environments do not send an Origin header—your validation should also handle the missing-Origin case appropriately (allow from server, block from unknown browser origins)",
+      "CSRF tokens can also be passed in the connection URL or first message as an additional layer",
+      "Socket.io's built-in CORS configuration should be treated the same as REST API CORS—use an explicit allowlist"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["WebSocket connection failed: Error in connection establishment"],
+    "keywords": ["websocket", "origin validation", "cross-site websocket hijacking", "cswsh", "ws", "socket.io", "handshake"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "WebSocket origin validation with the ws library",
+        "code": "const { WebSocketServer } = require('ws');\n\nconst ALLOWED_ORIGINS = new Set(['https://app.example.com']);\n\nconst wss = new WebSocketServer({\n  port: 8080,\n  verifyClient: ({ origin }, callback) => {\n    if (!origin || !ALLOWED_ORIGINS.has(origin)) {\n      callback(false, 403, 'Forbidden');\n    } else {\n      callback(true);\n    }\n  }\n});\n\nwss.on('connection', (ws) => {\n  ws.on('message', (data) => {\n    // Handle messages from verified origin\n  });\n});"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Secure Cookie Attributes: httpOnly, Secure, Path, Domain",
+    "category": "pattern",
+    "tags": ["cookie", "security", "httponly", "secure", "attributes"],
+    "problem": "Cookies without proper attributes leak session tokens to JavaScript, get sent over HTTP, or are scoped too broadly, allowing subdomain or path-based attacks.",
+    "solution": "Always set httpOnly, Secure, and SameSite on session cookies. Scope the Path and Domain attributes as narrowly as possible.",
+    "why": "Each attribute removes a different attack vector: httpOnly blocks JavaScript access, Secure prevents HTTP transmission, SameSite blocks CSRF, and narrow Path/Domain reduces the cookie's exposure surface.",
+    "gotchas": [
+      "Setting Domain=.example.com shares the cookie with all subdomains—a compromised subdomain can steal your session cookie",
+      "Omitting the Domain attribute scopes the cookie to the exact origin—this is safer for most applications",
+      "Secure cookies in localhost development require either http-only exceptions or a local HTTPS setup like mkcert",
+      "Cookie prefixes __Host- and __Secure- enforce Secure and specific Path/Domain constraints at the browser level"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["cookie", "httponly", "secure", "samesite", "cookie prefix", "session security", "__host-", "__secure-"],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Setting a maximally secure session cookie",
+        "code": "// Using __Host- prefix for strongest security guarantees\n// Requires: Secure flag, no Domain, Path=/\nres.setHeader('Set-Cookie', [\n  `__Host-session=${token}; Secure; HttpOnly; SameSite=Strict; Path=/`\n]);\n\n// Or via express res.cookie:\nres.cookie('__Host-session', token, {\n  httpOnly: true,\n  secure: true,\n  sameSite: 'strict',\n  path: '/'  // required for __Host- prefix\n  // No domain — scoped to exact origin\n});"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Content-Type Sniffing Prevention with X-Content-Type-Options",
+    "category": "pattern",
+    "tags": ["mime-sniffing", "x-content-type-options", "security", "headers"],
+    "problem": "Some browsers try to detect resource types by examining content rather than trusting the server's Content-Type header. Attackers can exploit this to load a file with a safe extension as an executable script.",
+    "solution": "Set the X-Content-Type-Options: nosniff header on all responses. This instructs browsers to honour the declared Content-Type and not guess from content.",
+    "why": "Without nosniff, a browser might execute a JavaScript file uploaded with a .jpg extension if the content looks like a script. nosniff eliminates this class of MIME confusion attacks.",
+    "gotchas": [
+      "nosniff also affects CSS and script loading—the browser will refuse to load stylesheets served without text/css and scripts without a JavaScript MIME type",
+      "This header is particularly important on file-serving endpoints where users can upload content",
+      "helmet sets this header by default via helmet.noSniff()"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": ["Resource interpreted as Script but transferred with MIME type text/plain"],
+    "keywords": ["mime sniffing", "x-content-type-options", "nosniff", "content type", "mime confusion", "helmet", "file upload security"],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Setting X-Content-Type-Options via helmet",
+        "code": "const helmet = require('helmet');\n\n// Included in helmet() default setup\napp.use(helmet());\n\n// Or explicitly:\napp.use(helmet.noSniff());\n// Adds: X-Content-Type-Options: nosniff\n\n// Also ensure correct content types on file responses\napp.get('/uploads/:file', (req, res) => {\n  // Set explicit MIME type rather than letting it be guessed\n  res.type('image/jpeg');\n  res.sendFile(resolvedPath);\n});"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Output Encoding for Safe Rendering in Templates",
+    "category": "principle",
+    "tags": ["output-encoding", "xss", "template", "escaping", "security"],
+    "problem": "Rendering user-supplied data in HTML without encoding allows stored and reflected cross-site scripting. Browsers interpret unescaped user content as executable markup.",
+    "solution": "Use framework-provided auto-escaping in templates. In React, render user data as text content via JSX expressions—the framework HTML-encodes values automatically. For server-side templates, ensure auto-escaping is enabled.",
+    "why": "Auto-escaping converts characters like angle brackets, quotes, and ampersands into their HTML entity equivalents. Browsers display these as text rather than parsing them as markup or script.",
+    "gotchas": [
+      "Bypassing framework escaping (via methods that set raw HTML) re-introduces XSS—avoid these methods with user-supplied data",
+      "Encoding context matters: HTML encoding is not sufficient inside JavaScript string contexts or URL attributes—use the correct encoding function for each context",
+      "User-supplied URLs in href attributes must be validated to reject javascript: URIs even after HTML encoding",
+      "Rich text editors produce HTML output—sanitize it with a library like DOMPurify before storing or rendering, and use an allowlist of safe tags and attributes"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["output encoding", "escaping", "xss prevention", "auto-escape", "template", "dompurify", "sanitization"],
+    "severity": "critical",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Safe rendering in React JSX and rich text sanitization",
+        "code": "import DOMPurify from 'dompurify';\n\n// Safe: JSX auto-encodes user data as text\nfunction UserProfile({ user }) {\n  return (\n    <div>\n      <h1>{user.name}</h1>           {/* auto-encoded */}\n      <p>{user.bio}</p>              {/* auto-encoded */}\n    </div>\n  );\n}\n\n// For rich text from a WYSIWYG editor — sanitize before rendering\nfunction RichContent({ htmlContent }) {\n  const clean = DOMPurify.sanitize(htmlContent, {\n    ALLOWED_TAGS: ['b', 'i', 'em', 'strong', 'p', 'br', 'ul', 'ol', 'li', 'a'],\n    ALLOWED_ATTR: ['href', 'title'],\n    FORBID_ATTR: ['style', 'onerror', 'onload']\n  });\n  return <div dangerouslySetInnerHTML={{ __html: clean }} />;\n}"
+      }
+    ],
+    "version_info": null
+  },
+  {
+    "title": "Certificate Transparency Monitoring",
+    "category": "principle",
+    "tags": ["certificate-transparency", "ssl", "tls", "monitoring", "security"],
+    "problem": "Certificate Authorities can mistakenly or maliciously issue SSL certificates for your domain, enabling man-in-the-middle attacks. You may not be notified when this happens.",
+    "solution": "Monitor Certificate Transparency logs for unexpected certificates issued for your domains. Use Expect-CT header to require CT compliance, and set up alerts via services like crt.sh or Facebook's CT monitoring.",
+    "why": "CT logs are public, append-only records of all issued certificates. Any certificate issued for your domain is logged, making unauthorised issuance detectable.",
+    "gotchas": [
+      "Expect-CT max-age of 0 in report-only mode is useful for testing; use a long max-age only when confident",
+      "CAA (Certification Authority Authorization) DNS records restrict which CAs can issue for your domain—add these as a preventative control",
+      "Expect-CT is deprecated in browsers as CT is now mandatory for trusted CAs—but it still provides reporting value",
+      "Pin your specific CA or intermediate certificate via CAA records rather than using HPKP, which is deprecated"
+    ],
+    "language": "javascript",
+    "framework": null,
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["certificate transparency", "ct logs", "expect-ct", "ssl monitoring", "crt.sh", "caa records", "mitm"],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "description": "Expect-CT header and CAA DNS record example",
+        "code": "// Expect-CT header (report-only first)\napp.use((req, res, next) => {\n  res.setHeader(\n    'Expect-CT',\n    'max-age=86400, enforce, report-uri=\"https://your-ct-report-endpoint.com\"'\n  );\n  next();\n});\n\n// DNS CAA records to restrict certificate issuance\n// Add to your DNS zone:\n// example.com. CAA 0 issue \"letsencrypt.org\"\n// example.com. CAA 0 issuewild \";\"\n// example.com. CAA 0 iodef \"mailto:security@example.com\""
+      }
+    ],
+    "version_info": null
+  }
+]

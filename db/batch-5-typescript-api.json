@@ -1,0 +1,2950 @@
+[
+  {
+    "title": "Discriminated Unions Require a Common Literal Tag Field",
+    "category": "pattern",
+    "tags": [
+      "typescript",
+      "discriminated-unions",
+      "type-narrowing"
+    ],
+    "problem": "Union types don't narrow correctly when the compiler can't distinguish members, leading to 'Property does not exist on type' errors when accessing variant-specific fields.",
+    "solution": "Add a shared literal-typed tag field ('kind', 'type', or '_tag') to each union member. TypeScript narrows the union automatically inside if/switch blocks.\n\n```typescript\ntype Shape =\n  | { kind: 'circle'; radius: number }\n  | { kind: 'rect'; width: number; height: number };\n\nfunction area(s: Shape): number {\n  switch (s.kind) {\n    case 'circle': return Math.PI * s.radius ** 2;\n    case 'rect':   return s.width * s.height;\n  }\n}\n```",
+    "why": "TypeScript's control-flow analysis tracks the narrowed type inside each branch. A literal discriminant gives the compiler a concrete equality check it can reason about.",
+    "gotchas": [
+      "The tag field must be a literal type (string, number, or boolean literal), not a broad 'string' type.",
+      "All union members must share the same tag field name for narrowing to work.",
+      "Exhaustiveness checking requires a 'never' default branch or 'satisfies never'."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "Property 'radius' does not exist on type 'Shape'",
+      "Property 'radius' does not exist on type 'Rect'"
+    ],
+    "keywords": [
+      "discriminated union",
+      "tagged union",
+      "type narrowing",
+      "switch narrowing",
+      "kind field"
+    ],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 2.0+"
+  },
+  {
+    "title": "Exhaustiveness Checking with never in Switch Statements",
+    "category": "pattern",
+    "tags": [
+      "typescript",
+      "exhaustiveness",
+      "never"
+    ],
+    "problem": "Adding a new variant to a discriminated union silently breaks switch statements that don't handle the new case, causing runtime bugs with no compile-time warning.",
+    "solution": "Add a default branch that assigns to 'never' and throws. TypeScript errors if any case leaks through.\n\n```typescript\nfunction assertNever(x: never): never {\n  throw new Error(`Unexpected value: ${JSON.stringify(x)}`);\n}\n\ntype Action = { type: 'INC' } | { type: 'DEC' } | { type: 'RESET' };\n\nfunction reducer(state: number, action: Action): number {\n  switch (action.type) {\n    case 'INC':   return state + 1;\n    case 'DEC':   return state - 1;\n    case 'RESET': return 0;\n    default:      return assertNever(action);\n  }\n}\n```",
+    "why": "When all union members are handled, the default branch receives 'never', which is assignable to anything. Adding a new member without handling it makes the default reachable, causing a type error.",
+    "gotchas": [
+      "Only works with discriminated unions \u2014 plain string unions need a different approach.",
+      "The assertNever pattern requires the switch to be exhaustive at compile time; a runtime throw is still needed for safety."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "Argument of type 'NewVariant' is not assignable to parameter of type 'never'"
+    ],
+    "keywords": [
+      "exhaustive check",
+      "never type",
+      "switch statement",
+      "union safety",
+      "assertNever"
+    ],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 2.0+"
+  },
+  {
+    "title": "const Assertions Freeze Literal Types",
+    "category": "pattern",
+    "tags": [
+      "typescript",
+      "const-assertion",
+      "literal-types"
+    ],
+    "problem": "Object literals and arrays infer wide types ('string', 'number[]') when you need the exact literal types preserved for discriminated unions or lookup tables.",
+    "solution": "Append 'as const' to freeze inference to the narrowest literal type.\n\n```typescript\n// Without as const\nconst config = { env: 'production', port: 3000 };\n// config.env: string, config.port: number\n\n// With as const\nconst config = { env: 'production', port: 3000 } as const;\n// config.env: 'production', config.port: 3000 (readonly too)\n\nconst DIRECTIONS = ['north', 'south', 'east', 'west'] as const;\ntype Direction = typeof DIRECTIONS[number]; // 'north' | 'south' | 'east' | 'west'\n```",
+    "why": "TypeScript normally widens literal types to their base types in mutable contexts. 'as const' marks the value as deeply readonly and keeps all inferred types as literals.",
+    "gotchas": [
+      "All properties become readonly \u2014 you cannot mutate the object after the assertion.",
+      "as const applies to the entire expression, not just part of it.",
+      "Cannot use as const on a type annotation; it applies to values only."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "as const",
+      "const assertion",
+      "literal type",
+      "readonly",
+      "type widening"
+    ],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 3.4+"
+  },
+  {
+    "title": "satisfies Operator: Validate Without Losing Inference",
+    "category": "pattern",
+    "tags": [
+      "typescript",
+      "satisfies",
+      "type-inference"
+    ],
+    "problem": "Using a type annotation on an object literal validates the shape but loses specific literal types. Using 'as Type' skips validation entirely. There was no middle ground.",
+    "solution": "Use the 'satisfies' operator to validate a value against a type while keeping the inferred literal types.\n\n```typescript\ntype Config = Record<string, string | number>;\n\n// BAD: annotation loses literal types\nconst cfg1: Config = { port: 3000, env: 'prod' };\ncfg1.port.toFixed(); // Error: 'string | number' has no 'toFixed'\n\n// GOOD: satisfies validates + keeps inferred types\nconst cfg2 = { port: 3000, env: 'prod' } satisfies Config;\ncfg2.port.toFixed(); // OK \u2014 TypeScript knows it's number\ncfg2.env.toUpperCase(); // OK \u2014 TypeScript knows it's string\n```",
+    "why": "Type annotations widen the inferred type to exactly the annotated type. 'satisfies' is a type-level assertion that checks compatibility but does not change the inferred type of the expression.",
+    "gotchas": [
+      "satisfies does not narrow the type of the variable \u2014 it only validates at the point of use.",
+      "If the value fails the satisfies check, you get a compile error, not a runtime error.",
+      "Available only in TypeScript 4.9+."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "Type '...' does not satisfy the expected type '...'"
+    ],
+    "keywords": [
+      "satisfies operator",
+      "type validation",
+      "inference preservation",
+      "TypeScript 4.9"
+    ],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 4.9+"
+  },
+  {
+    "title": "Template Literal Types for String Pattern Validation",
+    "category": "pattern",
+    "tags": [
+      "typescript",
+      "template-literal-types",
+      "string-types"
+    ],
+    "problem": "API routes, CSS classes, event names, and other string patterns need compile-time validation but 'string' is too broad and manual union types are tedious to maintain.",
+    "solution": "Use template literal types to encode string patterns in the type system.\n\n```typescript\ntype HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';\ntype Route = `/${string}`;\ntype Endpoint = `${HttpMethod} ${Route}`;\n\nfunction call(endpoint: Endpoint) { /* ... */ }\ncall('GET /users');    // OK\ncall('INVALID /path'); // Error\n\n// CSS utility pattern\ntype Side = 'top' | 'right' | 'bottom' | 'left';\ntype Margin = `m${Capitalize<Side>}`;\n// 'mTop' | 'mRight' | 'mBottom' | 'mLeft'\n\n// EventEmitter typed events\ntype EventName<T extends string> = `on${Capitalize<T>}`;\ntype ClickEvent = EventName<'click'>; // 'onClick'\n```",
+    "why": "Template literal types are evaluated at compile time by combining string literal unions. TypeScript generates the cross-product of all union members.",
+    "gotchas": [
+      "Deeply nested template literals with large unions can cause exponential type computation \u2014 keep unions small.",
+      "Intrinsic string manipulation types (Capitalize, Uppercase, etc.) only work on literal types, not broad 'string'.",
+      "Cannot encode complex regex-style patterns (e.g., optional segments or repetition)."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "template literal type",
+      "string pattern",
+      "Capitalize",
+      "Uppercase",
+      "Lowercase"
+    ],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 4.1+"
+  },
+  {
+    "title": "Mapped Types to Transform Object Shapes",
+    "category": "pattern",
+    "tags": [
+      "typescript",
+      "mapped-types",
+      "utility-types"
+    ],
+    "problem": "You need to derive a new type from an existing one (make all fields optional, readonly, or transform value types) without manually duplicating the interface.",
+    "solution": "Use mapped types with 'keyof' to iterate over a type's keys and transform them.\n\n```typescript\n// Make all properties nullable\ntype Nullable<T> = { [K in keyof T]: T[K] | null };\n\n// Make all properties async getters\ntype AsyncGetters<T> = {\n  [K in keyof T as `get${Capitalize<string & K>}`]: () => Promise<T[K]>;\n};\n\ninterface User { name: string; age: number; }\ntype AsyncUser = AsyncGetters<User>;\n// { getName: () => Promise<string>; getAge: () => Promise<number>; }\n\n// Filter keys by value type\ntype PickByValue<T, V> = {\n  [K in keyof T as T[K] extends V ? K : never]: T[K];\n};\ntype StringFields = PickByValue<User, string>; // { name: string }\n```",
+    "why": "Mapped types iterate over a union of keys (usually 'keyof T') and produce a new object type. Key remapping with 'as' enables filtering and renaming keys.",
+    "gotchas": [
+      "Key remapping ('as' clause) requires TypeScript 4.1+.",
+      "Mapped types always produce object types; they cannot create tuple types.",
+      "Homomorphic mapped types (using keyof T) preserve optional/readonly modifiers; non-homomorphic ones do not."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "mapped type",
+      "keyof",
+      "key remapping",
+      "utility type",
+      "object transformation"
+    ],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 2.1+ (key remapping 4.1+)"
+  },
+  {
+    "title": "Conditional Types and the infer Keyword",
+    "category": "pattern",
+    "tags": [
+      "typescript",
+      "conditional-types",
+      "infer"
+    ],
+    "problem": "You need to extract a type from inside another type (e.g., the resolved type of a Promise, the return type of a function) without hardcoding it.",
+    "solution": "Use 'infer' inside a conditional type to capture and name a type variable.\n\n```typescript\n// Extract Promise value type\ntype Awaited<T> = T extends Promise<infer V> ? V : T;\ntype R = Awaited<Promise<string>>; // string\n\n// Extract function parameters\ntype Params<T> = T extends (...args: infer P) => any ? P : never;\ntype P = Params<(a: string, b: number) => void>; // [string, number]\n\n// Extract array element type\ntype Element<T> = T extends (infer E)[] ? E : never;\ntype E = Element<User[]>; // User\n\n// Recursive unwrapping\ntype DeepAwaited<T> = T extends Promise<infer V>\n  ? DeepAwaited<V>\n  : T;\n```",
+    "why": "'infer' introduces a type variable scoped to the true branch of a conditional type. TypeScript pattern-matches against the extends clause and binds the inferred type to the variable.",
+    "gotchas": [
+      "'infer' can only appear in the extends clause of a conditional type, not elsewhere.",
+      "When the conditional is distributed over a union, 'infer' is resolved independently per union member.",
+      "Circular recursive conditional types require the 'extends' check to eventually reach a base case."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "'infer' declarations are only permitted in the 'extends' clause of a conditional type"
+    ],
+    "keywords": [
+      "infer",
+      "conditional type",
+      "type extraction",
+      "ReturnType",
+      "Parameters"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 2.8+"
+  },
+  {
+    "title": "Module Augmentation to Extend Third-Party Types",
+    "category": "pattern",
+    "tags": [
+      "typescript",
+      "module-augmentation",
+      "declaration-merging"
+    ],
+    "problem": "A third-party library's types are incomplete or missing properties (e.g., Express Request missing a 'user' field after authentication middleware).",
+    "solution": "Use module augmentation with 'declare module' to add fields to existing types without modifying node_modules.\n\n```typescript\n// src/types/express.d.ts\nimport { User } from '../models/user';\n\ndeclare global {\n  namespace Express {\n    interface Request {\n      user?: User;\n    }\n  }\n}\n\n// Or for a specific module:\ndeclare module 'some-library' {\n  interface Options {\n    customField: string;\n  }\n}\n\n// Now usable without type errors:\napp.get('/', (req, res) => {\n  console.log(req.user?.email); // OK\n});\n```",
+    "why": "TypeScript merges declarations from the same module across multiple files. 'declare module' reopens the module's namespace and adds to it.",
+    "gotchas": [
+      "The augmentation file must be a module (have at least one import/export) or use 'declare global'.",
+      "Augmentations only apply where the .d.ts file is included in the compilation (via tsconfig 'include' or triple-slash references).",
+      "Augmenting a module you don't import in the same file requires an empty 'export {}' to make it a module."
+    ],
+    "language": "typescript",
+    "framework": "express",
+    "environment": [],
+    "error_messages": [
+      "Property 'user' does not exist on type 'Request'"
+    ],
+    "keywords": [
+      "module augmentation",
+      "declaration merging",
+      "extend types",
+      "express request",
+      "ambient declaration"
+    ],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 1.8+"
+  },
+  {
+    "title": "Strict Null Checks: Eliminating null/undefined Runtime Errors",
+    "category": "gotcha",
+    "tags": [
+      "typescript",
+      "strict-null-checks",
+      "strictness"
+    ],
+    "problem": "Without 'strictNullChecks', TypeScript allows null and undefined everywhere, giving false confidence. Runtime 'Cannot read properties of null' errors occur despite the type check passing.",
+    "solution": "Enable 'strictNullChecks: true' (or 'strict: true') in tsconfig.json. Then handle null explicitly.\n\n```typescript\n// tsconfig.json\n{ \"compilerOptions\": { \"strict\": true } }\n\n// Before: no error, crashes at runtime\nfunction greet(name: string) { return name.toUpperCase(); }\ngreet(null); // Was fine before strict\n\n// After: compiler forces handling\nfunction greet(name: string | null): string {\n  if (name === null) return 'Hello, stranger';\n  return name.toUpperCase();\n}\n\n// Optional chaining for safe access\nconst len = user?.profile?.bio?.length ?? 0;\n```",
+    "why": "Without strictNullChecks, null and undefined are assignable to every type. The flag makes them distinct types so the compiler can track when they must be handled.",
+    "gotchas": [
+      "Enabling strict on a large existing codebase causes hundreds of errors \u2014 enable incrementally per file with @ts-strict comments or use ts-migrate.",
+      "Non-null assertion (!) suppresses the error but can still crash \u2014 use sparingly.",
+      "Array index access still returns T (not T | undefined) unless 'noUncheckedIndexedAccess' is also enabled."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "Type 'null' is not assignable to type 'string'",
+      "Object is possibly 'null'",
+      "Object is possibly 'undefined'"
+    ],
+    "keywords": [
+      "strictNullChecks",
+      "null safety",
+      "undefined",
+      "optional chaining",
+      "non-null assertion"
+    ],
+    "severity": "critical",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 2.0+"
+  },
+  {
+    "title": "noUncheckedIndexedAccess Catches Missing Array Bounds Checks",
+    "category": "gotcha",
+    "tags": [
+      "typescript",
+      "noUncheckedIndexedAccess",
+      "array-safety"
+    ],
+    "problem": "Accessing an array or object index returns type 'T' even if the index is out of bounds, hiding potential undefined values. 'arr[0].name' compiles fine but crashes when arr is empty.",
+    "solution": "Enable 'noUncheckedIndexedAccess: true' in tsconfig. Index access now returns 'T | undefined', forcing explicit checks.\n\n```typescript\n// tsconfig.json\n{ \"compilerOptions\": { \"noUncheckedIndexedAccess\": true } }\n\nconst users: User[] = [];\nconst first = users[0]; // type: User | undefined\n\n// Must handle undefined:\nif (first !== undefined) {\n  console.log(first.name); // OK\n}\n\n// Or use optional chaining:\nconsole.log(users[0]?.name);\n\n// Record indexing also affected:\nconst map: Record<string, number> = {};\nconst val = map['key']; // number | undefined\n```",
+    "why": "JavaScript array indexing never throws on out-of-bounds access; it returns undefined silently. TypeScript historically typed this as 'T' for convenience, hiding a class of real bugs.",
+    "gotchas": [
+      "This flag is NOT included in 'strict: true' \u2014 must be opted into separately.",
+      "It breaks a lot of existing code that assumed indexed access is always defined.",
+      "for...of loops are not affected \u2014 only bracket notation indexing.",
+      "Tuple types with fixed indices are not affected by this flag."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "Object is possibly 'undefined'"
+    ],
+    "keywords": [
+      "noUncheckedIndexedAccess",
+      "array bounds",
+      "index signature",
+      "undefined safety",
+      "record access"
+    ],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 4.1+"
+  },
+  {
+    "title": "exactOptionalPropertyTypes Distinguishes Missing vs Undefined",
+    "category": "gotcha",
+    "tags": [
+      "typescript",
+      "exactOptionalPropertyTypes",
+      "optional-properties"
+    ],
+    "problem": "With standard optional properties, setting a field to 'undefined' and omitting it entirely are treated identically. This masks bugs where code explicitly sets a field to undefined when it should omit it.",
+    "solution": "Enable 'exactOptionalPropertyTypes: true' to make optional fields only accept their declared type, not undefined.\n\n```typescript\n// tsconfig.json\n{ \"compilerOptions\": { \"exactOptionalPropertyTypes\": true } }\n\ninterface User {\n  name: string;\n  nickname?: string; // can be omitted, but NOT set to undefined\n}\n\nconst u1: User = { name: 'Alice' };              // OK \u2014 omitted\nconst u2: User = { name: 'Alice', nickname: 'Al' }; // OK\nconst u3: User = { name: 'Alice', nickname: undefined }; // Error!\n// Type 'undefined' is not assignable to type 'string'\n\n// To explicitly allow undefined, add it to the type:\ninterface User2 {\n  name: string;\n  nickname?: string | undefined;\n}\n```",
+    "why": "Optional property '?' means the key can be absent from the object. Setting a key to 'undefined' is semantically different \u2014 the key exists with an undefined value. These have different behavior in JSON.stringify, 'in' checks, and Object.keys.",
+    "gotchas": [
+      "Not included in 'strict: true' \u2014 must enable separately.",
+      "Many popular libraries violate this contract; you may need to adjust when using their types.",
+      "Partial<T> sets fields to 'T | undefined' which violates exactOptionalPropertyTypes \u2014 use a custom Partial variant."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "Type 'undefined' is not assignable to type 'string' with 'exactOptionalPropertyTypes: true'"
+    ],
+    "keywords": [
+      "exactOptionalPropertyTypes",
+      "optional property",
+      "undefined",
+      "missing vs undefined",
+      "strict"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 4.4+"
+  },
+  {
+    "title": "Enum Alternatives: as const Objects Are Safer Than TypeScript Enums",
+    "category": "pattern",
+    "tags": [
+      "typescript",
+      "enums",
+      "as-const",
+      "enum-alternatives"
+    ],
+    "problem": "TypeScript numeric enums have surprising behavior: numeric values are assignable to any enum type, reverse mappings pollute the compiled output, and they don't tree-shake well.",
+    "solution": "Use 'as const' objects instead of enums for safer, tree-shakeable, and more predictable behavior.\n\n```typescript\n// BAD: numeric enum with surprising behavior\nenum Direction { Up, Down, Left, Right }\nconst d: Direction = 999; // TypeScript allows this!\n\n// GOOD: as const object\nconst Direction = {\n  Up: 'UP',\n  Down: 'DOWN',\n  Left: 'LEFT',\n  Right: 'RIGHT',\n} as const;\n\ntype Direction = typeof Direction[keyof typeof Direction];\n// 'UP' | 'DOWN' | 'LEFT' | 'RIGHT'\n\nfunction move(dir: Direction) { /* ... */ }\nmove(Direction.Up); // OK\nmove('INVALID');    // Error\nmove(999);          // Error \u2014 no numeric escape hatch\n```",
+    "why": "Numeric enums in TypeScript allow any number to be assigned due to index reverse-mapping. String enums are safer but still generate extra runtime code. 'as const' objects compile to a plain object with zero overhead.",
+    "gotchas": [
+      "The 'type Direction = typeof Direction[keyof typeof Direction]' boilerplate is verbose but necessary.",
+      "as const objects can't be used directly as a type \u2014 you need the typeof extraction pattern.",
+      "String enums are actually safer than numeric enums; if you must use enums, prefer string enums."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "enum",
+      "as const",
+      "string enum",
+      "numeric enum",
+      "tree shaking",
+      "enum alternative"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 3.4+"
+  },
+  {
+    "title": "Type Predicates (is keyword) for Custom Type Guards",
+    "category": "pattern",
+    "tags": [
+      "typescript",
+      "type-predicates",
+      "type-guards",
+      "is-keyword"
+    ],
+    "problem": "Functions that check a value's type return 'boolean', so TypeScript doesn't narrow the type inside the calling code's if block.",
+    "solution": "Use a type predicate return type ('param is Type') to inform TypeScript that a true return means the parameter is the specified type.\n\n```typescript\ninterface Cat { meow(): void; }\ninterface Dog { bark(): void; }\n\n// Without predicate \u2014 no narrowing\nfunction isCat(animal: Cat | Dog): boolean {\n  return 'meow' in animal;\n}\n\n// With predicate \u2014 narrows correctly\nfunction isCat(animal: Cat | Dog): animal is Cat {\n  return 'meow' in animal;\n}\n\nfunction makeNoise(animal: Cat | Dog) {\n  if (isCat(animal)) {\n    animal.meow(); // TypeScript knows it's Cat\n  } else {\n    animal.bark(); // TypeScript knows it's Dog\n  }\n}\n\n// Filtering arrays with type predicates\nconst values: (string | null)[] = ['a', null, 'b'];\nconst strings = values.filter((v): v is string => v !== null);\n// strings: string[] \u2014 not (string | null)[]\n```",
+    "why": "TypeScript's control flow analysis only narrows based on built-in checks (typeof, instanceof) or type predicates. A predicate annotation tells the compiler to trust the function's boolean return as a type guarantee.",
+    "gotchas": [
+      "TypeScript does NOT verify that your predicate implementation is correct \u2014 a lying predicate causes unsound types.",
+      "Predicates only narrow in the positive branch; the negative branch narrows to the remainder of the union.",
+      "Array.filter with a predicate requires the syntax '(v): v is Type => ...' not a separate function reference."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "type predicate",
+      "is keyword",
+      "type guard",
+      "narrowing",
+      "filter type"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 1.6+"
+  },
+  {
+    "title": "Assertion Functions (asserts keyword) for Invariant Checking",
+    "category": "pattern",
+    "tags": [
+      "typescript",
+      "assertion-functions",
+      "asserts-keyword"
+    ],
+    "problem": "Validation functions that throw on failure don't narrow the type after the call \u2014 TypeScript still treats the value as potentially invalid even though control flow proves it passed.",
+    "solution": "Use the 'asserts' return type to tell TypeScript that if the function returns normally, the condition holds.\n\n```typescript\nfunction assertDefined<T>(val: T): asserts val is NonNullable<T> {\n  if (val === null || val === undefined) {\n    throw new Error(`Expected defined, got ${val}`);\n  }\n}\n\nfunction assertString(val: unknown): asserts val is string {\n  if (typeof val !== 'string') {\n    throw new TypeError(`Expected string, got ${typeof val}`);\n  }\n}\n\nconst maybeUser: User | undefined = getUser();\nassertDefined(maybeUser);\n// Now TypeScript knows maybeUser is User (not undefined)\nmaybeUser.name; // No error\n\n// Also works with Node's built-in assert:\nimport assert from 'node:assert';\nassert(typeof value === 'string');\nvalue.toUpperCase(); // narrowed to string\n```",
+    "why": "When a function has 'asserts condition' as its return type, TypeScript models the post-call state as the condition being true \u2014 similar to a type guard but for the unconditional path.",
+    "gotchas": [
+      "Assertion functions must return 'void' or 'never' \u2014 they cannot return a value.",
+      "TypeScript trusts your assertion unconditionally; an incorrect implementation creates unsound types.",
+      "Node's assert module has built-in assertion function types in @types/node."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "An assertion function must explicitly declare its return type"
+    ],
+    "keywords": [
+      "asserts",
+      "assertion function",
+      "invariant",
+      "narrowing",
+      "throw on failure"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 3.7+"
+  },
+  {
+    "title": "Branded Types for Nominal Type Safety",
+    "category": "pattern",
+    "tags": [
+      "typescript",
+      "branded-types",
+      "nominal-typing",
+      "type-safety"
+    ],
+    "problem": "TypeScript uses structural typing, so 'UserId' and 'OrderId' are both strings and are interchangeable. Passing an OrderId where a UserId is expected compiles without error.",
+    "solution": "Create branded types with an intersection of the base type and a phantom property to enforce nominal identity.\n\n```typescript\n// Define brands\ntype Brand<T, B extends string> = T & { readonly __brand: B };\n\ntype UserId = Brand<string, 'UserId'>;\ntype OrderId = Brand<string, 'OrderId'>;\n\n// Smart constructors validate and brand\nfunction createUserId(id: string): UserId {\n  if (!id.startsWith('usr_')) throw new Error('Invalid user ID');\n  return id as UserId;\n}\n\nfunction getUser(id: UserId): User { /* ... */ }\nfunction getOrder(id: OrderId): Order { /* ... */ }\n\nconst uid = createUserId('usr_123');\nconst oid = 'ord_456' as OrderId;\n\ngetUser(uid);  // OK\ngetUser(oid);  // Error: OrderId is not assignable to UserId\ngetUser('x');  // Error: string is not assignable to UserId\n```",
+    "why": "The '__brand' phantom property exists only in the type system (not at runtime). Because structural typing requires all properties to match, two different branded types are incompatible even if their base types are the same.",
+    "gotchas": [
+      "The __brand property does not exist at runtime \u2014 never access it, only use it for type checking.",
+      "Smart constructors using 'as Brand' bypass the type system \u2014 validation must be done manually.",
+      "Zod, io-ts, and other validation libraries offer branded types with runtime validation."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "Argument of type 'OrderId' is not assignable to parameter of type 'UserId'"
+    ],
+    "keywords": [
+      "branded type",
+      "nominal typing",
+      "opaque type",
+      "phantom type",
+      "type safety"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 2.0+"
+  },
+  {
+    "title": "Variance Annotations (in/out) for Generic Type Parameters",
+    "category": "pattern",
+    "tags": [
+      "typescript",
+      "variance",
+      "covariance",
+      "contravariance"
+    ],
+    "problem": "TypeScript recomputes variance structurally on every use, which is slow for complex generics. Additionally, incorrect variance can allow unsound assignments that the compiler misses.",
+    "solution": "Use 'in' and 'out' variance annotations on type parameters to explicitly declare variance and improve performance.\n\n```typescript\n// 'out' = covariant (producer) \u2014 can read T, not write it\ntype Producer<out T> = () => T;\n\n// 'in' = contravariant (consumer) \u2014 can write T, not read it\ntype Consumer<in T> = (value: T) => void;\n\n// 'in out' = invariant \u2014 both read and write\ntype ReadWrite<in out T> = { value: T };\n\n// Example: covariant interface\ninterface ReadonlyBox<out T> {\n  readonly value: T;\n  map<U>(fn: (v: T) => U): ReadonlyBox<U>;\n}\n\n// Animal is assignable to ReadonlyBox<Dog> -> ReadonlyBox<Animal>\n// (covariance: Box<Dog> extends Box<Animal> if Dog extends Animal)\n```",
+    "why": "Variance determines type compatibility: covariant types preserve subtype direction, contravariant types reverse it. TypeScript infers this structurally by default, but explicit annotations are faster and enforce correctness.",
+    "gotchas": [
+      "Variance annotations are only available in TypeScript 4.7+.",
+      "An incorrect variance annotation makes the type unsound \u2014 the compiler trusts the annotation.",
+      "Variance annotations only apply to interfaces and type aliases, not class type parameters."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "Type 'in' must be used in a contravariant position"
+    ],
+    "keywords": [
+      "variance",
+      "covariance",
+      "contravariance",
+      "in out",
+      "generic type parameter"
+    ],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 4.7+"
+  },
+  {
+    "title": "using Keyword for Automatic Resource Disposal",
+    "category": "pattern",
+    "tags": [
+      "typescript",
+      "using",
+      "disposable",
+      "resource-management"
+    ],
+    "problem": "Resources like database connections, file handles, and timers require manual cleanup. Try/finally blocks are verbose and easy to forget, leading to resource leaks.",
+    "solution": "Implement the Disposable interface and use the 'using' keyword for automatic cleanup at block exit.\n\n```typescript\n// Implement Symbol.dispose\nclass DatabaseConnection implements Disposable {\n  constructor(private conn: Connection) {}\n\n  query(sql: string) { return this.conn.query(sql); }\n\n  [Symbol.dispose]() {\n    this.conn.close();\n    console.log('Connection closed');\n  }\n}\n\n// 'using' ensures disposal at end of block (even on throw)\nfunction processData() {\n  using db = new DatabaseConnection(createConnection());\n  const rows = db.query('SELECT * FROM users');\n  return rows; // db[Symbol.dispose]() called here automatically\n}\n\n// Async version\nclass AsyncResource implements AsyncDisposable {\n  async [Symbol.asyncDispose]() {\n    await this.cleanup();\n  }\n}\n\nasync function run() {\n  await using res = new AsyncResource();\n  // res disposed async at end of block\n}\n```",
+    "why": "The 'using' declaration is based on the TC39 Explicit Resource Management proposal. TypeScript 5.2 implements it using Symbol.dispose/Symbol.asyncDispose, modeled after C# 'using' and Python 'with'.",
+    "gotchas": [
+      "Requires TypeScript 5.2+ and target ES2022 or later with 'lib: [\"ES2022\", \"ESNext.Disposable\"]'.",
+      "Symbol.dispose must be synchronous \u2014 for async cleanup use 'await using' with Symbol.asyncDispose.",
+      "The resource is disposed at the end of the block, not when the variable goes out of scope in a wider sense."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "Type 'X' is not assignable to type 'Disposable'",
+      "'using' declarations are not allowed in ambient contexts"
+    ],
+    "keywords": [
+      "using",
+      "Disposable",
+      "Symbol.dispose",
+      "resource management",
+      "cleanup"
+    ],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 5.2+"
+  },
+  {
+    "title": "import type vs import: Avoiding Runtime Import Side Effects",
+    "category": "gotcha",
+    "tags": [
+      "typescript",
+      "import-type",
+      "type-only-import"
+    ],
+    "problem": "Importing types with a regular 'import' statement can cause circular dependency issues and prevents bundlers/transpilers from safely eliding the import, potentially executing unintended module side effects.",
+    "solution": "Use 'import type' for type-only imports to guarantee they are erased at compile time.\n\n```typescript\n// BAD: may cause circular deps or side effects\nimport { User } from './user';\nimport { ApiResponse } from './types';\n\n// GOOD: erased completely at runtime\nimport type { User } from './user';\nimport type { ApiResponse } from './types';\n\n// Mixed imports\nimport { createUser, type User } from './user';\n// createUser is a value (kept), User is a type (erased)\n\n// In tsconfig: enforce type-only imports\n// { \"compilerOptions\": { \"verbatimModuleSyntax\": true } }\n// This errors if you import a type without 'import type'\n```",
+    "why": "TypeScript erases type annotations but preserves import statements unless they are type-only. Regular imports of type-only modules keep the import in compiled output, potentially importing modules purely for side effects.",
+    "gotchas": [
+      "'import type' cannot import values \u2014 using a value from a type-only import causes a compile error.",
+      "verbatimModuleSyntax (TS 5.0) enforces correct import type usage and is the modern recommendation.",
+      "Older 'importsNotUsedAsValues' setting ('error' mode) achieves a similar effect before TS 5.0."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "'X' cannot be used as a value because it was imported using 'import type'",
+      "This import is never used as a value and must use 'import type'"
+    ],
+    "keywords": [
+      "import type",
+      "type-only import",
+      "verbatimModuleSyntax",
+      "circular dependency",
+      "side effects"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 3.8+ (verbatimModuleSyntax: 5.0+)"
+  },
+  {
+    "title": "tsconfig paths Aliases for Clean Imports",
+    "category": "pattern",
+    "tags": [
+      "typescript",
+      "tsconfig",
+      "paths",
+      "import-aliases"
+    ],
+    "problem": "Deep relative imports like '../../../../utils/helpers' are fragile, hard to read, and break when files are moved.",
+    "solution": "Configure 'paths' in tsconfig.json to create import aliases, then mirror them in your bundler config.\n\n```json\n// tsconfig.json\n{\n  \"compilerOptions\": {\n    \"baseUrl\": \".\",\n    \"paths\": {\n      \"@/*\": [\"./src/*\"],\n      \"@utils/*\": [\"./src/utils/*\"],\n      \"@components/*\": [\"./src/components/*\"]\n    }\n  }\n}\n```\n\n```typescript\n// Now instead of:\nimport { formatDate } from '../../../../utils/date';\n// Use:\nimport { formatDate } from '@utils/date';\n```\n\n```javascript\n// vite.config.ts \u2014 must mirror paths\nimport { defineConfig } from 'vite';\nimport tsconfigPaths from 'vite-plugin-tsconfig-paths';\nexport default defineConfig({ plugins: [tsconfigPaths()] });\n```",
+    "why": "tsconfig 'paths' only affects TypeScript's type resolution, not the actual module bundling. Both the TypeScript compiler and the bundler/runtime must be configured separately.",
+    "gotchas": [
+      "tsconfig paths do NOT work at runtime \u2014 Node.js, Jest, Vite, and Webpack all need separate alias configuration.",
+      "For Jest: use 'moduleNameMapper' in jest.config. For Node.js: use tsconfig-paths or tsx.",
+      "baseUrl must be set for paths to work."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "Cannot find module '@utils/date' or its corresponding type declarations"
+    ],
+    "keywords": [
+      "tsconfig paths",
+      "import alias",
+      "baseUrl",
+      "module resolution",
+      "path mapping"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 2.0+"
+  },
+  {
+    "title": "TypeScript Project References for Monorepo Builds",
+    "category": "pattern",
+    "tags": [
+      "typescript",
+      "project-references",
+      "monorepo",
+      "incremental-build"
+    ],
+    "problem": "In a monorepo, building one package rebuilds all its dependencies from scratch. Type checking is slow and packages cannot reference each other's type information without full recompilation.",
+    "solution": "Use TypeScript Project References to enable incremental cross-package compilation.\n\n```json\n// packages/core/tsconfig.json\n{\n  \"compilerOptions\": {\n    \"composite\": true,\n    \"declaration\": true,\n    \"declarationMap\": true,\n    \"outDir\": \"./dist\"\n  }\n}\n\n// packages/app/tsconfig.json\n{\n  \"compilerOptions\": { \"outDir\": \"./dist\" },\n  \"references\": [\n    { \"path\": \"../core\" }\n  ]\n}\n\n// Root tsconfig.json\n{\n  \"references\": [\n    { \"path\": \"packages/core\" },\n    { \"path\": \"packages/app\" }\n  ],\n  \"files\": []\n}\n```\n\n```bash\n# Build all with dependency order\ntsc --build\n# Build only changed packages\ntsc --build --incremental\n```",
+    "why": "Project references allow tsc to cache .d.ts outputs of referenced projects. When only one package changes, tsc rebuilds only that package and its dependents, not the entire tree.",
+    "gotchas": [
+      "Each referenced project must have 'composite: true' and 'declaration: true' enabled.",
+      "Project references only work with 'tsc --build' (or '-b'), not plain 'tsc'.",
+      "Circular references are not allowed and cause a build error."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "Referenced project must have setting 'composite: true'",
+      "Cannot find the common subdirectory path for the input files"
+    ],
+    "keywords": [
+      "project references",
+      "composite",
+      "monorepo",
+      "incremental build",
+      "tsc --build"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 3.0+"
+  },
+  {
+    "title": "isolatedModules: Safe for Transpile-Only Tooling",
+    "category": "gotcha",
+    "tags": [
+      "typescript",
+      "isolatedModules",
+      "transpile",
+      "babel"
+    ],
+    "problem": "Babel, esbuild, and SWC transpile TypeScript files one at a time without full type information. Certain TypeScript features (const enum, namespace re-exports) require cross-file type data and silently break.",
+    "solution": "Enable 'isolatedModules: true' to catch features that are incompatible with single-file transpilation.\n\n```json\n// tsconfig.json\n{ \"compilerOptions\": { \"isolatedModules\": true } }\n```\n\n```typescript\n// BAD: const enum requires type information from other files\nconst enum Direction { Up, Down } // Error with isolatedModules\n\n// GOOD: use regular enum or as const object\nconst Direction = { Up: 'UP', Down: 'DOWN' } as const;\n\n// BAD: re-exporting a type without 'export type'\nexport { SomeType } from './types'; // may error\n\n// GOOD:\nexport type { SomeType } from './types';\n```",
+    "why": "Single-file transpilers cannot resolve whether an exported name is a type or value (they don't run type checking). isolatedModules makes tsc flag usages that require cross-file type knowledge.",
+    "gotchas": [
+      "isolatedModules does not make TypeScript faster \u2014 it's a lint check. Use tsc --noEmit for type checking separately from transpilation.",
+      "const enum is completely forbidden with isolatedModules \u2014 even in the same file if referenced across files.",
+      "Vite, Next.js, and Create React App all use single-file transpilation and effectively require this setting."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "'const' enums are not supported when 'isolatedModules' is enabled",
+      "Re-exporting a type when the '--isolatedModules' flag is provided requires using 'export type'"
+    ],
+    "keywords": [
+      "isolatedModules",
+      "babel",
+      "esbuild",
+      "swc",
+      "transpile-only",
+      "const enum"
+    ],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 2.0+"
+  },
+  {
+    "title": "moduleResolution: bundler for Modern Tooling",
+    "category": "gotcha",
+    "tags": [
+      "typescript",
+      "moduleResolution",
+      "bundler",
+      "esm"
+    ],
+    "problem": "TypeScript's default 'node' module resolution doesn't understand modern package.json 'exports' fields, causing it to miss subpath exports and conditioned exports used by ESM packages.",
+    "solution": "Set 'moduleResolution: bundler' (TS 5.0+) or 'moduleResolution: node16' for correct ESM/CJS package resolution.\n\n```json\n// tsconfig.json for Vite/Next.js/modern bundlers\n{\n  \"compilerOptions\": {\n    \"module\": \"ESNext\",\n    \"moduleResolution\": \"bundler\",\n    \"allowImportingTsExtensions\": true\n  }\n}\n\n// tsconfig.json for Node.js ESM\n{\n  \"compilerOptions\": {\n    \"module\": \"node16\",\n    \"moduleResolution\": \"node16\"\n  }\n}\n```",
+    "why": "The legacy 'node' resolution predates package.json 'exports' and 'imports' fields. Modern packages use conditional exports (e.g., 'import' vs 'require' conditions) that 'node' resolution ignores, causing incorrect type resolution.",
+    "gotchas": [
+      "'bundler' resolution requires 'module' to be 'ESNext' or 'Preserve'.",
+      "'node16' and 'nodenext' require files to use explicit .js extensions in imports (even for .ts source).",
+      "Using 'bundler' without a bundler (e.g., running tsc directly to emit) may produce code that doesn't run."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "Cannot find module 'some-package/subpath' or its corresponding type declarations"
+    ],
+    "keywords": [
+      "moduleResolution",
+      "bundler",
+      "node16",
+      "exports field",
+      "ESM",
+      "package.json"
+    ],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 5.0+ (bundler), 4.7+ (node16)"
+  },
+  {
+    "title": "Declaration Files (.d.ts): Typing Untyped JavaScript Modules",
+    "category": "pattern",
+    "tags": [
+      "typescript",
+      "declaration-files",
+      "d.ts",
+      "ambient-types"
+    ],
+    "problem": "A JavaScript library has no TypeScript types and no @types/ package. Importing it gives 'Could not find a declaration file for module' and TypeScript treats all its exports as 'any'.",
+    "solution": "Create a local .d.ts file to describe the module's public API.\n\n```typescript\n// src/types/some-untyped-lib.d.ts\ndeclare module 'some-untyped-lib' {\n  export interface Options {\n    timeout?: number;\n    retries?: number;\n  }\n\n  export function connect(url: string, options?: Options): Connection;\n\n  export interface Connection {\n    query(sql: string): Promise<unknown[]>;\n    close(): void;\n  }\n\n  export default connect;\n}\n\n// For libraries that export a single function:\ndeclare module 'legacy-lib' {\n  function legacyFn(input: string): string;\n  export = legacyFn;\n}\n```",
+    "why": "TypeScript's module resolution checks for .d.ts files alongside JavaScript files or in @types/. A hand-written declaration file provides type information without modifying the original source.",
+    "gotchas": [
+      "The declaration file must be included in the TypeScript compilation (via tsconfig 'include' or 'typeRoots').",
+      "A 'declare module' with a wildcard ('*.svg') can type all imports of a pattern.",
+      "Use 'skipLibCheck: true' if third-party .d.ts files have errors you cannot control."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "Could not find a declaration file for module 'some-lib'",
+      "Try `npm install @types/some-lib` if it exists or add a new declaration (.d.ts) file containing `declare module 'some-lib'`"
+    ],
+    "keywords": [
+      "declaration file",
+      "d.ts",
+      "ambient module",
+      "untyped library",
+      "declare module"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 1.0+"
+  },
+  {
+    "title": "tsc --noEmit for Type-Only CI Checks",
+    "category": "pattern",
+    "tags": [
+      "typescript",
+      "tsc",
+      "noEmit",
+      "CI",
+      "type-checking"
+    ],
+    "problem": "Running 'tsc' to type-check also emits compiled output, which is slow and pollutes the build directory when a separate bundler (Vite, esbuild) handles compilation.",
+    "solution": "Use 'tsc --noEmit' to run type checking without producing any output files.\n\n```bash\n# Type check only \u2014 no files written\ntsc --noEmit\n\n# With project references\ntsc --build --noEmit\n\n# Watch mode\ntsc --noEmit --watch\n```\n\n```json\n// package.json scripts\n{\n  \"scripts\": {\n    \"typecheck\": \"tsc --noEmit\",\n    \"build\": \"vite build\",\n    \"ci\": \"npm run typecheck && npm run build\"\n  }\n}\n```",
+    "why": "Modern JS toolchains separate type checking from transpilation. Bundlers like Vite/esbuild handle transpilation; tsc --noEmit is used purely to catch type errors in CI without duplicating build output.",
+    "gotchas": [
+      "--noEmit is incompatible with --incremental unless you also specify --tsBuildInfoFile.",
+      "tsc --noEmit does not catch bundler-specific issues (e.g., CSS modules, SVG imports) \u2014 those need bundler type plugins.",
+      "In monorepos with project references, use 'tsc -b --noEmit' not plain 'tsc --noEmit'."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "noEmit",
+      "type check",
+      "CI",
+      "tsc",
+      "type-only",
+      "build pipeline"
+    ],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 1.0+"
+  },
+  {
+    "title": "Decorator Metadata and reflect-metadata for DI Frameworks",
+    "category": "gotcha",
+    "tags": [
+      "typescript",
+      "decorators",
+      "metadata",
+      "dependency-injection"
+    ],
+    "problem": "TypeScript decorators with 'emitDecoratorMetadata' require 'reflect-metadata' polyfill at runtime. Missing this causes dependency injection frameworks (NestJS, TypeORM) to fail silently or with cryptic errors.",
+    "solution": "Install and import reflect-metadata once at the application entry point before any decorated class is imported.\n\n```typescript\n// main.ts \u2014 MUST be first import\nimport 'reflect-metadata';\nimport { NestFactory } from '@nestjs/core';\nimport { AppModule } from './app.module';\n\nasync function bootstrap() {\n  const app = await NestFactory.create(AppModule);\n  await app.listen(3000);\n}\nbootstrap();\n```\n\n```json\n// tsconfig.json\n{\n  \"compilerOptions\": {\n    \"experimentalDecorators\": true,\n    \"emitDecoratorMetadata\": true\n  }\n}\n```",
+    "why": "emitDecoratorMetadata emits type information at runtime using Reflect.metadata(). The Reflect API is not built into any JS engine \u2014 reflect-metadata provides the polyfill. Without it, Reflect.metadata is undefined.",
+    "gotchas": [
+      "reflect-metadata must be imported exactly once, before any decorated modules load. Import order matters.",
+      "TypeScript 5.0 introduced a new decorators standard (stage 3) that is incompatible with emitDecoratorMetadata \u2014 check which decorator mode your framework uses.",
+      "NestJS requires legacy decorators: 'experimentalDecorators: true'. The new TC39 decorators are different."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "TypeError: Reflect.metadata is not a function",
+      "Cannot read properties of undefined (reading 'metadata')"
+    ],
+    "keywords": [
+      "reflect-metadata",
+      "emitDecoratorMetadata",
+      "decorators",
+      "NestJS",
+      "dependency injection"
+    ],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 5.0+ (new decorators), legacy experimentalDecorators all versions"
+  },
+  {
+    "title": "Proper HTTP Status Codes: Common Mistakes",
+    "category": "gotcha",
+    "tags": [
+      "rest-api",
+      "http-status",
+      "status-codes"
+    ],
+    "problem": "APIs return incorrect HTTP status codes (e.g., 200 for errors, 500 for validation failures, 404 for auth failures), confusing clients and breaking standard HTTP semantics.",
+    "solution": "Use semantically correct HTTP status codes for each scenario.\n\n```\n// Authentication/Authorization\n401 Unauthorized \u2014 no credentials or invalid token (misleadingly named)\n403 Forbidden \u2014 valid credentials but insufficient permissions\n\n// Client errors\n400 Bad Request \u2014 malformed request syntax or invalid parameters\n404 Not Found \u2014 resource doesn't exist\n409 Conflict \u2014 resource state conflict (duplicate, version mismatch)\n410 Gone \u2014 resource permanently deleted\n422 Unprocessable Entity \u2014 valid syntax but semantic validation failure\n429 Too Many Requests \u2014 rate limit exceeded\n\n// Success\n200 OK \u2014 general success with body\n201 Created \u2014 resource created (include Location header)\n204 No Content \u2014 success with no body (DELETE)\n206 Partial Content \u2014 pagination/range response\n\n// Server errors\n500 Internal Server Error \u2014 unexpected server fault\n502 Bad Gateway \u2014 upstream service failed\n503 Service Unavailable \u2014 intentional (maintenance, overload)\n```",
+    "why": "HTTP status codes are the primary error communication channel for APIs. Incorrect codes break client error handling, caching, and retry logic.",
+    "gotchas": [
+      "401 does NOT mean 'not logged in' semantically \u2014 it means the request lacks valid auth credentials and the server expects re-authentication.",
+      "Never return 200 with an 'error' field in the body \u2014 clients can't detect this without parsing the body.",
+      "422 is preferred over 400 for semantic validation errors in modern APIs."
+    ],
+    "language": "typescript",
+    "framework": "express",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "HTTP status code",
+      "401",
+      "403",
+      "422",
+      "404",
+      "201",
+      "204",
+      "REST"
+    ],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "API Versioning Strategies: URI vs Header vs Query",
+    "category": "pattern",
+    "tags": [
+      "rest-api",
+      "versioning",
+      "api-design"
+    ],
+    "problem": "Changing API contracts without versioning breaks existing clients. Versioning too aggressively fragments the API surface and increases maintenance burden.",
+    "solution": "Choose the right versioning strategy for your context.\n\n```\n// Strategy 1: URI versioning (most common, most visible)\nGET /v1/users\nGET /v2/users\n\n// Strategy 2: Header versioning (clean URLs, harder to test)\nGET /users\nAccept: application/vnd.myapi.v2+json\n\n// Strategy 3: Query parameter (simple, but not RESTful)\nGET /users?version=2\n\n// Strategy 4: Content negotiation with date (Stripe style)\nStripe-Version: 2023-10-16\n```\n\n```typescript\n// Express URI versioning example\nconst v1 = express.Router();\nconst v2 = express.Router();\n\nv1.get('/users', v1UsersHandler);\nv2.get('/users', v2UsersHandler);\n\napp.use('/v1', v1);\napp.use('/v2', v2);\n```",
+    "why": "URI versioning is explicit and easily testable. Header versioning is cleaner but requires API clients to set custom headers. Date-based versioning (Stripe's approach) versions the server not the endpoints.",
+    "gotchas": [
+      "Never remove a version without a long deprecation period and client communication.",
+      "Maintain at least N-1 versions in production (current + previous).",
+      "Version the entire API surface together \u2014 partial versioning creates confusion."
+    ],
+    "language": "typescript",
+    "framework": "express",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "API versioning",
+      "URI versioning",
+      "header versioning",
+      "backward compatibility",
+      "deprecation"
+    ],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "RFC 7807 Problem Details: Structured Error Responses",
+    "category": "pattern",
+    "tags": [
+      "rest-api",
+      "error-handling",
+      "rfc7807",
+      "problem-details"
+    ],
+    "problem": "API errors return inconsistent formats \u2014 sometimes a string, sometimes {error: '...'}, sometimes {message: '...', code: N}. Clients need to write different parsers for each error shape.",
+    "solution": "Implement RFC 7807 Problem Details format for consistent, machine-readable errors.\n\n```typescript\ninterface ProblemDetails {\n  type: string;       // URI identifying the problem type\n  title: string;      // Short human-readable summary\n  status: number;     // HTTP status code\n  detail?: string;    // Specific explanation for this occurrence\n  instance?: string;  // URI of the specific occurrence\n  [key: string]: unknown; // Extension members\n}\n\n// Express middleware\nfunction problemDetails(\n  err: AppError,\n  req: Request,\n  res: Response,\n  next: NextFunction\n) {\n  res.status(err.status).json({\n    type: `https://api.example.com/errors/${err.code}`,\n    title: err.title,\n    status: err.status,\n    detail: err.message,\n    instance: req.path,\n  } satisfies ProblemDetails);\n}\n\n// Content-Type must be application/problem+json\nres.setHeader('Content-Type', 'application/problem+json');\n```",
+    "why": "RFC 7807 provides a standard error format for HTTP APIs. Clients can identify problem types by URI, display appropriate messages, and handle specific error codes programmatically.",
+    "gotchas": [
+      "The Content-Type must be 'application/problem+json', not 'application/json'.",
+      "The 'type' field should be an absolute URI pointing to documentation for the error type.",
+      "Never include stack traces in production error responses \u2014 log them server-side only."
+    ],
+    "language": "typescript",
+    "framework": "express",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "RFC 7807",
+      "problem details",
+      "error response",
+      "application/problem+json",
+      "API errors"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "ETag and Conditional Requests for Efficient Caching",
+    "category": "pattern",
+    "tags": [
+      "rest-api",
+      "caching",
+      "etag",
+      "conditional-requests"
+    ],
+    "problem": "API responses are transferred in full on every request even when the data hasn't changed, wasting bandwidth and server processing.",
+    "solution": "Implement ETags and If-None-Match headers for conditional GET requests.\n\n```typescript\nimport crypto from 'node:crypto';\n\nfunction generateETag(data: unknown): string {\n  return crypto\n    .createHash('md5')\n    .update(JSON.stringify(data))\n    .digest('hex');\n}\n\napp.get('/users/:id', async (req, res) => {\n  const user = await db.getUser(req.params.id);\n  const etag = `\"${generateETag(user)}\"`;\n\n  // Check if client has current version\n  if (req.headers['if-none-match'] === etag) {\n    return res.status(304).end(); // Not Modified \u2014 no body sent\n  }\n\n  res.setHeader('ETag', etag);\n  res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate');\n  res.json(user);\n});\n\n// Conditional PUT to prevent lost updates\napp.put('/users/:id', async (req, res) => {\n  const ifMatch = req.headers['if-match'];\n  const current = await db.getUser(req.params.id);\n  const currentETag = `\"${generateETag(current)}\"`;\n  \n  if (ifMatch && ifMatch !== currentETag) {\n    return res.status(412).json({ error: 'Precondition Failed' });\n  }\n  // Proceed with update...\n});\n```",
+    "why": "ETags are opaque identifiers for a specific version of a resource. If-None-Match sends the ETag back; if unchanged the server returns 304 with no body, saving transfer. If-Match prevents overwriting concurrent changes.",
+    "gotchas": [
+      "Weak ETags (W/\"...\") allow semantic equivalence; strong ETags require byte-for-byte identity.",
+      "ETag generation must be fast \u2014 hashing large payloads on every request is expensive. Cache or derive from DB version columns.",
+      "ETags must be quoted strings in HTTP headers."
+    ],
+    "language": "typescript",
+    "framework": "express",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "ETag",
+      "If-None-Match",
+      "If-Match",
+      "304 Not Modified",
+      "conditional request",
+      "cache"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Pagination with Cursor-Based Links and Headers",
+    "category": "pattern",
+    "tags": [
+      "rest-api",
+      "pagination",
+      "cursor-pagination",
+      "headers"
+    ],
+    "problem": "Offset-based pagination (page=2&limit=20) breaks when items are inserted or deleted between requests. Clients also lack a standard way to discover total counts and next/prev links.",
+    "solution": "Use cursor-based pagination with Link headers for stateless, consistent pagination.\n\n```typescript\napp.get('/users', async (req, res) => {\n  const limit = Math.min(Number(req.query.limit) || 20, 100);\n  const cursor = req.query.cursor as string | undefined;\n\n  const users = await db.getUsers({ cursor, limit: limit + 1 });\n  const hasMore = users.length > limit;\n  const items = users.slice(0, limit);\n  const nextCursor = hasMore\n    ? Buffer.from(items[items.length - 1].id).toString('base64')\n    : null;\n\n  // RFC 5988 Link header\n  const links = [];\n  if (nextCursor) {\n    links.push(`<${req.baseUrl}/users?cursor=${nextCursor}&limit=${limit}>; rel=\"next\"`);\n  }\n  if (links.length) res.setHeader('Link', links.join(', '));\n\n  res.setHeader('X-Total-Count', await db.countUsers());\n  res.json(items);\n});\n```",
+    "why": "Cursor pagination is stable \u2014 inserting/deleting items doesn't shift pages. The Link header is the standard (RFC 5988) mechanism for pagination discovery.",
+    "gotchas": [
+      "Cursors must be opaque to clients \u2014 encode them (base64, encrypted) so clients don't parse or manipulate them.",
+      "X-Total-Count is non-standard but widely used \u2014 consider it optional as counting large tables is expensive.",
+      "Cursor pagination is not reversible by default \u2014 implementing 'prev' requires bidirectional cursors."
+    ],
+    "language": "typescript",
+    "framework": "express",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "pagination",
+      "cursor pagination",
+      "Link header",
+      "RFC 5988",
+      "next page",
+      "offset pagination"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Rate Limit Headers: Standard Communication to Clients",
+    "category": "pattern",
+    "tags": [
+      "rest-api",
+      "rate-limiting",
+      "headers"
+    ],
+    "problem": "APIs implement rate limiting but don't communicate limits to clients. Clients don't know when to back off, how many requests remain, or when limits reset \u2014 leading to unnecessary 429 errors and poor retry logic.",
+    "solution": "Return standard rate limit headers with every response.\n\n```typescript\nimport rateLimit from 'express-rate-limit';\n\nconst limiter = rateLimit({\n  windowMs: 60 * 1000, // 1 minute\n  max: 100,\n  standardHeaders: 'draft-7', // Use RateLimit headers (IETF draft)\n  legacyHeaders: false,\n  handler: (req, res) => {\n    res.status(429).json({\n      type: 'https://api.example.com/errors/rate-limit',\n      title: 'Too Many Requests',\n      status: 429,\n      retryAfter: res.getHeader('Retry-After'),\n    });\n  },\n});\n\n// Headers returned on each response:\n// RateLimit-Limit: 100\n// RateLimit-Remaining: 47\n// RateLimit-Reset: 1699900800\n// Retry-After: 34 (only on 429)\n```",
+    "why": "Without rate limit headers, clients must guess limits and implement exponential backoff without context. Standard headers let clients implement proactive throttling and efficient retry.",
+    "gotchas": [
+      "The IETF RateLimit header draft (draft-7) differs from the widely used X-RateLimit-* convention \u2014 check which your clients expect.",
+      "Always include Retry-After on 429 responses so clients know exactly when to retry.",
+      "Rate limits should be per-user or per-API-key, not per-IP, for authenticated APIs."
+    ],
+    "language": "typescript",
+    "framework": "express",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "rate limit",
+      "429",
+      "RateLimit-Remaining",
+      "Retry-After",
+      "throttling",
+      "express-rate-limit"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Idempotency: PUT vs POST vs PATCH Semantics",
+    "category": "principle",
+    "tags": [
+      "rest-api",
+      "idempotency",
+      "http-methods"
+    ],
+    "problem": "Clients retrying failed requests cause duplicate resources (POST) or partial updates. Using the wrong HTTP method for an operation violates REST semantics and breaks retry safety.",
+    "solution": "Use HTTP methods according to their idempotency guarantees.\n\n```\nGET    \u2014 Safe + Idempotent: no side effects, repeating returns same result\nHEAD   \u2014 Safe + Idempotent: same as GET but no body\nDELETE \u2014 Idempotent: deleting twice is same as deleting once\nPUT    \u2014 Idempotent: replaces entire resource; repeating is safe\nPATCH  \u2014 NOT idempotent by default (applying same patch twice may fail)\nPOST   \u2014 NOT idempotent: creates new resource each time\n```\n\n```typescript\n// Idempotency key for POST (payment/order creation)\napp.post('/orders', async (req, res) => {\n  const idempotencyKey = req.headers['idempotency-key'] as string;\n  if (!idempotencyKey) return res.status(400).json({ error: 'Idempotency-Key required' });\n\n  // Check if we've seen this key before\n  const existing = await cache.get(`idem:${idempotencyKey}`);\n  if (existing) return res.status(200).json(JSON.parse(existing));\n\n  const order = await createOrder(req.body);\n  await cache.setex(`idem:${idempotencyKey}`, 86400, JSON.stringify(order));\n  res.status(201).json(order);\n});\n```",
+    "why": "Network failures cause clients to retry requests. If the server already processed the request, a retry should return the same result rather than creating a duplicate. Idempotency keys extend this safety to POST.",
+    "gotchas": [
+      "PUT must replace the entire resource \u2014 partial updates with PUT are incorrect. Use PATCH for partial updates.",
+      "PATCH with JSON Merge Patch is not idempotent if the patch sets a field to a value derived from current state.",
+      "DELETE returning 404 on the second call is acceptable \u2014 some argue it should return 200 for true idempotency."
+    ],
+    "language": "typescript",
+    "framework": "express",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "idempotency",
+      "PUT",
+      "POST",
+      "PATCH",
+      "HTTP methods",
+      "idempotency key",
+      "retry safety"
+    ],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "JSON Patch vs JSON Merge Patch for PATCH Endpoints",
+    "category": "pattern",
+    "tags": [
+      "rest-api",
+      "patch",
+      "json-patch",
+      "merge-patch"
+    ],
+    "problem": "PATCH endpoints are implemented inconsistently \u2014 some accept partial JSON, some accept operation arrays. Clients don't know how to send partial updates, and setting a field to null is ambiguous.",
+    "solution": "Choose between JSON Patch (RFC 6902) and JSON Merge Patch (RFC 7396) intentionally.\n\n```typescript\n// JSON Merge Patch (simpler \u2014 send partial object)\n// Content-Type: application/merge-patch+json\n// Null = delete field, missing = unchanged\nconst patch = { name: 'Alice', nickname: null }; // sets name, deletes nickname\n\n// JSON Patch (precise operations)\n// Content-Type: application/json-patch+json\nconst patch = [\n  { op: 'replace', path: '/name', value: 'Alice' },\n  { op: 'add', path: '/tags/-', value: 'admin' },\n  { op: 'remove', path: '/nickname' },\n  { op: 'test', path: '/version', value: 3 }, // precondition check\n];\n\n// Express handler\nimport jsonpatch from 'fast-json-patch';\napp.patch('/users/:id', async (req, res) => {\n  const user = await db.getUser(req.params.id);\n  const patched = jsonpatch.applyPatch(user, req.body).newDocument;\n  await db.updateUser(req.params.id, patched);\n  res.json(patched);\n});\n```",
+    "why": "JSON Merge Patch is simple but cannot express array operations or distinguishing 'delete field' from 'set to null'. JSON Patch is more expressive but verbose. The choice depends on your data model.",
+    "gotchas": [
+      "JSON Merge Patch cannot append to arrays \u2014 only replace the entire array.",
+      "JSON Patch operations are atomic \u2014 all operations succeed or all fail.",
+      "Always validate the patch against your schema before applying it."
+    ],
+    "language": "typescript",
+    "framework": "express",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "JSON Patch",
+      "JSON Merge Patch",
+      "RFC 6902",
+      "RFC 7396",
+      "PATCH",
+      "partial update"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Long-Running Operations: 202 Accepted Pattern",
+    "category": "pattern",
+    "tags": [
+      "rest-api",
+      "async-operations",
+      "202-accepted"
+    ],
+    "problem": "Operations that take more than a few seconds (report generation, data export, video encoding) cannot be handled synchronously in an HTTP request without client timeouts.",
+    "solution": "Return 202 Accepted immediately with a polling URL for the operation status.\n\n```typescript\n// Initiate long-running job\napp.post('/reports', async (req, res) => {\n  const jobId = await queue.enqueue('generate-report', req.body);\n\n  res.status(202).json({\n    jobId,\n    status: 'pending',\n    statusUrl: `${req.baseUrl}/jobs/${jobId}`,\n    estimatedDuration: 30, // seconds\n  });\n  res.setHeader('Location', `/jobs/${jobId}`);\n});\n\n// Poll for status\napp.get('/jobs/:id', async (req, res) => {\n  const job = await queue.getJob(req.params.id);\n  if (!job) return res.status(404).json({ error: 'Job not found' });\n\n  if (job.status === 'complete') {\n    // Redirect to result or return inline\n    return res.redirect(303, `/reports/${job.resultId}`);\n  }\n\n  res.json({\n    jobId: job.id,\n    status: job.status, // 'pending' | 'running' | 'failed'\n    progress: job.progress,\n    statusUrl: `/jobs/${job.id}`,\n  });\n});\n```",
+    "why": "202 Accepted means 'the request was accepted for processing, but processing is not yet complete'. The Location header tells clients where to poll for status.",
+    "gotchas": [
+      "Include a Retry-After header to hint at the polling interval \u2014 prevents aggressive polling.",
+      "On completion, redirect with 303 See Other to the result resource, not 301/302.",
+      "Job status should be stored durably \u2014 in-memory storage loses jobs on server restart."
+    ],
+    "language": "typescript",
+    "framework": "express",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "202 Accepted",
+      "long-running operation",
+      "async API",
+      "job queue",
+      "polling",
+      "Location header"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Graceful Shutdown: Draining In-Flight Requests",
+    "category": "pattern",
+    "tags": [
+      "rest-api",
+      "graceful-shutdown",
+      "nodejs",
+      "SIGTERM"
+    ],
+    "problem": "Servers killed abruptly (SIGTERM from Kubernetes, deploys) drop in-flight requests, break database transactions, and leave resources uncleaned.",
+    "solution": "Listen for SIGTERM, stop accepting new connections, and wait for existing requests to complete.\n\n```typescript\nimport http from 'node:http';\n\nconst server = http.createServer(app);\n\nserver.listen(3000, () => console.log('Server listening'));\n\nconst SHUTDOWN_TIMEOUT = 30_000;\n\nasync function shutdown(signal: string) {\n  console.log(`Received ${signal}. Starting graceful shutdown.`);\n\n  // Stop accepting new connections\n  server.close(async (err) => {\n    if (err) {\n      console.error('Error closing server', err);\n      process.exit(1);\n    }\n\n    // Close DB connections, flush queues, etc.\n    await db.destroy();\n    await queue.close();\n\n    console.log('Graceful shutdown complete');\n    process.exit(0);\n  });\n\n  // Force exit if drain takes too long\n  setTimeout(() => {\n    console.error('Shutdown timeout \u2014 forcing exit');\n    process.exit(1);\n  }, SHUTDOWN_TIMEOUT).unref();\n}\n\nprocess.on('SIGTERM', () => shutdown('SIGTERM'));\nprocess.on('SIGINT', () => shutdown('SIGINT'));\n```",
+    "why": "Container orchestrators (Kubernetes) send SIGTERM before SIGKILL, giving the process time to finish work. Without a handler, the process exits immediately, dropping active requests.",
+    "gotchas": [
+      "Set the shutdown timeout to less than Kubernetes terminationGracePeriodSeconds (default 30s).",
+      "server.close() stops new connections but does not close existing keep-alive connections \u2014 use 'connection: close' header or a library like http-terminator.",
+      "Always handle both SIGTERM (container stop) and SIGINT (Ctrl+C in development)."
+    ],
+    "language": "typescript",
+    "framework": "express",
+    "environment": [
+      "node"
+    ],
+    "error_messages": [],
+    "keywords": [
+      "graceful shutdown",
+      "SIGTERM",
+      "server.close",
+      "drain",
+      "Kubernetes",
+      "in-flight requests"
+    ],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Health and Readiness Endpoints for Kubernetes",
+    "category": "pattern",
+    "tags": [
+      "rest-api",
+      "health-check",
+      "readiness",
+      "kubernetes"
+    ],
+    "problem": "Without health check endpoints, Kubernetes can't distinguish a starting server from a crashed one, routing traffic to containers that aren't ready or restarts them prematurely.",
+    "solution": "Implement separate liveness and readiness endpoints that check different conditions.\n\n```typescript\n// Liveness: is the process alive? (simple \u2014 should almost never fail)\napp.get('/health/live', (req, res) => {\n  res.status(200).json({ status: 'ok' });\n});\n\n// Readiness: can the process handle traffic? (check dependencies)\napp.get('/health/ready', async (req, res) => {\n  const checks = await Promise.allSettled([\n    db.query('SELECT 1'),           // database\n    cache.ping(),                   // redis\n    queue.isConnected(),            // message queue\n  ]);\n\n  const failed = checks\n    .map((c, i) => ({ name: ['db', 'cache', 'queue'][i], result: c }))\n    .filter(c => c.result.status === 'rejected');\n\n  if (failed.length > 0) {\n    return res.status(503).json({\n      status: 'not-ready',\n      failures: failed.map(f => f.name),\n    });\n  }\n\n  res.status(200).json({ status: 'ready' });\n});\n```",
+    "why": "Liveness probes restart stuck processes. Readiness probes prevent traffic from reaching healthy-but-not-ready pods (e.g., during startup or DB connection loss). They serve different purposes.",
+    "gotchas": [
+      "Never check external dependencies in liveness probes \u2014 a DB outage would restart all your pods in a loop.",
+      "Readiness check failures stop traffic routing but don't restart the pod.",
+      "Add a startup probe for slow-starting applications to avoid liveness probe false positives during init."
+    ],
+    "language": "typescript",
+    "framework": "express",
+    "environment": [
+      "kubernetes"
+    ],
+    "error_messages": [],
+    "keywords": [
+      "health check",
+      "liveness probe",
+      "readiness probe",
+      "Kubernetes",
+      "503",
+      "startup probe"
+    ],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Request Validation Middleware with Zod",
+    "category": "pattern",
+    "tags": [
+      "rest-api",
+      "validation",
+      "zod",
+      "middleware"
+    ],
+    "problem": "Without input validation, APIs crash on unexpected input types, allow injection attacks, and return confusing 500 errors for bad client data.",
+    "solution": "Use Zod for schema-driven request validation as middleware.\n\n```typescript\nimport { z } from 'zod';\nimport type { RequestHandler } from 'express';\n\nfunction validate<T>(schema: z.ZodSchema<T>): RequestHandler {\n  return (req, res, next) => {\n    const result = schema.safeParse(req.body);\n    if (!result.success) {\n      return res.status(422).json({\n        type: 'https://api.example.com/errors/validation',\n        title: 'Validation Failed',\n        status: 422,\n        errors: result.error.flatten().fieldErrors,\n      });\n    }\n    req.body = result.data; // Parsed and coerced\n    next();\n  };\n}\n\n// Usage\nconst CreateUserSchema = z.object({\n  name: z.string().min(1).max(100),\n  email: z.string().email(),\n  age: z.number().int().min(0).max(150).optional(),\n});\n\ntype CreateUserInput = z.infer<typeof CreateUserSchema>;\n\napp.post('/users', validate(CreateUserSchema), (req, res) => {\n  const input: CreateUserInput = req.body; // Fully typed and validated\n  // ...\n});\n```",
+    "why": "Zod provides runtime validation with TypeScript type inference. Defining the schema once gives both runtime safety and compile-time types without duplication.",
+    "gotchas": [
+      "Zod strips unknown keys by default with z.object() \u2014 use .passthrough() to allow extra keys.",
+      "Validate query params and route params separately \u2014 req.body, req.query, req.params each need their own schema.",
+      "Zod's z.coerce.number() is needed for query params which are always strings."
+    ],
+    "language": "typescript",
+    "framework": "express",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "Zod",
+      "validation",
+      "middleware",
+      "schema",
+      "422",
+      "input validation"
+    ],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "OpenAPI Generation from Code vs Code from OpenAPI",
+    "category": "pattern",
+    "tags": [
+      "rest-api",
+      "openapi",
+      "swagger",
+      "api-first"
+    ],
+    "problem": "API documentation drifts from implementation. Hand-written OpenAPI specs go stale; generated specs are verbose and hard to customize.",
+    "solution": "Choose code-first or schema-first OpenAPI based on team workflow, then automate the link.\n\n```typescript\n// Code-first with Fastify + @fastify/swagger\nimport Fastify from 'fastify';\nimport swagger from '@fastify/swagger';\n\nconst app = Fastify();\nawait app.register(swagger, {\n  openapi: { info: { title: 'My API', version: '1.0.0' } },\n});\n\napp.get('/users/:id', {\n  schema: {\n    params: { type: 'object', properties: { id: { type: 'string' } } },\n    response: {\n      200: {\n        type: 'object',\n        properties: { id: { type: 'string' }, name: { type: 'string' } },\n      },\n    },\n  },\n}, async (req) => {\n  return db.getUser(req.params.id);\n});\n\n// Schema-first with openapi-typescript\n// npx openapi-typescript openapi.yaml -o src/types/api.d.ts\n// Then use typed paths:\nimport type { paths } from './types/api';\ntype GetUserResponse = paths['/users/{id}']['get']['responses']['200']['content']['application/json'];\n```",
+    "why": "Code-first keeps types and docs in sync automatically. Schema-first enables design review before implementation and supports multi-language teams. Both approaches beat manual sync.",
+    "gotchas": [
+      "Code-first with Express requires additional libraries (zod-to-openapi, tsoa) since Express has no built-in schema system.",
+      "Fastify uses JSON Schema natively, making code-first easier than with Express.",
+      "Always version your OpenAPI spec in source control alongside the code."
+    ],
+    "language": "typescript",
+    "framework": "express",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "OpenAPI",
+      "Swagger",
+      "schema-first",
+      "code-first",
+      "API documentation",
+      "openapi-typescript"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Webhook Design: Reliable Delivery and Verification",
+    "category": "pattern",
+    "tags": [
+      "rest-api",
+      "webhooks",
+      "HMAC",
+      "event-driven"
+    ],
+    "problem": "Webhooks sent without signing can be spoofed. Webhooks without retry logic lose events on transient failures. Receivers that process inline cause timeouts and missed events.",
+    "solution": "Sign webhooks with HMAC-SHA256 and implement retry logic with exponential backoff.\n\n```typescript\n// Sender: sign the payload\nimport crypto from 'node:crypto';\n\nfunction signPayload(payload: string, secret: string): string {\n  return crypto\n    .createHmac('sha256', secret)\n    .update(payload)\n    .digest('hex');\n}\n\nasync function sendWebhook(url: string, event: unknown, secret: string) {\n  const payload = JSON.stringify(event);\n  const signature = signPayload(payload, secret);\n  const timestamp = Date.now();\n\n  await fetch(url, {\n    method: 'POST',\n    headers: {\n      'Content-Type': 'application/json',\n      'X-Webhook-Signature': `sha256=${signature}`,\n      'X-Webhook-Timestamp': String(timestamp),\n    },\n    body: payload,\n  });\n}\n\n// Receiver: verify and acknowledge immediately\napp.post('/webhook', express.raw({ type: 'application/json' }), (req, res) => {\n  const sig = req.headers['x-webhook-signature'];\n  const expected = `sha256=${signPayload(req.body.toString(), process.env.WEBHOOK_SECRET!)}`;\n\n  if (!crypto.timingSafeEqual(Buffer.from(sig as string), Buffer.from(expected))) {\n    return res.status(401).end();\n  }\n\n  res.status(200).end(); // Acknowledge immediately\n  processEventAsync(JSON.parse(req.body)); // Process in background\n});\n```",
+    "why": "HMAC signatures prevent spoofed webhooks. Acknowledging immediately (before processing) prevents the sender from timing out and retrying, causing duplicate processing.",
+    "gotchas": [
+      "Use crypto.timingSafeEqual for signature comparison to prevent timing attacks.",
+      "Include a timestamp in the signature to prevent replay attacks \u2014 reject payloads older than 5 minutes.",
+      "Parse raw body (Buffer) for signature verification \u2014 JSON.parse changes whitespace and invalidates signatures."
+    ],
+    "language": "typescript",
+    "framework": "express",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "webhook",
+      "HMAC",
+      "signature verification",
+      "replay attack",
+      "event delivery",
+      "timingSafeEqual"
+    ],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Jest to Vitest Migration: Key Differences",
+    "category": "pattern",
+    "tags": [
+      "testing",
+      "vitest",
+      "jest",
+      "migration"
+    ],
+    "problem": "Teams migrating from Jest to Vitest encounter subtle behavioral differences \u2014 different module mocking APIs, different globals setup, and configuration incompatibilities.",
+    "solution": "Vitest is largely Jest-compatible but has key differences to address.\n\n```typescript\n// vitest.config.ts\nimport { defineConfig } from 'vitest/config';\n\nexport default defineConfig({\n  test: {\n    globals: true,        // Make describe/it/expect global (Jest compat)\n    environment: 'jsdom', // For browser-like tests\n    setupFiles: ['./src/test/setup.ts'],\n    // Key difference: Vitest uses Vite, so aliases work automatically\n  },\n});\n\n// Differences from Jest:\n// 1. vi instead of jest for mocks\nvi.mock('./module');             // Jest: jest.mock()\nvi.spyOn(obj, 'method');        // Jest: jest.spyOn()\nvi.useFakeTimers();             // Jest: jest.useFakeTimers()\n\n// 2. Import from 'vitest' in non-globals mode\nimport { describe, it, expect, vi } from 'vitest';\n\n// 3. Module mocking is hoisted automatically (like Jest)\nvi.mock('./api', () => ({\n  fetchUser: vi.fn().mockResolvedValue({ id: 1 }),\n}));\n\n// 4. Snapshot files location: __snapshots__ same as Jest\n```",
+    "why": "Vitest uses Vite's module graph, enabling faster HMR-style test runs and native ESM support. It avoids Jest's CommonJS transform overhead but requires adapting mock APIs.",
+    "gotchas": [
+      "Vitest's vi.mock() factory must be an arrow function returning the mock \u2014 same rule as Jest.",
+      "jest.fn() does not exist in Vitest \u2014 use vi.fn(). Search-replace before migrating.",
+      "Vitest runs in browser mode differently from jsdom \u2014 choose the right environment per test file."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "jest is not defined",
+      "Cannot find name 'jest'"
+    ],
+    "keywords": [
+      "Vitest",
+      "Jest",
+      "migration",
+      "vi.mock",
+      "test runner",
+      "ESM"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "Vitest 1.x+"
+  },
+  {
+    "title": "Mocking Modules in Jest/Vitest: Hoisting and Factory Functions",
+    "category": "gotcha",
+    "tags": [
+      "testing",
+      "mocking",
+      "jest",
+      "vitest",
+      "module-mock"
+    ],
+    "problem": "jest.mock() / vi.mock() calls appear to work but the mock isn't applied because the module was already imported before the mock was set up, or the factory function accesses variables not yet defined.",
+    "solution": "Understand hoisting and use factory functions correctly.\n\n```typescript\n// Jest/Vitest hoists mock() calls to the top of the file\n// But variables in the factory must be in scope BEFORE hoisting\n\n// BAD: mockFn is not in scope when factory runs (hoisted before const)\nconst mockFn = jest.fn();\njest.mock('./api', () => ({ fetch: mockFn })); // ReferenceError!\n\n// GOOD: use vi.fn() inside the factory\njest.mock('./api', () => ({\n  fetch: jest.fn().mockResolvedValue({ data: [] }),\n}));\n\n// GOOD: access the mock after import\nimport { fetch } from './api';\njest.mock('./api');\n\nbeforeEach(() => {\n  (fetch as jest.Mock).mockResolvedValue({ data: [] });\n});\n\n// GOOD in Vitest: use vi.hoisted() to define before hoisting\nconst mockFetch = vi.hoisted(() => vi.fn());\nvi.mock('./api', () => ({ fetch: mockFetch }));\n```",
+    "why": "Babel/TypeScript transforms hoist jest.mock() / vi.mock() calls to before imports. Variables defined with const/let are not initialized at hoist time, causing ReferenceError in the factory.",
+    "gotchas": [
+      "Variables prefixed with 'mock' are special in Jest \u2014 Babel allows them in factory closures.",
+      "vi.hoisted() in Vitest explicitly declares a value that will be available before the mock factory runs.",
+      "After calling jest.mock(), the module's exports are the mock \u2014 you still import them normally."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "ReferenceError: Cannot access 'mockFn' before initialization",
+      "The module factory of jest.mock() is not allowed to reference any out-of-scope variables"
+    ],
+    "keywords": [
+      "jest.mock",
+      "vi.mock",
+      "hoisting",
+      "module mock",
+      "factory function",
+      "vi.hoisted"
+    ],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "React Testing Library: getBy vs queryBy vs findBy",
+    "category": "pattern",
+    "tags": [
+      "testing",
+      "react-testing-library",
+      "queries"
+    ],
+    "problem": "Tests fail with cryptic errors because the wrong query type was used \u2014 getBy throws immediately, queryBy returns null, findBy is async. Choosing the wrong one causes misleading test failures.",
+    "solution": "Use the right query type based on expected element presence and timing.\n\n```typescript\nimport { render, screen } from '@testing-library/react';\n\n// getBy* \u2014 expects element to exist NOW, throws if not found\nconst button = screen.getByRole('button', { name: 'Submit' });\n// Use when: element should be in the DOM synchronously\n\n// queryBy* \u2014 returns null if not found (no throw)\nconst error = screen.queryByText('Error message');\nif (error) { /* handle */ }\n// Use when: asserting an element is NOT present\nexpect(screen.queryByText('Loading...')).not.toBeInTheDocument();\n\n// findBy* \u2014 async, waits for element to appear (returns Promise)\nconst user = await screen.findByText('Alice');\n// Use when: element appears after async operation (fetch, setTimeout)\n\n// Priority order (accessibility-first):\n// 1. getByRole\n// 2. getByLabelText\n// 3. getByPlaceholderText\n// 4. getByText\n// 5. getByDisplayValue\n// Avoid: getByTestId (last resort)\n```",
+    "why": "getBy throws synchronously \u2014 good for asserting presence. queryBy returns null \u2014 good for asserting absence. findBy polls with waitFor internally \u2014 good for async rendering.",
+    "gotchas": [
+      "Never use getBy to assert absence \u2014 it throws before your assertion runs.",
+      "findBy has a default timeout of 1000ms \u2014 increase with { timeout: 3000 } for slow async operations.",
+      "getAllBy vs getBy: the plural version returns an array and errors if no elements found."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "Unable to find an element with the text: ...",
+      "Found multiple elements with the role ..."
+    ],
+    "keywords": [
+      "React Testing Library",
+      "getBy",
+      "queryBy",
+      "findBy",
+      "waitFor",
+      "async testing"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "MSW for API Mocking in Tests and Development",
+    "category": "pattern",
+    "tags": [
+      "testing",
+      "msw",
+      "api-mocking",
+      "service-worker"
+    ],
+    "problem": "Tests that fetch real APIs are slow, flaky, and create test data in production. Mocking fetch/axios manually is repetitive and doesn't test real network behavior.",
+    "solution": "Use MSW (Mock Service Worker) to intercept requests at the network level.\n\n```typescript\n// src/mocks/handlers.ts\nimport { http, HttpResponse } from 'msw';\n\nexport const handlers = [\n  http.get('/api/users', () => {\n    return HttpResponse.json([\n      { id: '1', name: 'Alice' },\n      { id: '2', name: 'Bob' },\n    ]);\n  }),\n\n  http.post('/api/users', async ({ request }) => {\n    const body = await request.json();\n    return HttpResponse.json({ id: '3', ...body }, { status: 201 });\n  }),\n\n  http.get('/api/users/:id', ({ params }) => {\n    if (params.id === '999') {\n      return new HttpResponse(null, { status: 404 });\n    }\n    return HttpResponse.json({ id: params.id, name: 'Alice' });\n  }),\n];\n\n// src/mocks/server.ts (Node.js for Jest/Vitest)\nimport { setupServer } from 'msw/node';\nimport { handlers } from './handlers';\nexport const server = setupServer(...handlers);\n\n// test setup\nbeforeAll(() => server.listen());\nafterEach(() => server.resetHandlers());\nafterAll(() => server.close());\n\n// Override in a specific test\ntest('handles error', async () => {\n  server.use(http.get('/api/users', () => new HttpResponse(null, { status: 500 })));\n  // ...\n});\n```",
+    "why": "MSW intercepts at the network layer (service worker in browser, Node.js interceptors in tests), so your code uses the real fetch/axios API unchanged. Handlers are reusable between tests and development.",
+    "gotchas": [
+      "MSW v2 changed the API significantly from v1 \u2014 HttpResponse replaces res/ctx pattern.",
+      "server.resetHandlers() in afterEach removes per-test overrides, not the base handlers.",
+      "For browser dev mode, MSW requires a service worker file in public/ \u2014 run 'npx msw init public/'."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "MSW",
+      "Mock Service Worker",
+      "API mocking",
+      "network intercept",
+      "fetch mock"
+    ],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "MSW 2.x"
+  },
+  {
+    "title": "Test Isolation: Preventing State Leaks Between Tests",
+    "category": "pattern",
+    "tags": [
+      "testing",
+      "test-isolation",
+      "beforeEach",
+      "cleanup"
+    ],
+    "problem": "Tests pass individually but fail when run together. One test's side effects (global state, mocks, timers, DOM nodes) contaminate subsequent tests.",
+    "solution": "Reset all shared state after each test using framework hooks.\n\n```typescript\n// Reset mocks after each test\nafterEach(() => {\n  jest.clearAllMocks();  // Clear calls and return values\n  // jest.resetAllMocks() \u2014 also removes implementations\n  // jest.restoreAllMocks() \u2014 restores spied-on originals\n});\n\n// Reset timers\nbeforeEach(() => { jest.useFakeTimers(); });\nafterEach(() => { jest.useRealTimers(); });\n\n// React: automatic DOM cleanup\nimport '@testing-library/react'; // auto-cleanup on import\n// Or manually:\nimport { cleanup } from '@testing-library/react';\nafterEach(cleanup);\n\n// Database: use transactions rolled back after each test\nbeforeEach(async () => {\n  await db.beginTransaction();\n});\nafterEach(async () => {\n  await db.rollbackTransaction();\n});\n\n// Module-level singletons: reset in beforeEach\nbeforeEach(() => {\n  jest.isolateModules(() => {\n    // Fresh module imports for each test\n  });\n});\n```",
+    "why": "Test order should be irrelevant. Shared mutable state (module-level variables, global fetch mocks, DOM nodes) persist across tests unless explicitly cleaned up.",
+    "gotchas": [
+      "clearAllMocks() does not restore original implementations of spies \u2014 use restoreAllMocks() for that.",
+      "In-memory databases (like better-sqlite3) need explicit clearing between tests.",
+      "jest.resetModules() clears the module registry but does not re-run setup files."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "received value must be a mock or spy function"
+    ],
+    "keywords": [
+      "test isolation",
+      "state leak",
+      "clearAllMocks",
+      "cleanup",
+      "afterEach",
+      "beforeEach"
+    ],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Fixtures vs Factories: Test Data Strategies",
+    "category": "pattern",
+    "tags": [
+      "testing",
+      "fixtures",
+      "factories",
+      "test-data"
+    ],
+    "problem": "Static test fixtures become stale and hard to maintain. Tests that share fixture objects fail when one test mutates the shared data. Large fixture files obscure what a test actually cares about.",
+    "solution": "Use factory functions with sensible defaults that tests can override minimally.\n\n```typescript\n// Factory pattern with partial overrides\nfunction createUser(overrides: Partial<User> = {}): User {\n  return {\n    id: 'usr_test_' + Math.random().toString(36).slice(2),\n    name: 'Test User',\n    email: 'test@example.com',\n    role: 'user',\n    createdAt: new Date('2024-01-01'),\n    ...overrides,\n  };\n}\n\n// Test only specifies what matters\ntest('admin can delete users', () => {\n  const admin = createUser({ role: 'admin' });\n  const target = createUser();\n  expect(canDelete(admin, target)).toBe(true);\n});\n\n// For DB-backed tests, use factory-boy or similar\nimport { factory } from 'factory-girl';\nfactory.define('user', UserModel, {\n  name: factory.sequence('user.name', (n: number) => `User ${n}`),\n  email: factory.sequence('user.email', (n: number) => `user${n}@test.com`),\n});\n\nconst user = await factory.create('user', { role: 'admin' });\n```",
+    "why": "Factories express test intent (only the fields that matter), produce isolated data per test (no shared references), and are easy to maintain when the model changes.",
+    "gotchas": [
+      "Use unique IDs in factories to avoid database unique constraint violations when creating multiple instances.",
+      "Factory functions should be pure \u2014 don't use global counters without resetting between tests.",
+      "For large object graphs, build nested factories to avoid deeply nested manual construction."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "factory",
+      "fixture",
+      "test data",
+      "builder pattern",
+      "factory-girl",
+      "test isolation"
+    ],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Code Coverage Traps: 100% Coverage Does Not Mean No Bugs",
+    "category": "principle",
+    "tags": [
+      "testing",
+      "code-coverage",
+      "coverage-traps"
+    ],
+    "problem": "Teams chase 100% code coverage but have tests that cover lines without asserting behavior. High coverage gives false confidence while bugs in integration paths go undetected.",
+    "solution": "Focus on meaningful coverage metrics and mutation testing rather than line coverage alone.\n\n```typescript\n// BAD: Covers the line but asserts nothing\ntest('formatDate exists', () => {\n  formatDate(new Date()); // Called but not asserted\n});\n\n// GOOD: Tests actual behavior with edge cases\ntest('formatDate formats correctly', () => {\n  expect(formatDate(new Date('2024-01-15'))).toBe('Jan 15, 2024');\n  expect(formatDate(new Date('2024-12-31'))).toBe('Dec 31, 2024');\n});\n\ntest('formatDate handles invalid date', () => {\n  expect(formatDate(new Date('invalid'))).toBe('Invalid date');\n});\n\n// Coverage config: exclude non-testable files\n// jest.config.js\nexport default {\n  collectCoverageFrom: [\n    'src/**/*.ts',\n    '!src/**/*.d.ts',\n    '!src/types/**',\n    '!src/**/index.ts', // re-exports only\n  ],\n  coverageThreshold: {\n    global: { branches: 80, functions: 90 },\n  },\n};\n```",
+    "why": "Line coverage measures which code ran, not whether it was correct. A test can execute every line while making no assertions. Branches coverage is more meaningful; mutation testing is the strongest signal.",
+    "gotchas": [
+      "Branch coverage is more valuable than line coverage \u2014 focus on if/else, ternary, and null checks.",
+      "Setting coverage thresholds in CI prevents regression but can incentivize meaningless tests.",
+      "Use Stryker (mutation testing) to verify that your tests actually catch bugs."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "code coverage",
+      "mutation testing",
+      "branch coverage",
+      "coverage threshold",
+      "meaningful tests"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Snapshot Testing: When It Helps vs When It Hurts",
+    "category": "gotcha",
+    "tags": [
+      "testing",
+      "snapshot-testing",
+      "jest",
+      "vitest"
+    ],
+    "problem": "Snapshot tests are updated without review ('jest --updateSnapshot'), becoming a no-op that only documents current behavior without catching regressions.",
+    "solution": "Use snapshots intentionally for complex serializable output; avoid them for simple values.\n\n```typescript\n// BAD: snapshot of trivial output\ntest('user name', () => {\n  expect(getUser().name).toMatchSnapshot(); // Just test the value directly!\n});\n\n// GOOD: snapshot for complex, stable serialized output\ntest('renders user card', () => {\n  const { container } = render(<UserCard user={mockUser} />);\n  expect(container).toMatchSnapshot();\n});\n\n// BETTER: inline snapshots for small outputs (visible in test file)\ntest('formats error message', () => {\n  expect(formatError({ code: 404, path: '/api/users' }))\n    .toMatchInlineSnapshot(`\"Not Found: /api/users (404)\"`);\n});\n\n// For React components: prefer specific assertions\ntest('shows loading state', () => {\n  render(<UserCard loading />);\n  expect(screen.getByRole('progressbar')).toBeInTheDocument();\n  // Better than snapshot \u2014 explicit intent\n});\n```",
+    "why": "Snapshots are valuable for complex, stable output that's hard to assert property-by-property. They're harmful when used as a lazy substitute for real assertions \u2014 developers approve diffs without understanding them.",
+    "gotchas": [
+      "Snapshot files must be committed to source control \u2014 they are the test artifact.",
+      "Large snapshot files are a code smell \u2014 break down the component or use more specific assertions.",
+      "Inline snapshots update themselves on 'jest -u' but show the expected value in the test file, making diffs more visible."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "1 snapshot(s) obsolete"
+    ],
+    "keywords": [
+      "snapshot testing",
+      "toMatchSnapshot",
+      "inline snapshot",
+      "regression testing",
+      "jest snapshots"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Flaky Test Debugging: Root Causes and Fixes",
+    "category": "debug",
+    "tags": [
+      "testing",
+      "flaky-tests",
+      "debugging",
+      "async"
+    ],
+    "problem": "Tests pass most of the time but occasionally fail without code changes. Flaky tests erode trust in the test suite and slow down CI.",
+    "solution": "Identify and fix the root cause \u2014 flaky tests almost always have a deterministic root cause.\n\n```typescript\n// Cause 1: Race conditions \u2014 async code not properly awaited\n// BAD:\ntest('loads user', () => {\n  render(<UserProfile />);\n  expect(screen.getByText('Alice')).toBeInTheDocument(); // Races with fetch!\n});\n// GOOD:\ntest('loads user', async () => {\n  render(<UserProfile />);\n  expect(await screen.findByText('Alice')).toBeInTheDocument();\n});\n\n// Cause 2: Time-dependent tests\n// BAD:\nexpect(new Date().getFullYear()).toBe(2024); // Fails in 2025\n// GOOD: use fake timers\nvi.useFakeTimers();\nvi.setSystemTime(new Date('2024-06-15'));\n\n// Cause 3: Random data without seed\n// BAD:\nconst id = Math.random(); // Different each run\n// GOOD: deterministic test data\nconst id = 'test-user-1';\n\n// Cause 4: Test ordering dependency\n// Run tests in random order to surface:\n// jest --randomize\n```",
+    "why": "Flaky tests are caused by external non-determinism: time, randomness, async timing, test ordering, or shared state. Each has a specific fix.",
+    "gotchas": [
+      "Adding retry logic to flaky tests hides the problem \u2014 always fix the root cause.",
+      "Use '--runInBand' to run tests serially to surface ordering dependencies.",
+      "Network calls in tests without MSW or similar mocking are inherently flaky."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "Timeout - Async callback was not invoked within the 5000 ms timeout"
+    ],
+    "keywords": [
+      "flaky tests",
+      "race condition",
+      "async testing",
+      "fake timers",
+      "test ordering",
+      "randomize"
+    ],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Test Doubles: Stub vs Mock vs Spy",
+    "category": "pattern",
+    "tags": [
+      "testing",
+      "test-doubles",
+      "stub",
+      "mock",
+      "spy"
+    ],
+    "problem": "Developers use 'mock' to mean everything, then implement the wrong type of test double \u2014 setting up mocks that don't need behavior verification or stubs that should be asserting calls.",
+    "solution": "Choose the right test double type for the job.\n\n```typescript\n// STUB: replaces a dependency with a fixed return value (no verification)\nconst dbStub = { getUser: jest.fn().mockResolvedValue({ id: '1', name: 'Alice' }) };\n// Use when: you need the dependency to return a value, don't care how often called\n\n// MOCK: pre-programmed with expectations (verified after test)\nconst emailMock = { send: jest.fn() };\n// ... run code ...\nexpect(emailMock.send).toHaveBeenCalledWith({ to: 'alice@example.com' });\n// Use when: you need to verify the interaction happened correctly\n\n// SPY: wraps real implementation, records calls\nconst spy = jest.spyOn(console, 'error').mockImplementation(() => {});\n// ... run code ...\nexpect(spy).toHaveBeenCalledTimes(1);\nspy.mockRestore(); // Restore original\n// Use when: you want real behavior but also need to verify or suppress output\n\n// FAKE: working implementation, simpler than real (e.g., in-memory DB)\nclass InMemoryUserRepository implements UserRepository {\n  private users = new Map<string, User>();\n  async findById(id: string) { return this.users.get(id) ?? null; }\n  async save(user: User) { this.users.set(user.id, user); }\n}\n```",
+    "why": "Using the wrong test double type leads to brittle tests (over-specification with mocks) or insufficient verification (using stubs when call verification is needed).",
+    "gotchas": [
+      "Mocks with many expectations are brittle \u2014 tests break when implementation details change, not when behavior changes.",
+      "Prefer stubs and fakes for dependency injection; use mocks sparingly for communication verification.",
+      "jest.fn() can be used as a stub (mockReturnValue) or a mock (toHaveBeenCalledWith) \u2014 the terminology is overloaded."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "stub",
+      "mock",
+      "spy",
+      "fake",
+      "test double",
+      "jest.fn",
+      "spyOn"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Property-Based Testing with fast-check",
+    "category": "pattern",
+    "tags": [
+      "testing",
+      "property-based-testing",
+      "fast-check"
+    ],
+    "problem": "Example-based tests only cover cases the developer thought of. Edge cases in string handling, number bounds, and list operations go untested.",
+    "solution": "Use property-based testing to generate hundreds of random inputs and find edge cases automatically.\n\n```typescript\nimport * as fc from 'fast-check';\n\n// Define properties that must hold for ALL inputs\ntest('reverse of reverse is identity', () => {\n  fc.assert(\n    fc.property(fc.array(fc.integer()), (arr) => {\n      expect([...arr].reverse().reverse()).toEqual(arr);\n    })\n  );\n});\n\ntest('parse(stringify(x)) === x for valid users', () => {\n  const userArbitrary = fc.record({\n    name: fc.string({ minLength: 1, maxLength: 100 }),\n    age: fc.integer({ min: 0, max: 150 }),\n    email: fc.emailAddress(),\n  });\n\n  fc.assert(\n    fc.property(userArbitrary, (user) => {\n      const serialized = JSON.stringify(user);\n      expect(JSON.parse(serialized)).toEqual(user);\n    })\n  );\n});\n\n// Shrinking: fast-check finds the MINIMAL failing case\n// If arr=[1,2,3,0,-1] fails, it shrinks to [0] or [-1]\n```",
+    "why": "Property-based testing generates random inputs across the whole input space. When a failure is found, it automatically shrinks to the smallest failing example, making bugs easy to diagnose.",
+    "gotchas": [
+      "fast-check seeds its random number generator \u2014 failing tests print the seed, allowing exact reproduction.",
+      "Properties must be true for ALL valid inputs \u2014 be careful not to write properties that depend on implementation details.",
+      "Use fc.pre() for preconditions to filter invalid inputs rather than letting the property handle them."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "property-based testing",
+      "fast-check",
+      "fuzzing",
+      "generative testing",
+      "arbitraries",
+      "shrinking"
+    ],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Accessibility Testing with jest-axe",
+    "category": "pattern",
+    "tags": [
+      "testing",
+      "accessibility",
+      "a11y",
+      "jest-axe"
+    ],
+    "problem": "Accessibility issues are often discovered only after deployment during manual audits. Automated checks for contrast, ARIA labels, and semantic HTML are skipped because they seem hard to integrate into unit tests.",
+    "solution": "Use jest-axe (or vitest-axe) to run automated accessibility checks in component tests.\n\n```typescript\nimport { render } from '@testing-library/react';\nimport { axe, toHaveNoViolations } from 'jest-axe';\n\nexpect.extend(toHaveNoViolations);\n\ntest('UserCard has no accessibility violations', async () => {\n  const { container } = render(\n    <UserCard user={{ name: 'Alice', role: 'admin' }} />\n  );\n  const results = await axe(container);\n  expect(results).toHaveNoViolations();\n});\n\n// Test interactive elements\ntest('form is accessible', async () => {\n  const { container } = render(<LoginForm />);\n  expect(await axe(container)).toHaveNoViolations();\n});\n\n// Common issues caught by axe:\n// - Images without alt text\n// - Form inputs without labels\n// - Insufficient color contrast\n// - Invalid ARIA attributes\n// - Missing landmark regions\n// - Buttons without accessible names\n```",
+    "why": "Axe-core (used by jest-axe) catches ~57% of accessibility issues automatically. Running it in tests catches regressions immediately rather than at audit time.",
+    "gotchas": [
+      "jest-axe only catches automatable violations \u2014 it cannot test keyboard navigation, focus management, or screen reader announcements.",
+      "The axe() call is async \u2014 always await it.",
+      "Axe checks the rendered DOM including inherited styles \u2014 use a realistic test environment (jsdom)."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "Expected the HTML found at ... to have no violations"
+    ],
+    "keywords": [
+      "accessibility",
+      "a11y",
+      "axe",
+      "jest-axe",
+      "ARIA",
+      "WCAG",
+      "automated audit"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Playwright vs Cypress: When to Use Each",
+    "category": "pattern",
+    "tags": [
+      "testing",
+      "playwright",
+      "cypress",
+      "e2e"
+    ],
+    "problem": "Teams choose E2E tools without understanding the tradeoffs, then hit friction \u2014 Cypress's single-tab limitation in multi-window flows, or Playwright's steeper setup curve.",
+    "solution": "Choose based on your specific requirements.\n\n```typescript\n// Playwright \u2014 better for:\n// - Multi-browser (Chrome, Firefox, Safari/WebKit)\n// - Multi-tab/window tests\n// - Non-browser automation (API + UI)\n// - CI performance (parallel by default)\n\nimport { test, expect } from '@playwright/test';\n\ntest('checkout flow', async ({ page, context }) => {\n  const page2 = await context.newPage(); // Multi-tab \u2014 easy in Playwright\n  await page.goto('/shop');\n  await page.getByRole('button', { name: 'Add to Cart' }).click();\n  await expect(page.getByTestId('cart-count')).toHaveText('1');\n});\n\n// Cypress \u2014 better for:\n// - Time-travel debugging (DOM snapshots per step)\n// - Component testing (Cypress CT)\n// - Real-time browser dev experience\n// - Simpler setup for single-browser apps\n\n// cy.intercept() for network mocking (Cypress)\ncy.intercept('GET', '/api/users', { fixture: 'users.json' });\n```",
+    "why": "Playwright runs in a separate process from the browser, enabling multi-tab and cross-browser testing. Cypress runs in the browser, giving better debugging but limiting multi-context tests.",
+    "gotchas": [
+      "Playwright requires test.use({ browserName: 'webkit' }) for Safari \u2014 webkit is not Chrome.",
+      "Cypress has built-in retry-ability for most commands; Playwright requires explicit waitFor patterns.",
+      "Playwright's trace viewer is excellent for debugging CI failures \u2014 always enable tracing on failure."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "Playwright",
+      "Cypress",
+      "E2E testing",
+      "browser testing",
+      "multi-tab",
+      "cross-browser"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Parallel Test Execution: Sharding and Worker Configuration",
+    "category": "pattern",
+    "tags": [
+      "testing",
+      "parallel",
+      "sharding",
+      "CI"
+    ],
+    "problem": "Test suites taking 10+ minutes in CI block developer flow. Tests run serially when they could run in parallel, or they share state that breaks under parallelism.",
+    "solution": "Configure test runners for parallel execution and use CI sharding for large suites.\n\n```typescript\n// vitest.config.ts \u2014 parallel workers\nexport default defineConfig({\n  test: {\n    pool: 'forks',   // or 'threads' (forks is more isolated)\n    poolOptions: {\n      forks: { singleFork: false }, // Run tests in separate processes\n    },\n    // Run tests in a specific number of threads\n    // maxWorkers: '50%', // Use half available CPUs\n  },\n});\n\n// GitHub Actions \u2014 shard across multiple jobs\n// .github/workflows/test.yml\n// strategy:\n//   matrix:\n//     shardIndex: [1, 2, 3, 4]\n//     shardTotal: [4]\n// steps:\n//   - run: npx vitest --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}\n\n// Jest sharding\n// jest --shard=1/4\n// jest --shard=2/4\n\n// For database tests: use unique DB per worker\nconst workerId = process.env.VITEST_WORKER_ID ?? '1';\nconst dbName = `test_db_${workerId}`;\n```",
+    "why": "Modern CPUs have multiple cores. Test runners default to using multiple workers but tests with shared state (same DB, same port) fail under parallel execution. Proper isolation enables true parallelism.",
+    "gotchas": [
+      "Each test worker needs its own database, port, or isolated resource to avoid conflicts.",
+      "Playwright has built-in sharding \u2014 use '--shard=1/4' natively.",
+      "Thread-based workers share memory; fork-based workers are isolated but slower to start."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [
+      "CI"
+    ],
+    "error_messages": [
+      "EADDRINUSE: address already in use",
+      "duplicate key value violates unique constraint"
+    ],
+    "keywords": [
+      "parallel tests",
+      "sharding",
+      "workers",
+      "CI",
+      "test performance",
+      "VITEST_WORKER_ID"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Visual Regression Testing with Playwright Screenshots",
+    "category": "pattern",
+    "tags": [
+      "testing",
+      "visual-regression",
+      "playwright",
+      "screenshots"
+    ],
+    "problem": "CSS changes unintentionally break visual layouts that unit tests don't catch. Manual visual reviews are slow and miss subtle pixel-level regressions.",
+    "solution": "Use Playwright's built-in screenshot comparison for visual regression testing.\n\n```typescript\nimport { test, expect } from '@playwright/test';\n\ntest('homepage visual regression', async ({ page }) => {\n  await page.goto('/');\n  // Wait for animations to settle\n  await page.waitForLoadState('networkidle');\n\n  // Full page screenshot comparison\n  await expect(page).toHaveScreenshot('homepage.png', {\n    maxDiffPixels: 100,    // Allow minor rendering differences\n    threshold: 0.2,        // Per-pixel color tolerance\n  });\n});\n\ntest('button states', async ({ page }) => {\n  await page.goto('/components');\n  const button = page.getByRole('button', { name: 'Submit' });\n\n  // Screenshot specific element\n  await expect(button).toHaveScreenshot('button-default.png');\n\n  await button.hover();\n  await expect(button).toHaveScreenshot('button-hover.png');\n});\n\n// Update snapshots when intentional:\n// npx playwright test --update-snapshots\n```",
+    "why": "Playwright's screenshot diffing detects pixel-level visual changes that DOM assertions miss (CSS layout shifts, font rendering, color changes). Baseline images are stored in source control.",
+    "gotchas": [
+      "Screenshots are OS/browser-specific \u2014 generate baseline screenshots in the same environment as CI (use Docker).",
+      "Font rendering differs between OSes \u2014 use '--ignore-fonts' or run tests in containers.",
+      "First run without baseline generates the snapshot \u2014 commit it to source control."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "Screenshot comparison failed: 1234 pixels are different"
+    ],
+    "keywords": [
+      "visual regression",
+      "screenshot testing",
+      "Playwright",
+      "pixel diff",
+      "baseline",
+      "toHaveScreenshot"
+    ],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Python dataclasses vs attrs vs Pydantic: When to Use Each",
+    "category": "pattern",
+    "tags": [
+      "python",
+      "dataclasses",
+      "pydantic",
+      "attrs"
+    ],
+    "problem": "Python has multiple data class libraries. Choosing the wrong one for the use case leads to missing validation, performance issues, or excessive boilerplate.",
+    "solution": "Choose based on your primary need: stdlib simplicity, performance, or validation.\n\n```python\n# dataclasses \u2014 stdlib, simple, no validation\nfrom dataclasses import dataclass, field\nfrom typing import List\n\n@dataclass\nclass User:\n    name: str\n    email: str\n    tags: List[str] = field(default_factory=list)\n    # No runtime validation \u2014 name could be an int\n\n# attrs \u2014 performance, validators, converters\nimport attr\n\n@attr.s(auto_attribs=True, slots=True)\nclass User:\n    name: str = attr.ib(validator=attr.validators.instance_of(str))\n    email: str = attr.ib()\n    tags: list = attr.ib(factory=list)\n    # 2-5x faster than dataclasses for large-scale use\n\n# Pydantic v2 \u2014 validation + serialization (FastAPI standard)\nfrom pydantic import BaseModel, EmailStr, field_validator\n\nclass User(BaseModel):\n    name: str\n    email: EmailStr  # Validates format\n    tags: list[str] = []\n\n    @field_validator('name')\n    @classmethod\n    def name_not_empty(cls, v: str) -> str:\n        if not v.strip():\n            raise ValueError('Name cannot be empty')\n        return v.strip()\n\nuser = User(name='Alice', email='alice@example.com')\nuser.model_dump()  # {'name': 'Alice', 'email': 'alice@example.com', 'tags': []}\n```",
+    "why": "dataclasses are built-in but have no validation. attrs has validators and is faster (optional slots). Pydantic v2 (Rust core) has runtime type coercion and validation, essential for API boundaries.",
+    "gotchas": [
+      "Pydantic v2 changed from .dict() to .model_dump() and .json() to .model_dump_json() \u2014 v1 code needs migration.",
+      "dataclasses with mutable defaults require field(default_factory=...) \u2014 using [] directly raises an error.",
+      "attrs slots=True means you can't add arbitrary attributes \u2014 use slots only for stable data classes."
+    ],
+    "language": "python",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "ValueError: mutable default ... is not allowed: use default_factory"
+    ],
+    "keywords": [
+      "dataclasses",
+      "attrs",
+      "pydantic",
+      "data class",
+      "validation",
+      "serialization"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "Python 3.10+, Pydantic v2"
+  },
+  {
+    "title": "Python Async Context Managers with asynccontextmanager",
+    "category": "pattern",
+    "tags": [
+      "python",
+      "async",
+      "context-manager",
+      "asynccontextmanager"
+    ],
+    "problem": "Writing async resource management code (DB connections, HTTP sessions) requires implementing __aenter__ and __aexit__ boilerplate that is verbose and error-prone.",
+    "solution": "Use @asynccontextmanager decorator to write async context managers as generators.\n\n```python\nfrom contextlib import asynccontextmanager\nfrom typing import AsyncGenerator\nimport httpx\n\n@asynccontextmanager\nasync def http_client() -> AsyncGenerator[httpx.AsyncClient, None]:\n    client = httpx.AsyncClient(timeout=30.0)\n    try:\n        yield client\n    finally:\n        await client.aclose()  # Always runs, even on exception\n\n# Usage\nasync def fetch_user(user_id: str) -> dict:\n    async with http_client() as client:\n        response = await client.get(f'/api/users/{user_id}')\n        response.raise_for_status()\n        return response.json()\n\n# FastAPI lifespan (modern app startup/shutdown)\nfrom fastapi import FastAPI\n\n@asynccontextmanager\nasync def lifespan(app: FastAPI):\n    # Startup\n    await db.connect()\n    yield\n    # Shutdown\n    await db.disconnect()\n\napp = FastAPI(lifespan=lifespan)\n```",
+    "why": "The generator approach separates setup (before yield) and teardown (after yield). The finally block guarantees cleanup even if the body raises an exception.",
+    "gotchas": [
+      "Yield exactly once \u2014 multiple yields or no yield raises RuntimeError.",
+      "Use 'async with' not 'with' for async context managers.",
+      "FastAPI's lifespan replaces the deprecated on_event('startup') / on_event('shutdown') handlers."
+    ],
+    "language": "python",
+    "framework": "fastapi",
+    "environment": [],
+    "error_messages": [
+      "RuntimeError: generator didn't yield"
+    ],
+    "keywords": [
+      "asynccontextmanager",
+      "async context manager",
+      "async with",
+      "lifespan",
+      "cleanup",
+      "FastAPI"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "Python 3.7+"
+  },
+  {
+    "title": "typing.Protocol for Structural Subtyping in Python",
+    "category": "pattern",
+    "tags": [
+      "python",
+      "typing",
+      "Protocol",
+      "duck-typing"
+    ],
+    "problem": "Using ABC (Abstract Base Classes) for interfaces requires explicit inheritance, breaking duck typing. Third-party classes can't implement your interface without modification.",
+    "solution": "Use typing.Protocol for structural subtyping \u2014 any class with matching methods satisfies the protocol.\n\n```python\nfrom typing import Protocol, runtime_checkable\n\n@runtime_checkable\nclass Drawable(Protocol):\n    def draw(self, canvas: 'Canvas') -> None: ...\n    def get_bounds(self) -> tuple[float, float, float, float]: ...\n\n# Any class with these methods satisfies Drawable\nclass Circle:  # No inheritance needed!\n    def draw(self, canvas: 'Canvas') -> None:\n        canvas.draw_circle(self.x, self.y, self.radius)\n\n    def get_bounds(self) -> tuple[float, float, float, float]:\n        return (self.x - self.radius, self.y - self.radius,\n                self.x + self.radius, self.y + self.radius)\n\ndef render(shape: Drawable) -> None:\n    shape.draw(canvas)\n\nrender(Circle(0, 0, 5))  # OK \u2014 Circle is structurally Drawable\n\n# Runtime check (requires @runtime_checkable)\nassert isinstance(Circle(0, 0, 5), Drawable)  # True\n```",
+    "why": "Protocol implements PEP 544 structural subtyping. Unlike ABC, it doesn't require explicit registration or inheritance \u2014 matching the interface structurally is sufficient.",
+    "gotchas": [
+      "@runtime_checkable only checks for the existence of methods, not their signatures.",
+      "Protocol classes should not have implementation \u2014 use ABC if you need default implementations.",
+      "Class variables in Protocols must be declared with ClassVar to distinguish from instance attributes."
+    ],
+    "language": "python",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "error: Argument 1 to 'render' has incompatible type 'Circle'; expected 'Drawable'"
+    ],
+    "keywords": [
+      "Protocol",
+      "structural subtyping",
+      "duck typing",
+      "interface",
+      "PEP 544"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "Python 3.8+"
+  },
+  {
+    "title": "ParamSpec for Type-Safe Decorator Wrappers",
+    "category": "pattern",
+    "tags": [
+      "python",
+      "typing",
+      "ParamSpec",
+      "decorators"
+    ],
+    "problem": "Writing typed decorators that preserve the wrapped function's parameter types and return type is impossible with basic TypeVar \u2014 the decorator signature loses the original parameter types.",
+    "solution": "Use ParamSpec to capture and forward the original function's parameter types.\n\n```python\nfrom typing import TypeVar, Callable, ParamSpec\nfrom functools import wraps\nimport time\n\nP = ParamSpec('P')  # Captures parameter spec\nR = TypeVar('R')    # Captures return type\n\ndef timed(fn: Callable[P, R]) -> Callable[P, R]:\n    @wraps(fn)\n    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:\n        start = time.perf_counter()\n        result = fn(*args, **kwargs)\n        elapsed = time.perf_counter() - start\n        print(f'{fn.__name__} took {elapsed:.3f}s')\n        return result\n    return wrapper\n\n@timed\ndef process_data(items: list[str], *, batch_size: int = 100) -> dict[str, int]:\n    return {item: len(item) for item in items}\n\n# Type checker knows:\nresult = process_data(['a', 'b'], batch_size=50)  # OK\nresult = process_data(['a'], batch_size='bad')     # Type error!\n```",
+    "why": "TypeVar alone can't express 'the same parameters as the wrapped function'. ParamSpec captures the full parameter specification (positional args and keyword args) and allows forwarding them correctly.",
+    "gotchas": [
+      "ParamSpec requires Python 3.10+ or 'from __future__ import annotations' + typing_extensions for 3.8/3.9.",
+      "Use P.args and P.kwargs in the wrapper's *args/**kwargs annotations \u2014 not *args: Any.",
+      "Concatenate[X, P] adds a parameter to the front of P's signature."
+    ],
+    "language": "python",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "ParamSpec",
+      "decorator typing",
+      "type-safe wrapper",
+      "Callable",
+      "parameter spec"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "Python 3.10+ (typing_extensions for 3.8+)"
+  },
+  {
+    "title": "TypeGuard in Python for Runtime Type Narrowing",
+    "category": "pattern",
+    "tags": [
+      "python",
+      "typing",
+      "TypeGuard",
+      "type-narrowing"
+    ],
+    "problem": "Functions that check runtime types return bool, so type checkers don't narrow the type in the calling code \u2014 the value is still typed as the broad type after an isinstance check in a separate function.",
+    "solution": "Use TypeGuard as the return annotation to narrow types in calling code.\n\n```python\nfrom typing import TypeGuard\n\ndef is_string_list(val: list[object]) -> TypeGuard[list[str]]:\n    return all(isinstance(x, str) for x in val)\n\ndef process(items: list[object]) -> None:\n    if is_string_list(items):\n        # items is list[str] here \u2014 not list[object]\n        joined = ', '.join(items)  # OK \u2014 no type error\n        print(joined.upper())\n\n# Without TypeGuard, items would still be list[object] inside the if block\n# and ', '.join(items) would be a type error\n\n# Practical example: API response validation\ndef is_user_dict(data: object) -> TypeGuard[dict[str, str]]:\n    return (\n        isinstance(data, dict)\n        and all(isinstance(k, str) and isinstance(v, str) for k, v in data.items())\n    )\n```",
+    "why": "TypeGuard tells the type checker: 'if this function returns True, narrow the first argument to the specified type'. It's the Python equivalent of TypeScript's 'value is Type' predicate.",
+    "gotchas": [
+      "TypeGuard only narrows the type in the True branch \u2014 the False branch is not narrowed.",
+      "The type checker trusts your TypeGuard implementation \u2014 an incorrect predicate creates unsound types.",
+      "TypeGuard was added in Python 3.10; use typing_extensions for earlier versions."
+    ],
+    "language": "python",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "TypeGuard",
+      "type narrowing",
+      "runtime type check",
+      "type predicate",
+      "isinstance"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "Python 3.10+"
+  },
+  {
+    "title": "Python overload Decorator for Multiple Call Signatures",
+    "category": "pattern",
+    "tags": [
+      "python",
+      "typing",
+      "overload",
+      "multiple-signatures"
+    ],
+    "problem": "A function accepts multiple argument types and returns different types based on input. A single signature with Union types loses the connection between input and output types.",
+    "solution": "Use @overload to define multiple typed signatures for the same function.\n\n```python\nfrom typing import overload, Literal\n\n@overload\ndef parse_value(value: str, as_type: Literal['int']) -> int: ...\n@overload\ndef parse_value(value: str, as_type: Literal['float']) -> float: ...\n@overload\ndef parse_value(value: str, as_type: Literal['str']) -> str: ...\n\ndef parse_value(value: str, as_type: str) -> int | float | str:\n    if as_type == 'int':\n        return int(value)\n    elif as_type == 'float':\n        return float(value)\n    return value\n\n# Type checker now knows the return type based on as_type\nresult1 = parse_value('42', 'int')    # int\nresult2 = parse_value('3.14', 'float') # float\nresult3 = parse_value('hello', 'str')  # str\n\n# Without overload, result would be int | float | str\n# and you'd need to type-narrow manually\n```",
+    "why": "Overloads let the type checker pick the correct return type based on which signature matches the call. Only the implementation signature (without @overload) is used at runtime.",
+    "gotchas": [
+      "The implementation signature (after all @overload stubs) must NOT have @overload and is never visible to callers.",
+      "Overload stubs must have '...' as the body \u2014 they are never executed.",
+      "Overloads are checked in order \u2014 more specific overloads must come before general ones."
+    ],
+    "language": "python",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "overload",
+      "multiple signatures",
+      "function overloading",
+      "Literal type",
+      "return type"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "Python 3.5+"
+  },
+  {
+    "title": "__slots__ in Dataclasses for Memory Efficiency",
+    "category": "pattern",
+    "tags": [
+      "python",
+      "dataclasses",
+      "slots",
+      "memory"
+    ],
+    "problem": "Python objects store instance attributes in a __dict__ per instance, consuming significant memory when millions of instances are created. dataclasses do not enable slots by default.",
+    "solution": "Use slots=True in dataclasses (Python 3.10+) to eliminate per-instance __dict__.\n\n```python\nfrom dataclasses import dataclass\nimport sys\n\n@dataclass\nclass Point:\n    x: float\n    y: float\n\n@dataclass(slots=True)\nclass PointSlotted:\n    x: float\n    y: float\n\np1 = Point(1.0, 2.0)\np2 = PointSlotted(1.0, 2.0)\n\nprint(sys.getsizeof(p1))  # ~56 bytes plus __dict__ ~232 bytes\nprint(sys.getsizeof(p2))  # ~56 bytes no __dict__\n\n# Slotted classes cannot have arbitrary attributes:\np2.z = 3.0  # AttributeError: 'PointSlotted' has no attribute 'z'\n\n# For Python 3.9 and earlier:\n@dataclass\nclass LegacySlotted:\n    __slots__ = ('x', 'y')\n    x: float\n    y: float\n```",
+    "why": "Python instances store attributes in a dict, which has ~200 bytes of overhead. __slots__ replaces the dict with fixed-size array slots, reducing memory 50-80% for large numbers of instances.",
+    "gotchas": [
+      "slots=True requires Python 3.10+ \u2014 use attrs slots=True for compatibility with older versions.",
+      "Inheritance of slotted dataclasses requires the parent to also use slots \u2014 mixing breaks the optimization.",
+      "Slotted classes cannot add arbitrary attributes after creation."
+    ],
+    "language": "python",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "AttributeError: 'PointSlotted' object has no attribute 'z'"
+    ],
+    "keywords": [
+      "__slots__",
+      "slots",
+      "dataclasses",
+      "memory optimization",
+      "Python 3.10"
+    ],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "Python 3.10+"
+  },
+  {
+    "title": "Walrus Operator (:=) for Assignment Expressions",
+    "category": "pattern",
+    "tags": [
+      "python",
+      "walrus-operator",
+      "assignment-expression"
+    ],
+    "problem": "Patterns like compute a value, check it, then use it require either duplicating the computation or introducing an extra variable outside the conditional.",
+    "solution": "Use the walrus operator (:=) to assign and test in a single expression.\n\n```python\nimport re\n\n# Without walrus: separate variable\nresult = re.search(r'\\d+', text)\nif result:\n    print(result.group())\n\n# With walrus: assign and check in one expression\nif m := re.search(r'\\d+', text):\n    print(m.group())\n\n# Useful in while loops\nwhile chunk := file.read(8192):\n    process(chunk)\n\n# Filtering with list comprehension\nresults = [\n    clean\n    for raw in data\n    if (clean := transform(raw)) is not None\n]\n```",
+    "why": "The walrus operator assigns the result of an expression to a name and evaluates to that value. It reduces redundant computation and makes the compute-check-use pattern concise.",
+    "gotchas": [
+      "Walrus operator has lower precedence than most operators \u2014 use parentheses when in doubt.",
+      "Variables assigned with := in a comprehension leak into the enclosing scope, unlike regular comprehension variables.",
+      "Overusing walrus in complex expressions reduces readability \u2014 prefer explicit variables for non-trivial expressions."
+    ],
+    "language": "python",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "walrus operator",
+      "assignment expression",
+      ":=",
+      "PEP 572",
+      "while loop",
+      "comprehension"
+    ],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "Python 3.8+"
+  },
+  {
+    "title": "Structural Pattern Matching (match/case) for Complex Dispatch",
+    "category": "pattern",
+    "tags": [
+      "python",
+      "match-case",
+      "pattern-matching",
+      "structural-matching"
+    ],
+    "problem": "Complex if/elif chains for dispatching on data structure shape are verbose and do not scale. isinstance chains for discriminated data structures are brittle.",
+    "solution": "Use match/case for readable, exhaustive structural pattern matching.\n\n```python\nfrom dataclasses import dataclass\n\n@dataclass\nclass Circle:\n    radius: float\n\n@dataclass\nclass Rectangle:\n    width: float\n    height: float\n\ndef area(shape: Circle | Rectangle) -> float:\n    match shape:\n        case Circle(radius=r):\n            return 3.14159 * r ** 2\n        case Rectangle(width=w, height=h):\n            return w * h\n\n# Pattern matching on dictionaries (API responses)\ndef handle_response(response: dict) -> str:\n    match response:\n        case {'status': 'ok', 'data': {'user': {'name': name}}}:\n            return f'Hello, {name}!'\n        case {'status': 'error', 'message': msg}:\n            return f'Error: {msg}'\n        case {'status': str(s)}:\n            return f'Unknown status: {s}'\n        case _:\n            return 'Invalid response format'\n\n# Sequence patterns\ndef first_two(items: list) -> str:\n    match items:\n        case []:\n            return 'empty'\n        case [x]:\n            return f'one: {x}'\n        case [x, y, *_]:\n            return f'starts with: {x}, {y}'\n```",
+    "why": "Structural pattern matching deconstructs data and dispatches based on shape in one step. Unlike isinstance, it handles nested structures and captures sub-values simultaneously.",
+    "gotchas": [
+      "Python pattern matching does NOT use __eq__ for matching \u2014 it uses structural decomposition.",
+      "Patterns are matched top-to-bottom; more specific patterns must come before general ones.",
+      "match/case is not the same as switch/case \u2014 it is closer to Rust/Haskell pattern matching."
+    ],
+    "language": "python",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "match",
+      "case",
+      "pattern matching",
+      "structural matching",
+      "PEP 634",
+      "dispatch"
+    ],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "Python 3.10+"
+  },
+  {
+    "title": "ExceptionGroup and except* for Handling Multiple Exceptions",
+    "category": "pattern",
+    "tags": [
+      "python",
+      "ExceptionGroup",
+      "except*",
+      "async-exceptions"
+    ],
+    "problem": "When multiple async tasks fail simultaneously via asyncio.TaskGroup, only the first exception was surfaced previously. Multiple concurrent failures were lost or required ugly workarounds.",
+    "solution": "Use ExceptionGroup and except* to handle multiple simultaneous exceptions.\n\n```python\nimport asyncio\n\nasync def failing_task(name: str, should_fail: bool) -> str:\n    await asyncio.sleep(0.1)\n    if should_fail:\n        raise ValueError(f'{name} failed')\n    return name\n\nasync def main():\n    try:\n        async with asyncio.TaskGroup() as tg:\n            t1 = tg.create_task(failing_task('a', True))\n            t2 = tg.create_task(failing_task('b', False))\n            t3 = tg.create_task(failing_task('c', True))\n        # t1 and t3 both fail \u2014 ExceptionGroup raised with both errors\n    except* ValueError as eg:\n        for exc in eg.exceptions:\n            print(f'Caught: {exc}')\n    except* TypeError as eg:\n        print(f'Type errors: {eg.exceptions}')\n\n# Manual ExceptionGroup\ndef process_all(items: list) -> None:\n    errors = []\n    for item in items:\n        try:\n            process(item)\n        except Exception as e:\n            errors.append(e)\n    if errors:\n        raise ExceptionGroup('Processing errors', errors)\n```",
+    "why": "asyncio.TaskGroup collects all task exceptions and raises them as an ExceptionGroup. The except* syntax filters ExceptionGroups by exception type, allowing each type to be handled separately.",
+    "gotchas": [
+      "except* can only catch ExceptionGroup \u2014 not bare exceptions. Cannot mix except and except* in the same try block.",
+      "except* handlers receive an ExceptionGroup, not a single exception \u2014 iterate eg.exceptions.",
+      "Nested ExceptionGroups are flattened for except* matching."
+    ],
+    "language": "python",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "ExceptionGroup: 2 sub-exceptions"
+    ],
+    "keywords": [
+      "ExceptionGroup",
+      "except*",
+      "TaskGroup",
+      "multiple exceptions",
+      "asyncio",
+      "PEP 654"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "Python 3.11+"
+  },
+  {
+    "title": "asyncio.TaskGroup: Structured Concurrency in Python",
+    "category": "pattern",
+    "tags": [
+      "python",
+      "asyncio",
+      "TaskGroup",
+      "structured-concurrency"
+    ],
+    "problem": "asyncio.gather() swallows exceptions from other tasks when one fails and does not cancel remaining tasks. Managing task lifecycles manually with create_task() leads to leaked tasks.",
+    "solution": "Use asyncio.TaskGroup for structured concurrency \u2014 all tasks are cancelled if one fails.\n\n```python\nimport asyncio\nimport httpx\n\nasync def fetch(client: httpx.AsyncClient, url: str) -> dict:\n    response = await client.get(url)\n    response.raise_for_status()\n    return response.json()\n\nasync def fetch_all(urls: list[str]) -> list[dict]:\n    async with httpx.AsyncClient() as client:\n        async with asyncio.TaskGroup() as tg:\n            tasks = [\n                tg.create_task(fetch(client, url))\n                for url in urls\n            ]\n        # All tasks are done here, or ExceptionGroup raised\n        return [t.result() for t in tasks]\n\n# TaskGroup advantages over gather:\n# 1. Cancels all tasks if one fails\n# 2. Surfaces all exceptions via ExceptionGroup\n# 3. Prevents task leaks\n# 4. Results are type-safe via task.result() per task\n```",
+    "why": "TaskGroup implements structured concurrency: the group's lifetime is bounded by the async with block. All tasks must complete before the block exits, and any failure cancels the rest.",
+    "gotchas": [
+      "Tasks cannot be added to a TaskGroup after it exits the async with block.",
+      "TaskGroup raises ExceptionGroup if multiple tasks fail \u2014 use except* to handle.",
+      "For Python 3.10 and earlier, use anyio's TaskGroup as a backport."
+    ],
+    "language": "python",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "TaskGroup",
+      "structured concurrency",
+      "asyncio",
+      "gather",
+      "task lifecycle",
+      "PEP 654"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "Python 3.11+"
+  },
+  {
+    "title": "tomllib: Reading TOML Config Files Without Dependencies",
+    "category": "pattern",
+    "tags": [
+      "python",
+      "tomllib",
+      "TOML",
+      "config"
+    ],
+    "problem": "Reading pyproject.toml or other TOML config files required installing the 'toml' or 'tomli' third-party library. Many tools now use TOML for configuration.",
+    "solution": "Use the built-in tomllib module (Python 3.11) to read TOML files.\n\n```python\nimport tomllib\nfrom pathlib import Path\n\n# Read pyproject.toml \u2014 must open in binary mode\ndef read_project_config() -> dict:\n    config_path = Path('pyproject.toml')\n    with config_path.open('rb') as f:\n        return tomllib.load(f)\n\nconfig = read_project_config()\nprint(config['project']['name'])\n\n# Parse TOML from string\ncontent = b'''\n[server]\nhost = \"0.0.0.0\"\nport = 8080\n'''\nsettings = tomllib.loads(content.decode())\n\n# Backwards compat (Python < 3.11)\ntry:\n    import tomllib\nexcept ImportError:\n    import tomli as tomllib  # pip install tomli\n```",
+    "why": "tomllib was added to Python 3.11 stdlib (PEP 680), ending the need for third-party TOML parsers. TOML is now the standard format for Python project configuration via pyproject.toml.",
+    "gotchas": [
+      "tomllib.load() requires the file to be opened in binary mode ('rb'), not text mode.",
+      "tomllib is read-only \u2014 there is no stdlib writer. Use 'tomli_w' or 'tomlkit' for writing TOML.",
+      "For Python 3.10 and earlier, 'tomli' is the recommended drop-in replacement with the same API."
+    ],
+    "language": "python",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "TypeError: file must be opened in binary mode, e.g. use `open('foo.toml', 'rb')`"
+    ],
+    "keywords": [
+      "tomllib",
+      "TOML",
+      "pyproject.toml",
+      "config file",
+      "stdlib",
+      "PEP 680"
+    ],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "Python 3.11+"
+  },
+  {
+    "title": "importlib.resources for Accessing Package Data Files",
+    "category": "pattern",
+    "tags": [
+      "python",
+      "importlib",
+      "package-data",
+      "resources"
+    ],
+    "problem": "Using __file__ to locate data files packaged with a library breaks when the package is installed as a zip (wheel) or in certain isolated environments.",
+    "solution": "Use importlib.resources (Python 3.9+ API) to access package data files robustly.\n\n```python\n# Package structure:\n# mypackage/\n#   __init__.py\n#   templates/email.html\n#   data/schema.json\n\nfrom importlib import resources\nimport json\n\n# Read a text resource\ndef get_template() -> str:\n    ref = resources.files('mypackage') / 'templates' / 'email.html'\n    return ref.read_text(encoding='utf-8')\n\n# Read a binary resource\ndef get_schema() -> dict:\n    ref = resources.files('mypackage') / 'data' / 'schema.json'\n    return json.loads(ref.read_bytes())\n\n# Get a file path (for APIs that require real paths)\nfrom contextlib import contextmanager\n\nwith resources.as_file(resources.files('mypackage') / 'data' / 'schema.json') as path:\n    # path is a real filesystem path, extracted if needed\n    validate(path)\n```",
+    "why": "Wheels can be installed as zip files, making __file__-based paths fail. importlib.resources handles all installation scenarios including zip imports and namespace packages.",
+    "gotchas": [
+      "The files() API requires Python 3.9+ \u2014 use importlib_resources backport for older versions.",
+      "Data files must be declared in package_data to be included in the wheel.",
+      "resources.as_file() may extract the file to a temp directory \u2014 use it only when a real path is required."
+    ],
+    "language": "python",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "FileNotFoundError: [Errno 2] No such file or directory"
+    ],
+    "keywords": [
+      "importlib.resources",
+      "package data",
+      "data files",
+      "wheel",
+      "resource files"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "Python 3.9+"
+  },
+  {
+    "title": "functools.cache vs lru_cache: Choosing the Right Memoization",
+    "category": "pattern",
+    "tags": [
+      "python",
+      "functools",
+      "cache",
+      "lru_cache",
+      "memoization"
+    ],
+    "problem": "Developers use lru_cache without understanding that it holds references to all cached arguments and return values, preventing garbage collection and potentially leaking memory.",
+    "solution": "Use functools.cache for simple memoization; lru_cache with a size limit when memory matters.\n\n```python\nfrom functools import cache, lru_cache\n\n# cache: unbounded, simpler syntax (Python 3.9+)\n# Equivalent to lru_cache(maxsize=None)\n@cache\ndef fibonacci(n: int) -> int:\n    if n < 2:\n        return n\n    return fibonacci(n - 1) + fibonacci(n - 2)\n\n# lru_cache: bounded, evicts least recently used\n@lru_cache(maxsize=128)\ndef get_user(user_id: str) -> dict:\n    return db.fetch_user(user_id)  # Caches up to 128 users\n\n# Cache info and clearing\nprint(fibonacci.cache_info())\nfibonacci.cache_clear()\n\n# GOTCHA: Mutable arguments are not hashable\n@cache\ndef process(items: list) -> int:  # TypeError: unhashable type: 'list'\n    return len(items)\n\n# FIX: Use tuples for hashable sequences\n@cache\ndef process(items: tuple) -> int:\n    return len(items)\n```",
+    "why": "cache is syntactic sugar for lru_cache(maxsize=None). An unbounded cache is fine for pure mathematical functions with finite input ranges. Use bounded lru_cache for functions called with user-supplied inputs.",
+    "gotchas": [
+      "All arguments must be hashable \u2014 lists, dicts, and sets cannot be used as cache keys.",
+      "Cached functions hold strong references to arguments and results, preventing garbage collection.",
+      "lru_cache on instance methods caches 'self', preventing instance garbage collection. Use functools.cached_property instead."
+    ],
+    "language": "python",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "TypeError: unhashable type: 'list'"
+    ],
+    "keywords": [
+      "functools.cache",
+      "lru_cache",
+      "memoization",
+      "caching",
+      "hashable",
+      "memory leak"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "Python 3.9+ (cache), 3.2+ (lru_cache)"
+  },
+  {
+    "title": "pathlib vs os.path: Modern File Path Handling",
+    "category": "pattern",
+    "tags": [
+      "python",
+      "pathlib",
+      "os.path",
+      "file-handling"
+    ],
+    "problem": "Code using os.path for file operations is verbose, requires manual string concatenation, and is hard to read. Path manipulation with string operations is error-prone on Windows.",
+    "solution": "Use pathlib.Path for all file system operations \u2014 it is object-oriented, readable, and cross-platform.\n\n```python\nfrom pathlib import Path\n\n# Creating paths \u2014 / operator joins parts cleanly\nbase = Path('/data')\nconfig = base / 'config' / 'settings.json'\n\n# Reading and writing \u2014 no open() needed for simple cases\ncontent = config.read_text(encoding='utf-8')\nconfig.write_text('{}', encoding='utf-8')\n\n# File info\nconfig.exists()\nconfig.is_file()\nconfig.stat().st_size\n\n# Parts and transformations\npath = Path('/data/reports/report.csv.gz')\npath.name        # 'report.csv.gz'\npath.stem        # 'report.csv'\npath.suffix      # '.gz'\npath.parent      # Path('/data/reports')\n\n# Globbing\nfor csv_file in Path('data').glob('**/*.csv'):\n    print(csv_file)\n\n# Creating directories\nPath('/data/new/dir').mkdir(parents=True, exist_ok=True)\n```",
+    "why": "pathlib.Path is object-oriented, cross-platform, and chainable. It replaces os.path, os.getcwd(), os.makedirs(), and file open patterns with a unified, readable API.",
+    "gotchas": [
+      "Some older libraries still require str(path) rather than accepting Path objects directly.",
+      "Path('~').expanduser() is needed for home directory paths \u2014 Path('~') is a literal path.",
+      "Path is immutable \u2014 all operations return new Path objects."
+    ],
+    "language": "python",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "pathlib",
+      "Path",
+      "os.path",
+      "file system",
+      "glob",
+      "mkdir",
+      "cross-platform"
+    ],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "Python 3.4+"
+  },
+  {
+    "title": "API Authentication: Bearer Token vs API Key Patterns",
+    "category": "pattern",
+    "tags": [
+      "rest-api",
+      "authentication",
+      "bearer-token",
+      "api-key"
+    ],
+    "problem": "APIs implement authentication inconsistently \u2014 API keys in query params (logged in URLs), tokens in custom headers, or mixed approaches that confuse clients and expose secrets.",
+    "solution": "Use Authorization header for Bearer tokens; X-API-Key header for API keys. Never put secrets in URLs.\n\n```typescript\n// Bearer token \u2014 for user-level auth\napp.use((req, res, next) => {\n  const authHeader = req.headers.authorization;\n  if (!authHeader?.startsWith('Bearer ')) {\n    return res.status(401).json({ error: 'Missing Bearer token' });\n  }\n  const token = authHeader.slice(7);\n  try {\n    req.user = verifyJWT(token);\n    next();\n  } catch {\n    res.status(401).json({ error: 'Invalid or expired token' });\n  }\n});\n\n// API key \u2014 for service-level auth\napp.use((req, res, next) => {\n  const apiKey = req.headers['x-api-key'];\n  if (!apiKey || !isValidApiKey(apiKey as string)) {\n    return res.status(401).json({ error: 'Invalid API key' });\n  }\n  next();\n});\n\n// Client usage:\n// Bearer: Authorization: Bearer eyJhbGci...\n// API Key: X-API-Key: sk_live_abc123\n// NEVER: GET /api/data?api_key=sk_live_abc123\n```",
+    "why": "Query parameters appear in web server access logs, proxy logs, and browser history. Authorization header values are typically excluded from logs. Bearer tokens expire; API keys are long-lived.",
+    "gotchas": [
+      "Never log Authorization or X-API-Key headers \u2014 add them to log redaction rules.",
+      "Validate API keys with constant-time comparison to prevent timing attacks.",
+      "JWT Bearer tokens should have short expiry with refresh token rotation."
+    ],
+    "language": "typescript",
+    "framework": "express",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "Bearer token",
+      "API key",
+      "authentication",
+      "Authorization header",
+      "JWT",
+      "X-API-Key"
+    ],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Content Negotiation with Accept Headers",
+    "category": "pattern",
+    "tags": [
+      "rest-api",
+      "content-negotiation",
+      "accept-header"
+    ],
+    "problem": "APIs return JSON unconditionally. Clients that need XML, CSV, or specific JSON variants have no way to request their preferred format, requiring separate endpoints per format.",
+    "solution": "Implement content negotiation using the Accept request header to serve multiple formats from one endpoint.\n\n```typescript\napp.get('/users', async (req, res) => {\n  const users = await db.getUsers();\n\n  // req.accepts() negotiates based on quality factors (q=0.9)\n  const accept = req.accepts(['json', 'csv', 'xml']);\n\n  switch (accept) {\n    case 'json':\n      res.json(users);\n      break;\n    case 'csv':\n      res.setHeader('Content-Type', 'text/csv');\n      res.setHeader('Content-Disposition', 'attachment; filename=\"users.csv\"');\n      res.send(toCsv(users));\n      break;\n    case 'xml':\n      res.setHeader('Content-Type', 'application/xml');\n      res.send(toXml(users));\n      break;\n    default:\n      // 406 Not Acceptable\n      res.status(406).json({\n        error: 'Not Acceptable',\n        supported: ['application/json', 'text/csv', 'application/xml'],\n      });\n  }\n});\n```",
+    "why": "Content negotiation allows one endpoint to serve multiple formats. The client declares preference via Accept header with quality factors; the server responds with the best match or 406.",
+    "gotchas": [
+      "Return 406 Not Acceptable (not 400) when the requested format is not supported.",
+      "Default to JSON when no Accept header is sent.",
+      "Set the correct Content-Type on the response \u2014 clients use it to decode the body."
+    ],
+    "language": "typescript",
+    "framework": "express",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "content negotiation",
+      "Accept header",
+      "406 Not Acceptable",
+      "CSV",
+      "XML",
+      "format"
+    ],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Request Timeout Handling in Node.js APIs",
+    "category": "pattern",
+    "tags": [
+      "rest-api",
+      "timeout",
+      "nodejs"
+    ],
+    "problem": "Requests to slow upstream services hold connections open indefinitely, exhausting server resources. Clients get no feedback and eventually time out on their end.",
+    "solution": "Set explicit timeouts at the HTTP server level and on upstream fetch calls.\n\n```typescript\nimport http from 'node:http';\n\nconst server = http.createServer(app);\nserver.requestTimeout = 30_000; // 30s\nserver.headersTimeout = 60_000;\n\n// Upstream fetch with AbortController\nasync function fetchWithTimeout(url: string, ms: number): Promise<Response> {\n  const controller = new AbortController();\n  const timer = setTimeout(() => controller.abort(), ms);\n  try {\n    return await fetch(url, { signal: controller.signal });\n  } catch (e) {\n    if (e instanceof Error && e.name === 'AbortError') {\n      throw new Error(`Upstream timeout after ${ms}ms`);\n    }\n    throw e;\n  } finally {\n    clearTimeout(timer);\n  }\n}\n\n// Per-route timeout middleware\nfunction withTimeout(ms: number): RequestHandler {\n  return (req, res, next) => {\n    const timer = setTimeout(() => {\n      if (!res.headersSent) {\n        res.status(503).json({ error: 'Request timeout' });\n      }\n    }, ms);\n    res.on('finish', () => clearTimeout(timer));\n    next();\n  };\n}\n```",
+    "why": "Without timeouts, slow upstream services cascade into server resource exhaustion. Each pending request holds an open socket and memory even though Node.js is non-blocking.",
+    "gotchas": [
+      "server.requestTimeout was added in Node.js 14.11 \u2014 older versions need custom middleware.",
+      "Always clear the AbortController timer in a finally block to prevent memory leaks.",
+      "Gateway timeouts from Nginx or load balancers are separate \u2014 set both."
+    ],
+    "language": "typescript",
+    "framework": "express",
+    "environment": [
+      "node"
+    ],
+    "error_messages": [
+      "AbortError: The operation was aborted",
+      "ECONNRESET"
+    ],
+    "keywords": [
+      "timeout",
+      "AbortController",
+      "requestTimeout",
+      "upstream timeout",
+      "503",
+      "408"
+    ],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "Node.js 14.11+"
+  },
+  {
+    "title": "Bulk Operations: Handling Multiple Resources in One Request",
+    "category": "pattern",
+    "tags": [
+      "rest-api",
+      "bulk-operations",
+      "batch"
+    ],
+    "problem": "Creating or updating hundreds of resources one by one is slow due to N HTTP round trips. Clients need a way to batch operations without making individual requests.",
+    "solution": "Implement bulk endpoints with per-item status using 207 Multi-Status for partial success.\n\n```typescript\napp.post('/users/bulk', async (req, res) => {\n  const items: CreateUserInput[] = req.body;\n\n  if (!Array.isArray(items) || items.length > 100) {\n    return res.status(400).json({ error: 'Expected array of 1-100 items' });\n  }\n\n  const results = await Promise.allSettled(\n    items.map((item, index) =>\n      createUser(item)\n        .then(user => ({ index, status: 'created', id: user.id }))\n        .catch(err => ({ index, status: 'error', error: err.message }))\n    )\n  );\n\n  const output = results.map(r =>\n    r.status === 'fulfilled' ? r.value : { status: 'error', error: 'Unknown' }\n  );\n\n  const hasErrors = output.some(r => r.status === 'error');\n  const allErrors = output.every(r => r.status === 'error');\n\n  res.status(allErrors ? 400 : hasErrors ? 207 : 201).json(output);\n});\n```",
+    "why": "207 Multi-Status is the standard code for responses that include per-resource status. It is appropriate when some operations succeed and others fail.",
+    "gotchas": [
+      "Always cap bulk operation size (e.g., max 100 items) to prevent resource exhaustion.",
+      "Include the index or ID in each result so clients can map responses to requests.",
+      "Wrap individual operations in try/catch \u2014 a single failure should not abort the entire batch."
+    ],
+    "language": "typescript",
+    "framework": "express",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "bulk operation",
+      "batch",
+      "207 Multi-Status",
+      "partial success",
+      "Promise.allSettled"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Response Compression with gzip and Brotli",
+    "category": "pattern",
+    "tags": [
+      "rest-api",
+      "compression",
+      "gzip",
+      "performance"
+    ],
+    "problem": "Large API responses transfer unnecessary bytes. Clients that accept compression get no benefit because the server sends uncompressed responses by default.",
+    "solution": "Enable response compression middleware to automatically compress eligible responses.\n\n```typescript\nimport compression from 'compression';\n\napp.use(compression({\n  // Only compress responses larger than 1KB\n  threshold: 1024,\n  // Custom filter \u2014 skip streaming responses\n  filter: (req, res) => {\n    if (req.headers['x-no-compression']) return false;\n    return compression.filter(req, res);\n  },\n  level: 6, // Balance between speed and compression ratio\n}));\n\n// Verify compression is working:\n// curl -H 'Accept-Encoding: gzip' -I https://api.example.com/users\n// Should see: Content-Encoding: gzip\n\n// For static files served by nginx, prefer nginx-level compression\n// over Node.js \u2014 nginx is significantly more efficient\n```",
+    "why": "HTTP compression reduces JSON response size by 60-80%. The Content-Encoding header tells clients how to decode the response. The Accept-Encoding header tells the server what algorithms the client supports.",
+    "gotchas": [
+      "Do not compress responses that are already compressed (JPEG, PNG, video) \u2014 it wastes CPU and may increase size.",
+      "Compression adds CPU overhead \u2014 for high-throughput APIs, offload to nginx or a CDN.",
+      "Brotli has better ratios than gzip but is more CPU-intensive \u2014 benchmark for your workload."
+    ],
+    "language": "typescript",
+    "framework": "express",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "compression",
+      "gzip",
+      "Brotli",
+      "Accept-Encoding",
+      "Content-Encoding",
+      "performance"
+    ],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Integration vs Unit Test Balance: The Testing Trophy",
+    "category": "principle",
+    "tags": [
+      "testing",
+      "integration-tests",
+      "unit-tests",
+      "testing-strategy"
+    ],
+    "problem": "Teams either write only unit tests (fast but miss integration issues) or only E2E tests (slow and brittle). Neither extreme provides the best coverage-to-maintenance ratio.",
+    "solution": "Follow the Testing Trophy model: prioritize integration tests backed by unit and static analysis.\n\n```\nTesting Trophy (ordered by value for most web apps):\n\n1. Static analysis (TypeScript, ESLint) \u2014 free type safety\n2. Unit tests \u2014 isolated complex logic, algorithms, transformations\n3. Integration tests \u2014 feature workflows, HTTP endpoints, DB operations (MOST)\n4. E2E tests \u2014 critical user paths only (login, checkout, payment)\n```\n\n```typescript\n// Integration test example (most valuable tier)\ntest('POST /users creates a user and sends welcome email', async () => {\n  const response = await request(app)\n    .post('/users')\n    .send({ name: 'Alice', email: 'alice@example.com' });\n\n  expect(response.status).toBe(201);\n  expect(response.body.id).toBeDefined();\n  expect(emailService.send).toHaveBeenCalledWith(\n    expect.objectContaining({ to: 'alice@example.com' })\n  );\n\n  const savedUser = await db.getUser(response.body.id);\n  expect(savedUser.name).toBe('Alice');\n});\n```",
+    "why": "Unit tests are fast but test code in isolation \u2014 they miss integration failures. E2E tests cover everything but are slow and fragile. Integration tests provide the best value: realistic scenarios at reasonable speed.",
+    "gotchas": [
+      "Integration tests that hit a real database need proper setup and teardown \u2014 use transactions or test databases.",
+      "Do not mock the database in integration tests \u2014 that becomes a unit test of the HTTP layer only.",
+      "The right balance depends on the app \u2014 APIs benefit more from integration tests; pure algorithmic code from unit tests."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "testing trophy",
+      "integration test",
+      "unit test",
+      "E2E",
+      "testing strategy"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Testing Error Boundaries in React",
+    "category": "pattern",
+    "tags": [
+      "testing",
+      "react",
+      "error-boundary"
+    ],
+    "problem": "Error boundaries catch runtime errors but are hard to test because React swallows console.error output during tests and the test environment behaves differently from the browser.",
+    "solution": "Suppress expected console.error output and test error boundary rendering explicitly.\n\n```typescript\nimport { render, screen } from '@testing-library/react';\n\nclass ErrorBoundary extends React.Component<\n  { children: React.ReactNode; fallback: React.ReactNode },\n  { hasError: boolean }\n> {\n  state = { hasError: false };\n  static getDerivedStateFromError() { return { hasError: true }; }\n  render() {\n    return this.state.hasError ? this.props.fallback : this.props.children;\n  }\n}\n\n// Component that throws\nfunction BrokenComponent({ shouldThrow }: { shouldThrow: boolean }) {\n  if (shouldThrow) throw new Error('Test error');\n  return <div>OK</div>;\n}\n\ntest('ErrorBoundary shows fallback on error', () => {\n  // Suppress React's console.error for expected errors\n  const spy = jest.spyOn(console, 'error').mockImplementation(() => {});\n\n  render(\n    <ErrorBoundary fallback={<div>Something went wrong</div>}>\n      <BrokenComponent shouldThrow={true} />\n    </ErrorBoundary>\n  );\n\n  expect(screen.getByText('Something went wrong')).toBeInTheDocument();\n  spy.mockRestore();\n});\n```",
+    "why": "React intentionally logs uncaught errors during render to console.error even when an error boundary catches them. Not suppressing this causes tests to appear to have errors in their output.",
+    "gotchas": [
+      "Always restore console.error after the test \u2014 use mockRestore() or a try/finally block.",
+      "React 18+ calls console.error twice in StrictMode for some errors \u2014 your spy may be called more times than expected.",
+      "Error boundaries do not catch errors in event handlers \u2014 only errors in render and lifecycle methods."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "Error: Uncaught [Error: Test error]"
+    ],
+    "keywords": [
+      "error boundary",
+      "React",
+      "testing",
+      "console.error",
+      "getDerivedStateFromError"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Mutation Testing with Stryker for Meaningful Coverage",
+    "category": "pattern",
+    "tags": [
+      "testing",
+      "mutation-testing",
+      "stryker",
+      "coverage"
+    ],
+    "problem": "100% code coverage does not guarantee tests catch bugs. Tests that run code without asserting results will have perfect coverage but detect nothing.",
+    "solution": "Use Stryker mutation testing to verify that test assertions actually catch code changes.\n\n```bash\n# Install\nnpm install --save-dev @stryker-mutator/core @stryker-mutator/jest-runner\n\n# stryker.config.json\n{\n  \"testRunner\": \"jest\",\n  \"reporters\": [\"html\", \"clear-text\", \"progress\"],\n  \"coverageAnalysis\": \"perTest\",\n  \"mutate\": [\"src/**/*.ts\", \"!src/**/*.test.ts\"]\n}\n\n# Run mutation testing\nnpx stryker run\n```\n\n```typescript\n// Stryker mutates your code (e.g., changes + to -) and runs tests\n// If tests still pass after the mutation, it's a 'surviving mutant'\n// Surviving mutants = test gaps\n\n// Example mutation:\nfunction add(a: number, b: number): number {\n  return a + b; // Stryker mutates to: return a - b;\n}\n\n// Test must assert the exact result:\ntest('add returns correct sum', () => {\n  expect(add(2, 3)).toBe(5); // Catches the mutation\n  // NOT: expect(add(2, 3)).toBeDefined(); // Misses the mutation\n});\n\n// Mutation score = (killed mutants / total mutants) * 100\n// Aim for 70-80%+ for critical business logic\n```",
+    "why": "Mutation testing introduces deliberate bugs (mutations) and checks if tests catch them. A high mutation score means your tests are actually sensitive to behavior changes, not just coverage.",
+    "gotchas": [
+      "Mutation testing is slow \u2014 run it on CI nightly, not on every commit.",
+      "Some mutants are 'equivalent' \u2014 semantically the same as the original \u2014 and cannot be killed. Exclude them.",
+      "Focus mutation testing on business-critical code rather than the entire codebase."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "mutation testing",
+      "Stryker",
+      "mutation score",
+      "test quality",
+      "killed mutant",
+      "surviving mutant"
+    ],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Testing Async Code: Avoiding Common Pitfalls",
+    "category": "gotcha",
+    "tags": [
+      "testing",
+      "async",
+      "promises",
+      "jest"
+    ],
+    "problem": "Async tests appear to pass even when assertions fail because the test completes before the Promise resolves, or because thrown errors inside Promises are swallowed.",
+    "solution": "Always return or await Promises in tests. Use the correct patterns for different async styles.\n\n```typescript\n// BAD: test completes before Promise resolves\ntest('fetches user', () => {\n  fetchUser('1').then(user => {\n    expect(user.name).toBe('Alice'); // Never reached!\n  });\n});\n\n// GOOD: await the Promise\ntest('fetches user', async () => {\n  const user = await fetchUser('1');\n  expect(user.name).toBe('Alice');\n});\n\n// Testing rejection\ntest('throws on missing user', async () => {\n  await expect(fetchUser('999')).rejects.toThrow('User not found');\n});\n\n// Testing callbacks (rare \u2014 prefer Promises)\ntest('calls callback with result', (done) => {\n  fetchUserCallback('1', (err, user) => {\n    expect(err).toBeNull();\n    expect(user.name).toBe('Alice');\n    done(); // Must call done() or test times out\n  });\n});\n\n// Multiple assertions in parallel\ntest('all users are valid', async () => {\n  const users = await fetchUsers();\n  await Promise.all(\n    users.map(async user => {\n      expect(user.id).toBeDefined();\n      expect(user.email).toMatch(/@/);\n    })\n  );\n});\n```",
+    "why": "JavaScript Promises are microtasks \u2014 synchronous test code completes before unresolved Promises settle. Without await or return, the test runner marks the test as passed before assertions run.",
+    "gotchas": [
+      "Forgetting 'async' on the test function means 'await' syntax works but returns a resolved Promise immediately.",
+      "expect.assertions(N) is useful for ensuring the expected number of assertions ran in callback-style async tests.",
+      "jest.useFakeTimers() affects setTimeout but not real network requests or file I/O."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "Timeout - Async callback was not invoked within the 5000 ms timeout specified by jest.setTimeout"
+    ],
+    "keywords": [
+      "async test",
+      "Promise",
+      "await",
+      "done callback",
+      "rejects.toThrow",
+      "test timeout"
+    ],
+    "severity": "major",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Performance Testing with k6 or autocannon",
+    "category": "pattern",
+    "tags": [
+      "testing",
+      "performance",
+      "load-testing",
+      "k6"
+    ],
+    "problem": "APIs pass functional tests but fail under load. Performance regressions are discovered in production rather than during development.",
+    "solution": "Use k6 or autocannon for load testing as part of CI or pre-release checks.\n\n```javascript\n// k6 load test script (k6.io)\nimport http from 'k6/http';\nimport { check, sleep } from 'k6';\n\nexport const options = {\n  stages: [\n    { duration: '30s', target: 10 },   // Ramp up to 10 VUs\n    { duration: '1m', target: 10 },    // Stay at 10 VUs\n    { duration: '10s', target: 0 },    // Ramp down\n  ],\n  thresholds: {\n    http_req_duration: ['p(95)<500'],  // 95% of requests < 500ms\n    http_req_failed: ['rate<0.01'],    // Error rate < 1%\n  },\n};\n\nexport default function() {\n  const res = http.get('http://localhost:3000/api/users');\n  check(res, {\n    'status is 200': (r) => r.status === 200,\n    'response time < 200ms': (r) => r.timings.duration < 200,\n  });\n  sleep(1);\n}\n\n// Run: k6 run script.js\n```\n\n```bash\n# autocannon for quick HTTP benchmarking\nnpx autocannon -c 100 -d 30 http://localhost:3000/api/users\n# -c: concurrent connections\n# -d: duration in seconds\n```",
+    "why": "Load testing reveals performance characteristics that unit tests cannot: database connection pool exhaustion, memory leaks under sustained load, and response time degradation at scale.",
+    "gotchas": [
+      "Load test against a staging environment that matches production \u2014 local tests are not representative.",
+      "Always run load tests with a warm-up period \u2014 cold start latency skews results.",
+      "Monitor database query performance, not just HTTP response times \u2014 the bottleneck is often the DB."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "load testing",
+      "k6",
+      "autocannon",
+      "performance testing",
+      "throughput",
+      "p95",
+      "virtual users"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "TypeScript jsx: preserve vs react-jsx Transform",
+    "category": "gotcha",
+    "tags": [
+      "typescript",
+      "jsx",
+      "react-jsx",
+      "tsconfig"
+    ],
+    "problem": "TypeScript projects using React 17+ still import React in every file for JSX, or fail to compile because the wrong 'jsx' tsconfig option is set for the bundler.",
+    "solution": "Set 'jsx: react-jsx' for React 17+ automatic runtime; 'jsx: preserve' when the bundler handles JSX transform.\n\n```json\n// For React 17+ with bundler handling JSX\n// (Vite, Create React App, Next.js)\n{\n  \"compilerOptions\": {\n    \"jsx\": \"preserve\",\n    \"jsxImportSource\": \"react\"\n  }\n}\n\n// For tsc emitting directly (no bundler)\n{\n  \"compilerOptions\": {\n    \"jsx\": \"react-jsx\",\n    \"jsxImportSource\": \"react\"\n  }\n}\n\n// Options:\n// react: Old transform \u2014 requires 'import React' in every file\n// react-jsx: New transform \u2014 no import needed\n// react-jsxdev: New transform with dev helpers\n// preserve: Leave JSX as-is for bundler to handle\n// react-native: Like preserve but with .jsx extension\n```\n\n```typescript\n// With jsx: react-jsx or preserve + jsxImportSource\n// No need to import React:\nfunction App() {\n  return <div>Hello</div>; // Works without import React\n}\n```",
+    "why": "React 17 introduced a new JSX transform that automatically imports the JSX runtime, eliminating the manual 'import React' requirement. The tsconfig jsx option must match your build pipeline.",
+    "gotchas": [
+      "'preserve' outputs .jsx files \u2014 your bundler must handle the JSX transform. Without a bundler, use 'react-jsx'.",
+      "When using a custom JSX runtime (e.g., Preact, Solid), set jsxImportSource to the appropriate package.",
+      "Mixing 'react' (old) jsx option with React 17+ causes 'React is not defined' errors in some builds."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "React is not defined",
+      "'React' refers to a UMD global, but the current file is a module"
+    ],
+    "keywords": [
+      "jsx",
+      "react-jsx",
+      "preserve",
+      "jsxImportSource",
+      "React 17",
+      "tsconfig"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 4.1+, React 17+"
+  },
+  {
+    "title": "skipLibCheck: When and Why to Use It",
+    "category": "gotcha",
+    "tags": [
+      "typescript",
+      "skipLibCheck",
+      "tsconfig",
+      "type-errors"
+    ],
+    "problem": "TypeScript compilation fails due to errors in node_modules type definitions (.d.ts files) that you have no control over, blocking the build for issues in third-party packages.",
+    "solution": "Enable 'skipLibCheck: true' to skip type checking of .d.ts files in node_modules.\n\n```json\n// tsconfig.json\n{\n  \"compilerOptions\": {\n    \"skipLibCheck\": true\n  }\n}\n```\n\n```\nCommon scenarios where skipLibCheck helps:\n\n1. Conflicting type definitions between two packages\n   (e.g., @types/react versions clashing)\n\n2. Outdated @types packages with internal errors\n\n3. Package shipping its own types that conflict with @types version\n\n4. Monorepo with multiple React versions in different packages\n```\n\n```bash\n# If NOT using skipLibCheck, to debug which package causes the error:\ntsc --listFiles 2>&1 | grep -i 'node_modules'\n# Then check if the error is from a .d.ts in node_modules\n```",
+    "why": "Type definitions in node_modules are often imperfect, outdated, or conflict with each other. skipLibCheck tells the compiler to trust .d.ts files rather than re-checking them.",
+    "gotchas": [
+      "skipLibCheck hides genuine type errors in libraries \u2014 errors in your own .d.ts files are also skipped.",
+      "It does not skip checking the types of imports \u2014 only the content of .d.ts files themselves.",
+      "The root cause (version mismatch) still exists \u2014 try to fix it with 'resolutions' in package.json if possible."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "error TS2304: Cannot find name 'X' in node_modules/@types"
+    ],
+    "keywords": [
+      "skipLibCheck",
+      "type definitions",
+      "node_modules",
+      "d.ts",
+      "type conflicts"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 2.0+"
+  },
+  {
+    "title": "Python Async Context Managers with asynccontextmanager",
+    "category": "pattern",
+    "tags": [
+      "python",
+      "async",
+      "context-manager",
+      "asynccontextmanager"
+    ],
+    "problem": "Writing async resource management code (DB connections, HTTP sessions) requires implementing __aenter__ and __aexit__ boilerplate that is verbose and error-prone.",
+    "solution": "Use @asynccontextmanager decorator to write async context managers as generators.\n\n```python\nfrom contextlib import asynccontextmanager\nfrom typing import AsyncGenerator\nimport httpx\n\n@asynccontextmanager\nasync def http_client() -> AsyncGenerator[httpx.AsyncClient, None]:\n    client = httpx.AsyncClient(timeout=30.0)\n    try:\n        yield client\n    finally:\n        await client.aclose()  # Always runs, even on exception\n\nasync def fetch_user(user_id: str) -> dict:\n    async with http_client() as client:\n        response = await client.get(f'/api/users/{user_id}')\n        response.raise_for_status()\n        return response.json()\n\n# FastAPI lifespan pattern\nfrom fastapi import FastAPI\n\n@asynccontextmanager\nasync def lifespan(app: FastAPI):\n    await db.connect()   # Startup\n    yield\n    await db.disconnect() # Shutdown\n\napp = FastAPI(lifespan=lifespan)\n```",
+    "why": "The generator approach separates setup (before yield) and teardown (after yield). The finally block guarantees cleanup even if the body raises an exception.",
+    "gotchas": [
+      "Yield exactly once \u2014 multiple yields or no yield raises RuntimeError.",
+      "Use 'async with' not 'with' for async context managers.",
+      "FastAPI's lifespan replaces the deprecated on_event('startup') and on_event('shutdown') handlers."
+    ],
+    "language": "python",
+    "framework": "fastapi",
+    "environment": [],
+    "error_messages": [
+      "RuntimeError: generator didn't yield"
+    ],
+    "keywords": [
+      "asynccontextmanager",
+      "async context manager",
+      "async with",
+      "lifespan",
+      "FastAPI",
+      "cleanup"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "Python 3.7+"
+  },
+  {
+    "title": "TypeScript Incremental Builds with tsBuildInfoFile",
+    "category": "pattern",
+    "tags": [
+      "typescript",
+      "incremental",
+      "performance",
+      "tsBuildInfoFile"
+    ],
+    "problem": "TypeScript recompiles the entire project on every tsc invocation even when only one file changed, making build times grow linearly with project size.",
+    "solution": "Enable 'incremental: true' to cache build information and skip unchanged files.\n\n```json\n// tsconfig.json\n{\n  \"compilerOptions\": {\n    \"incremental\": true,\n    \"tsBuildInfoFile\": \"./.tsbuildinfo\"\n  }\n}\n```\n\n```bash\n# First build: full compile, creates .tsbuildinfo\ntsc\n\n# Second build: only changed files recompiled\ntsc  # Much faster\n\n# In .gitignore\necho \".tsbuildinfo\" >> .gitignore\n\n# For --noEmit with incremental:\ntsc --noEmit --incremental --tsBuildInfoFile .tsbuildinfo\n```\n\n```json\n// package.json\n{\n  \"scripts\": {\n    \"typecheck\": \"tsc --noEmit --incremental --tsBuildInfoFile .tsbuildinfo\",\n    \"build\": \"tsc --build\"\n  }\n}\n```",
+    "why": "The .tsbuildinfo file stores a fingerprint of each file's content and its resolved types. On subsequent builds, TypeScript skips files whose fingerprints match, only recompiling changed files and their dependents.",
+    "gotchas": [
+      "The .tsbuildinfo file must not be committed to source control \u2014 it is machine-specific.",
+      "Delete .tsbuildinfo when tsconfig changes significantly to avoid stale cache.",
+      "Incremental with --noEmit requires explicitly specifying --tsBuildInfoFile \u2014 otherwise TypeScript errors."
+    ],
+    "language": "typescript",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [
+      "Option '--incremental' can only be specified using tsconfig, emitting to single file or when option '--tsBuildInfoFile' is specified"
+    ],
+    "keywords": [
+      "incremental",
+      "tsBuildInfoFile",
+      "build cache",
+      "compile speed",
+      "tsc",
+      "performance"
+    ],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "TypeScript 3.4+"
+  },
+  {
+    "title": "HATEOAS: Hypermedia Links in API Responses",
+    "category": "pattern",
+    "tags": [
+      "rest-api",
+      "HATEOAS",
+      "hypermedia",
+      "discoverability"
+    ],
+    "problem": "API clients hardcode URL construction logic (string concatenation for resource URLs). When URL patterns change, all clients break simultaneously.",
+    "solution": "Include hypermedia links in responses so clients discover navigation from the API itself.\n\n```typescript\n// Response includes links to related actions\napp.get('/users/:id', async (req, res) => {\n  const user = await db.getUser(req.params.id);\n  const baseUrl = `${req.protocol}://${req.get('host')}`;\n\n  res.json({\n    id: user.id,\n    name: user.name,\n    email: user.email,\n    _links: {\n      self: { href: `${baseUrl}/users/${user.id}`, method: 'GET' },\n      update: { href: `${baseUrl}/users/${user.id}`, method: 'PUT' },\n      delete: { href: `${baseUrl}/users/${user.id}`, method: 'DELETE' },\n      orders: { href: `${baseUrl}/users/${user.id}/orders`, method: 'GET' },\n    },\n  });\n});\n\n// Collection response with pagination links\napp.get('/users', async (req, res) => {\n  const { users, nextCursor } = await db.getUsers();\n  res.json({\n    items: users,\n    _links: {\n      self: { href: `${baseUrl}/users` },\n      next: nextCursor\n        ? { href: `${baseUrl}/users?cursor=${nextCursor}` }\n        : null,\n    },\n  });\n});\n```",
+    "why": "HATEOAS (Hypermedia as the Engine of Application State) makes APIs self-describing. Clients navigate by following links rather than constructing URLs, decoupling them from URL structure.",
+    "gotchas": [
+      "Full HATEOAS with HAL, JSON:API, or Siren formats adds complexity \u2014 use simple _links objects for practical benefit.",
+      "Links should use absolute URLs, not relative paths, so clients can use them without knowing the base URL.",
+      "Conditionally omit links that are not available (e.g., omit 'delete' if user lacks permission)."
+    ],
+    "language": "typescript",
+    "framework": "express",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "HATEOAS",
+      "hypermedia",
+      "links",
+      "HAL",
+      "JSON:API",
+      "discoverability",
+      "REST maturity"
+    ],
+    "severity": "tip",
+    "context": null,
+    "code_snippets": [],
+    "version_info": null
+  },
+  {
+    "title": "Python typing Protocol for Structural Subtyping",
+    "category": "pattern",
+    "tags": [
+      "python",
+      "typing",
+      "Protocol",
+      "duck-typing"
+    ],
+    "problem": "Using ABC (Abstract Base Classes) for interfaces requires explicit inheritance, preventing third-party classes from satisfying your interface without modification.",
+    "solution": "Use typing.Protocol for structural subtyping \u2014 any class with matching methods satisfies the protocol.\n\n```python\nfrom typing import Protocol, runtime_checkable\n\n@runtime_checkable\nclass Drawable(Protocol):\n    def draw(self, x: float, y: float) -> None: ...\n    def get_bounds(self) -> tuple[float, float, float, float]: ...\n\n# Any class with these methods satisfies Drawable \u2014 no inheritance needed\nclass Circle:\n    def __init__(self, cx: float, cy: float, radius: float):\n        self.cx = cx\n        self.cy = cy\n        self.radius = radius\n\n    def draw(self, x: float, y: float) -> None:\n        print(f'Circle at ({x + self.cx}, {y + self.cy})')\n\n    def get_bounds(self) -> tuple[float, float, float, float]:\n        return (self.cx - self.radius, self.cy - self.radius,\n                self.cx + self.radius, self.cy + self.radius)\n\ndef render(shape: Drawable) -> None:\n    shape.draw(0, 0)\n\nrender(Circle(0, 0, 5))  # OK \u2014 Circle is structurally Drawable\n\n# Runtime check with @runtime_checkable\nassert isinstance(Circle(0, 0, 5), Drawable)\n```",
+    "why": "Protocol implements PEP 544 structural subtyping. Unlike ABC, it does not require explicit registration or inheritance \u2014 matching the interface structurally is sufficient for both type checkers and runtime checks.",
+    "gotchas": [
+      "@runtime_checkable only checks for the existence of methods, not their signatures.",
+      "Protocol classes should not have implementation \u2014 use ABC if you need default method implementations.",
+      "Class variables in Protocols must use ClassVar to distinguish from instance attributes."
+    ],
+    "language": "python",
+    "framework": "none",
+    "environment": [],
+    "error_messages": [],
+    "keywords": [
+      "Protocol",
+      "structural subtyping",
+      "duck typing",
+      "interface",
+      "PEP 544",
+      "runtime_checkable"
+    ],
+    "severity": "moderate",
+    "context": null,
+    "code_snippets": [],
+    "version_info": "Python 3.8+"
+  }
+]

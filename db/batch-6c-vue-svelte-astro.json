@@ -1,0 +1,920 @@
+[
+  {
+    "title": "Vue 3 Composition API: ref vs reactive — which to use",
+    "category": "pattern",
+    "tags": ["vue3", "composition-api", "ref", "reactive", "state"],
+    "problem": "Developers are unsure whether to use ref() or reactive() for state in Vue 3. Using reactive() for primitives silently wraps them incorrectly; using ref() for objects requires .value everywhere.",
+    "solution": "Use ref() for primitives and when you need to reassign the entire object. Use reactive() for complex objects that are never fully replaced:\n\nimport { ref, reactive } from 'vue';\n\n// ref: primitives and reassignable values\nconst count = ref(0);\nconst user = ref(null);\ncount.value++;             // access with .value\nuser.value = fetchedUser;  // can reassign entirely\n\n// reactive: complex state objects\nconst form = reactive({\n  name: '',\n  email: '',\n  age: 0\n});\nform.name = 'Alice';  // no .value needed\n// form = anotherObj; // WRONG: loses reactivity\n\n// In templates, .value is auto-unwrapped\n// <p>{{ count }}</p>  — no .value needed in template\n// <p>{{ user?.name }}</p>\n\n// Pattern: prefer ref for everything in <script setup>\n// to be consistent and avoid surprises\nconst items = ref([]);\nconst loading = ref(false);\nconst error = ref(null);",
+    "why": "ref() boxes a value into a reactive container ({value: ...}). reactive() uses a Proxy over the entire object. Reassigning a reactive() variable (form = newObj) breaks the reactive link because other code still holds the old Proxy reference. ref() avoids this because the container itself never changes.",
+    "gotchas": [
+      "reactive() loses reactivity if you destructure it — use toRefs() to destructure safely",
+      "ref() objects are auto-unwrapped inside reactive() — no double .value needed",
+      "In templates, ref is auto-unwrapped at the top level — .value is NOT needed",
+      "shallowRef() and shallowReactive() skip deep reactivity for performance"
+    ],
+    "language": "javascript",
+    "framework": "vue",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["ref", "reactive", "composition api", "vue3 state", "reactivity", "toRefs"],
+    "severity": "moderate",
+    "context": "When choosing how to declare reactive state in Vue 3 Composition API",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// Destructuring reactive — WRONG (loses reactivity)\nconst { name } = form;\n\n// Destructuring reactive — CORRECT\nimport { toRefs } from 'vue';\nconst { name, email } = toRefs(form);\n// name.value, email.value are now reactive refs",
+        "description": "Safe destructuring of reactive objects"
+      }
+    ],
+    "version_info": "Vue 3.0+"
+  },
+  {
+    "title": "Vue 3 computed vs watch — choosing the right reactive primitive",
+    "category": "pattern",
+    "tags": ["vue3", "computed", "watch", "watchEffect", "reactivity"],
+    "problem": "Using watch() where computed() should be used, or vice versa, leads to either stale derived values or excessive side-effect complexity. Developers use watch with a setter when computed with a setter is cleaner.",
+    "solution": "Use computed() for derived values. Use watch() for side effects triggered by state changes:\n\nimport { ref, computed, watch, watchEffect } from 'vue';\n\nconst firstName = ref('Alice');\nconst lastName = ref('Smith');\n\n// computed: synchronous derived value — cached, efficient\nconst fullName = computed(() => `${firstName.value} ${lastName.value}`);\n\n// computed with setter (two-way binding)\nconst fullNameWritable = computed({\n  get: () => `${firstName.value} ${lastName.value}`,\n  set: (val) => {\n    [firstName.value, lastName.value] = val.split(' ');\n  }\n});\n\n// watch: side effects when specific sources change\nconst userId = ref(1);\nwatch(userId, async (newId, oldId) => {\n  userData.value = await fetchUser(newId);\n}, { immediate: true });\n\n// watchEffect: auto-tracks all reactive deps used inside\nwatchEffect(async () => {\n  // automatically tracks userId.value\n  userData.value = await fetchUser(userId.value);\n});",
+    "why": "computed() caches its result and only recomputes when dependencies change — it is synchronous and returns a value. watch() is for async operations, DOM manipulation, and explicit side effects. Misusing watch() for derived values creates race conditions and stale data.",
+    "gotchas": [
+      "computed() cannot be async — use watchEffect for async derived state",
+      "watch() is lazy by default — add { immediate: true } to run on mount",
+      "watchEffect() runs immediately and tracks dependencies automatically but gives no oldValue",
+      "watch() with a getter function: watch(() => obj.prop, cb) tracks obj.prop specifically"
+    ],
+    "language": "javascript",
+    "framework": "vue",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["computed", "watch", "watchEffect", "vue3 reactivity", "derived state", "side effects"],
+    "severity": "moderate",
+    "context": "When deciding between computed and watch in Vue 3 Composition API",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// Watch deep nested object\nconst settings = reactive({ theme: { color: 'blue' } });\nwatch(\n  () => settings.theme.color,\n  (newColor) => applyTheme(newColor)\n);",
+        "description": "Watching a nested property with a getter"
+      }
+    ],
+    "version_info": "Vue 3.0+"
+  },
+  {
+    "title": "Vue 3 defineProps and defineEmits in script setup",
+    "category": "pattern",
+    "tags": ["vue3", "script-setup", "defineProps", "defineEmits", "components"],
+    "problem": "Using defineProps and defineEmits incorrectly in <script setup> — forgetting to validate types, mutating props directly, or not using emit to communicate back to the parent.",
+    "solution": "Declare props and emits with runtime or TypeScript syntax:\n\n<script setup lang=\"ts\">\n// TypeScript syntax (preferred)\nconst props = defineProps<{\n  title: string;\n  count?: number;\n  items: string[];\n}>();\n\n// With defaults using withDefaults\nconst props = withDefaults(defineProps<{\n  label?: string;\n  disabled?: boolean;\n}>(), {\n  label: 'Click me',\n  disabled: false\n});\n\n// Runtime syntax (plain JS)\nconst props = defineProps({\n  title: { type: String, required: true },\n  count: { type: Number, default: 0 }\n});\n\n// Emits\nconst emit = defineEmits<{\n  (e: 'update:modelValue', value: string): void;\n  (e: 'submit', payload: { id: number }): void;\n}>();\n\n// Usage\nfunction handleInput(val: string) {\n  // props.title = val;  // WRONG: never mutate props\n  emit('update:modelValue', val);  // CORRECT\n}\n</script>",
+    "why": "Props are a one-way data flow from parent to child. Mutating props directly creates hidden state bugs because the parent owns the data. Emits are the contract for child-to-parent communication. defineProps/defineEmits are compiler macros — they are not imported and are erased at compile time.",
+    "gotchas": [
+      "defineProps and defineEmits are compiler macros — do NOT import them",
+      "Never mutate props directly — emit events and let the parent update",
+      "Props destructuring loses reactivity in Vue 3.4 and earlier — use props.x or toRefs(props)",
+      "Vue 3.5+ allows destructuring props with reactivity via defineProps destructure RFC"
+    ],
+    "language": "javascript",
+    "framework": "vue",
+    "environment": [],
+    "error_messages": [
+      "Extraneous non-props attributes were passed to component",
+      "[Vue warn]: Missing required prop: \"title\""
+    ],
+    "keywords": ["defineProps", "defineEmits", "script setup", "props validation", "emit", "component communication"],
+    "severity": "moderate",
+    "context": "When building Vue 3 components with script setup syntax",
+    "code_snippets": [
+      {
+        "lang": "vue",
+        "code": "<script setup lang=\"ts\">\nconst props = withDefaults(defineProps<{ size?: 'sm' | 'md' | 'lg' }>(), {\n  size: 'md'\n});\nconst emit = defineEmits<{ (e: 'click'): void }>();\n</script>",
+        "description": "TypeScript defineProps with defaults"
+      }
+    ],
+    "version_info": "Vue 3.0+ (script setup stable in 3.2)"
+  },
+  {
+    "title": "Vue 3 provide/inject for deep component communication",
+    "category": "pattern",
+    "tags": ["vue3", "provide", "inject", "dependency-injection", "composition-api"],
+    "problem": "Prop drilling through many component layers to pass data to deeply nested children. Using Pinia for data that is scoped to one component tree is overkill.",
+    "solution": "Use provide/inject with a typed injection key:\n\n// types.ts\nimport type { InjectionKey, Ref } from 'vue';\nexport interface ThemeContext {\n  theme: Ref<string>;\n  setTheme: (t: string) => void;\n}\nexport const ThemeKey: InjectionKey<ThemeContext> = Symbol('theme');\n\n// Parent component\n<script setup lang=\"ts\">\nimport { provide, ref } from 'vue';\nimport { ThemeKey } from './types';\n\nconst theme = ref('light');\nfunction setTheme(t: string) { theme.value = t; }\n\nprovide(ThemeKey, { theme, setTheme });\n</script>\n\n// Deep child component\n<script setup lang=\"ts\">\nimport { inject } from 'vue';\nimport { ThemeKey } from './types';\n\nconst themeCtx = inject(ThemeKey);\n// themeCtx is undefined if no provider above it\nif (!themeCtx) throw new Error('ThemeKey not provided');\n\nconst { theme, setTheme } = themeCtx;\n</script>",
+    "why": "provide/inject is Vue's dependency injection system for component trees. It avoids prop drilling without the overhead of a global store. Using InjectionKey (Symbol) with a TypeScript generic gives compile-time type safety and prevents key collisions.",
+    "gotchas": [
+      "inject() returns undefined if called outside a provider — always handle the undefined case",
+      "Providing a ref() keeps reactivity end-to-end — don't provide .value directly",
+      "provide/inject is not reactive to the key itself — only the provided value can be reactive",
+      "App-level provide (app.provide()) is available everywhere, replacing some global state needs"
+    ],
+    "language": "javascript",
+    "framework": "vue",
+    "environment": [],
+    "error_messages": [
+      "[Vue warn]: injection \"Symbol(theme)\" not found"
+    ],
+    "keywords": ["provide", "inject", "InjectionKey", "dependency injection", "prop drilling", "component tree"],
+    "severity": "tip",
+    "context": "When passing data to deeply nested Vue 3 components without prop drilling",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "import type { InjectionKey, Ref } from 'vue';\nexport const CountKey: InjectionKey<Ref<number>> = Symbol('count');\n\n// Provider\nprovide(CountKey, ref(0));\n// Consumer\nconst count = inject(CountKey, ref(0)); // with fallback",
+        "description": "Typed provide/inject with fallback"
+      }
+    ],
+    "version_info": "Vue 3.0+"
+  },
+  {
+    "title": "Vue 3 Teleport renders content outside the component DOM tree",
+    "category": "pattern",
+    "tags": ["vue3", "teleport", "modals", "portals", "dom"],
+    "problem": "Modals, tooltips, and dropdowns rendered inside a deeply nested component are clipped by overflow:hidden or have incorrect z-index stacking because they are trapped inside the parent DOM hierarchy.",
+    "solution": "Use <Teleport> to render content directly to another part of the DOM:\n\n<!-- In a deeply nested component -->\n<template>\n  <button @click=\"open = true\">Open Modal</button>\n\n  <Teleport to=\"body\">\n    <div v-if=\"open\" class=\"modal-overlay\" @click.self=\"open = false\">\n      <div class=\"modal\">\n        <h2>Modal Title</h2>\n        <p>Content here</p>\n        <button @click=\"open = false\">Close</button>\n      </div>\n    </div>\n  </Teleport>\n</template>\n\n<script setup>\nimport { ref } from 'vue';\nconst open = ref(false);\n</script>\n\n<!-- Teleport to a custom target -->\n<Teleport to=\"#notification-container\">\n  <Toast v-if=\"showToast\" :message=\"toastMsg\" />\n</Teleport>\n\n<!-- Disable teleport conditionally -->\n<Teleport to=\"body\" :disabled=\"isMobile\">\n  <Drawer />\n</Teleport>",
+    "why": "Teleport moves the DOM nodes to the target while keeping the component's logical parent in Vue's component tree. The component still has access to the parent's reactive state, props, and inject. Only the rendered HTML is relocated.",
+    "gotchas": [
+      "The teleport target must exist in the DOM when Teleport mounts — body is always safe",
+      "Multiple Teleports to the same target are appended in order",
+      "Teleported components still belong to their Vue parent for lifecycle and state",
+      "Teleport does not work with SSR by default — use :disabled=\"true\" during SSR or useSSRContext"
+    ],
+    "language": "javascript",
+    "framework": "vue",
+    "environment": [],
+    "error_messages": [
+      "[Vue warn]: Invalid Teleport target on mount: null"
+    ],
+    "keywords": ["teleport", "portal", "modal", "z-index", "overflow hidden", "body append"],
+    "severity": "tip",
+    "context": "When rendering modals, toasts, or tooltips that escape CSS stacking context",
+    "code_snippets": [
+      {
+        "lang": "vue",
+        "code": "<Teleport to=\"body\">\n  <Transition name=\"fade\">\n    <div v-if=\"visible\" class=\"toast\">{{ message }}</div>\n  </Transition>\n</Teleport>",
+        "description": "Teleported toast notification with transition"
+      }
+    ],
+    "version_info": "Vue 3.0+"
+  },
+  {
+    "title": "Pinia store patterns — defining and using stores in Vue 3",
+    "category": "pattern",
+    "tags": ["vue3", "pinia", "store", "state-management", "composition-api"],
+    "problem": "Vuex patterns don't map cleanly to Vue 3. Developers copy Vuex's mutations/actions pattern into Pinia, missing simpler Composition API patterns. Stores are also used outside components incorrectly.",
+    "solution": "Use Pinia's Setup Store syntax for flexibility, or Options Store for simplicity:\n\n// stores/user.ts\nimport { defineStore } from 'pinia';\nimport { ref, computed } from 'vue';\n\n// Setup Store (Composition API style — recommended)\nexport const useUserStore = defineStore('user', () => {\n  const user = ref<User | null>(null);\n  const isLoggedIn = computed(() => user.value !== null);\n\n  async function login(credentials: Credentials) {\n    user.value = await authApi.login(credentials);\n  }\n\n  function logout() {\n    user.value = null;\n  }\n\n  return { user, isLoggedIn, login, logout };\n});\n\n// In a component\n<script setup lang=\"ts\">\nimport { useUserStore } from '@/stores/user';\nconst userStore = useUserStore();\n\n// Destructure with storeToRefs to keep reactivity\nimport { storeToRefs } from 'pinia';\nconst { user, isLoggedIn } = storeToRefs(userStore);\n// Actions can be destructured normally\nconst { login, logout } = userStore;\n</script>",
+    "why": "Pinia has no mutations — state can be modified directly in actions or with $patch(). The Setup Store syntax mirrors the Composition API, making it intuitive for Vue 3 developers. storeToRefs() is essential for destructuring reactive state without losing reactivity.",
+    "gotchas": [
+      "Destructuring store state without storeToRefs() loses reactivity — user becomes a plain value",
+      "Never call useUserStore() outside a component/pinia context before the app is mounted",
+      "Use store.$patch({ field: value }) for partial updates to avoid losing other state",
+      "Pinia stores persist between hot reloads in dev — use store.$reset() in the setup store by returning it"
+    ],
+    "language": "javascript",
+    "framework": "vue",
+    "environment": [],
+    "error_messages": [
+      "[🍍]: \"getActivePinia()\" was called but there was no active Pinia"
+    ],
+    "keywords": ["pinia", "store", "storeToRefs", "defineStore", "vue3 state management", "setup store"],
+    "severity": "moderate",
+    "context": "When managing shared state with Pinia in Vue 3 applications",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// Partial update\nuserStore.$patch({ name: 'Alice', age: 30 });\n\n// Subscribe to store changes\nuserStore.$subscribe((mutation, state) => {\n  localStorage.setItem('user', JSON.stringify(state.user));\n});",
+        "description": "Pinia $patch and $subscribe"
+      }
+    ],
+    "version_info": "Pinia 2.x, Vue 3.2+"
+  },
+  {
+    "title": "Vue 3 v-model on custom components with defineModel",
+    "category": "pattern",
+    "tags": ["vue3", "v-model", "defineModel", "two-way-binding", "components"],
+    "problem": "Implementing two-way data binding on custom components requires boilerplate: defining a modelValue prop and emitting update:modelValue. Vue 3.4 introduces defineModel() to simplify this.",
+    "solution": "Use defineModel() in Vue 3.4+ or the manual pattern for older versions:\n\n// Vue 3.4+ — defineModel (recommended)\n<script setup>\nconst model = defineModel();          // basic\nconst model = defineModel({ default: '' });  // with default\n\n// Named model for multiple v-models\nconst title = defineModel('title');\nconst content = defineModel('content');\n</script>\n<template>\n  <input :value=\"model\" @input=\"model = $event.target.value\" />\n</template>\n\n// Parent usage:\n// <MyInput v-model=\"text\" />\n// <MyForm v-model:title=\"title\" v-model:content=\"body\" />\n\n// Manual pattern (Vue 3.0–3.3)\n<script setup>\nconst props = defineProps({ modelValue: String });\nconst emit = defineEmits(['update:modelValue']);\n</script>\n<template>\n  <input\n    :value=\"props.modelValue\"\n    @input=\"emit('update:modelValue', $event.target.value)\"\n  />\n</template>",
+    "why": "v-model on a component is syntactic sugar for :modelValue + @update:modelValue. defineModel() (Vue 3.4+) generates the prop and emit automatically and returns a writable computed ref — eliminating the boilerplate. The underlying mechanism is the same.",
+    "gotchas": [
+      "defineModel is a compiler macro — available in <script setup> only",
+      "Multiple v-models require named models: v-model:title, v-model:content",
+      "v-model modifiers (.trim, .number) work with defineModel's second argument",
+      "For Vue < 3.4, defineModel is available as a plugin via vue-macros"
+    ],
+    "language": "javascript",
+    "framework": "vue",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["v-model", "defineModel", "modelValue", "two-way binding", "custom component", "update:modelValue"],
+    "severity": "tip",
+    "context": "When building reusable input components in Vue 3 that support v-model",
+    "code_snippets": [
+      {
+        "lang": "vue",
+        "code": "<script setup>\n// With modifier support\nconst [model, modifiers] = defineModel({\n  set(value) {\n    if (modifiers.trim) return value.trim();\n    return value;\n  }\n});\n</script>",
+        "description": "defineModel with custom modifier handling"
+      }
+    ],
+    "version_info": "defineModel stable in Vue 3.4"
+  },
+  {
+    "title": "Vue 3 named and scoped slots for flexible component composition",
+    "category": "pattern",
+    "tags": ["vue3", "slots", "named-slots", "scoped-slots", "component-composition"],
+    "problem": "Components with hard-coded content can't be reused across different contexts. Named slots and scoped slots are underused, leading to prop-heavy APIs instead of flexible composition.",
+    "solution": "Use named slots to split content areas; scoped slots to expose data to the parent:\n\n<!-- Card.vue -->\n<template>\n  <div class=\"card\">\n    <header>\n      <slot name=\"header\">Default Header</slot>\n    </header>\n    <main>\n      <slot />  <!-- default slot -->\n    </main>\n    <footer>\n      <!-- Scoped slot: exposes internal data to parent -->\n      <slot name=\"footer\" :actions=\"{ save, discard }\" />\n    </footer>\n  </div>\n</template>\n<script setup>\nfunction save() { /* ... */ }\nfunction discard() { /* ... */ }\n</script>\n\n<!-- Parent usage -->\n<Card>\n  <template #header>\n    <h1>My Title</h1>\n  </template>\n\n  <p>Main body content here.</p>\n\n  <template #footer=\"{ actions }\">\n    <button @click=\"actions.save\">Save</button>\n    <button @click=\"actions.discard\">Discard</button>\n  </template>\n</Card>",
+    "why": "Named slots divide a component into multiple injection points, letting the parent compose each section independently. Scoped slots invert control: the child exposes its data and the parent decides how to render it — useful for data-table rows, list item templates, and renderless components.",
+    "gotchas": [
+      "v-slot:#name shorthand requires a template tag for named slots",
+      "Default slot content is rendered if the parent provides nothing — always add sensible defaults",
+      "Scoped slot data is only available within the template tag where #slotName=\"scope\" is declared",
+      "$slots.header can be checked to conditionally render the slot container"
+    ],
+    "language": "javascript",
+    "framework": "vue",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["slots", "named slots", "scoped slots", "v-slot", "slot content", "renderless components"],
+    "severity": "tip",
+    "context": "When building reusable Vue 3 components with flexible content areas",
+    "code_snippets": [
+      {
+        "lang": "vue",
+        "code": "<!-- Conditional slot container -->\n<header v-if=\"$slots.header\">\n  <slot name=\"header\" />\n</header>",
+        "description": "Only render header wrapper if slot has content"
+      }
+    ],
+    "version_info": "Vue 3.0+"
+  },
+  {
+    "title": "Vue Router navigation guards for authentication and data loading",
+    "category": "pattern",
+    "tags": ["vue3", "vue-router", "navigation-guards", "authentication", "beforeEach"],
+    "problem": "Protected routes are not enforced, or data is loaded after the route renders causing flashes of empty content. Navigation guards are placed in the wrong scope.",
+    "solution": "Use global beforeEach for auth, and per-route beforeEnter or in-component guards for data:\n\n// router/index.ts\nimport { createRouter } from 'vue-router';\nimport { useAuthStore } from '@/stores/auth';\n\nconst router = createRouter({ /* ... */ });\n\n// Global guard — runs before every navigation\nrouter.beforeEach(async (to, from) => {\n  const auth = useAuthStore();\n  await auth.initialize(); // ensure auth state loaded\n\n  if (to.meta.requiresAuth && !auth.isLoggedIn) {\n    // redirect to login, saving the intended URL\n    return { name: 'Login', query: { redirect: to.fullPath } };\n  }\n\n  if (to.meta.guestOnly && auth.isLoggedIn) {\n    return { name: 'Dashboard' };\n  }\n});\n\n// Per-route guard\nconst routes = [{\n  path: '/users/:id',\n  component: UserView,\n  async beforeEnter(to) {\n    const user = await fetchUser(to.params.id);\n    if (!user) return { name: 'NotFound' };\n    to.meta.user = user;  // pass data to component\n  }\n}];",
+    "why": "Navigation guards intercept route changes before the component mounts. Returning false or a route object from a guard redirects the user. Using meta fields to attach fetched data avoids extra API calls after the component mounts.",
+    "gotchas": [
+      "Pinia stores must be used after createPinia() — call useStore() inside the guard function, not at module level",
+      "beforeEach guards must return a value (or nothing) — missing return causes navigation to stall in some versions",
+      "afterEach has no cancel ability — use it for analytics/logging only",
+      "In-component onBeforeRouteLeave guard is useful for unsaved-changes confirmation"
+    ],
+    "language": "javascript",
+    "framework": "vue",
+    "environment": [],
+    "error_messages": [
+      "[Vue Router warn]: Navigation guard returned invalid value",
+      "Uncaught (in promise) NavigationDuplicated"
+    ],
+    "keywords": ["navigation guards", "beforeEach", "requiresAuth", "vue-router", "authentication", "beforeEnter"],
+    "severity": "major",
+    "context": "When implementing authentication and data preloading with Vue Router guards",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// Confirm before leaving unsaved form\nimport { onBeforeRouteLeave } from 'vue-router';\nonBeforeRouteLeave((to, from) => {\n  if (isDirty.value) {\n    return window.confirm('Discard unsaved changes?');\n  }\n});",
+        "description": "In-component route leave guard"
+      }
+    ],
+    "version_info": "Vue Router 4.x (Vue 3)"
+  },
+  {
+    "title": "Vue 3 keep-alive caches component state across route changes",
+    "category": "pattern",
+    "tags": ["vue3", "keep-alive", "caching", "performance", "vue-router"],
+    "problem": "Switching between routes destroys and recreates components, losing scroll position, form state, and fetched data. Without keep-alive, every visit reruns the setup logic.",
+    "solution": "Wrap router views with <KeepAlive> and handle activation hooks:\n\n<!-- App.vue -->\n<template>\n  <RouterView v-slot=\"{ Component }\">\n    <KeepAlive :include=\"cachedViews\" :max=\"10\">\n      <component :is=\"Component\" :key=\"$route.path\" />\n    </KeepAlive>\n  </RouterView>\n</template>\n\n<script setup>\nimport { ref } from 'vue';\n// Only cache these named components\nconst cachedViews = ref(['ListView', 'SearchView']);\n</script>\n\n<!-- In a cached component -->\n<script setup>\nimport { onActivated, onDeactivated } from 'vue';\n\nonActivated(() => {\n  // Called each time the component becomes visible again\n  refreshData();  // re-fetch stale data\n});\n\nonDeactivated(() => {\n  // Called when leaving but not destroyed\n  pauseVideoPlayback();\n});\n</script>",
+    "why": "KeepAlive wraps components in an internal cache instead of destroying them. onActivated/onDeactivated fire instead of onMounted/onUnmounted for cached components. This preserves scroll position, form input, and avoids expensive re-fetches.",
+    "gotchas": [
+      "The component must have a name option (or <script setup> filename) for :include/:exclude to match",
+      ":max evicts the least recently used component when the cache exceeds the limit",
+      "onMounted/onUnmounted still fire the first mount and final destroy",
+      "Memory usage grows with cached components — always set :max for route-level caching"
+    ],
+    "language": "javascript",
+    "framework": "vue",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["keep-alive", "component caching", "onActivated", "onDeactivated", "scroll position", "vue router cache"],
+    "severity": "tip",
+    "context": "When preserving component state across route navigation in Vue 3",
+    "code_snippets": [
+      {
+        "lang": "vue",
+        "code": "<RouterView v-slot=\"{ Component }\">\n  <Transition name=\"fade\">\n    <KeepAlive :max=\"5\">\n      <component :is=\"Component\" />\n    </KeepAlive>\n  </Transition>\n</RouterView>",
+        "description": "KeepAlive with route transition"
+      }
+    ],
+    "version_info": "Vue 3.0+"
+  },
+  {
+    "title": "Vue 3 script setup macros: defineExpose, defineOptions, defineSlots",
+    "category": "pattern",
+    "tags": ["vue3", "script-setup", "defineExpose", "defineOptions", "compiler-macros"],
+    "problem": "Components using <script setup> are closed by default — template refs don't expose internal methods. Component names, inheritAttrs, and slot types require additional boilerplate.",
+    "solution": "Use the full set of script setup compiler macros:\n\n<script setup lang=\"ts\">\nimport { ref } from 'vue';\n\n// defineExpose: make methods/state accessible via template ref\nconst inputRef = ref<HTMLInputElement | null>(null);\nfunction focus() { inputRef.value?.focus(); }\ndefineExpose({ focus });\n\n// defineOptions: set component name and other options (Vue 3.3+)\ndefineOptions({\n  name: 'BaseInput',      // needed for KeepAlive :include\n  inheritAttrs: false,    // control attribute fallthrough\n});\n\n// defineSlots: type your slots (Vue 3.3+)\ndefineSlots<{\n  default(props: { item: Item }): void;\n  header(): void;\n}>();\n</script>\n\n<!-- Parent: access exposed method via ref -->\n<template>\n  <BaseInput ref=\"inputRef\" />\n  <button @click=\"inputRef?.focus()\">Focus</button>\n</template>",
+    "why": "script setup components are closed by default because exposing everything would create fragile public APIs. defineExpose makes the intent explicit. defineOptions (3.3+) replaces the need for a separate <script> block just to set the component name.",
+    "gotchas": [
+      "Without defineExpose, parent template refs to the component will be an empty proxy {}",
+      "defineOptions replaces the need for a second <script> block for name/inheritAttrs",
+      "useAttrs() and useSlots() composables access $attrs and $slots in script setup",
+      "Accessing a ref to a component that uses KeepAlive — use defineExpose to expose state explicitly"
+    ],
+    "language": "javascript",
+    "framework": "vue",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["defineExpose", "defineOptions", "defineSlots", "script setup", "template ref", "component name"],
+    "severity": "tip",
+    "context": "When working with Vue 3 script setup and needing to expose component methods or configure component options",
+    "code_snippets": [
+      {
+        "lang": "vue",
+        "code": "<script setup>\ndefineOptions({ name: 'MyModal', inheritAttrs: false });\nconst { class: cls, ...rest } = useAttrs();\ndefineExpose({ open, close });\n</script>",
+        "description": "defineOptions with controlled attribute passthrough"
+      }
+    ],
+    "version_info": "defineOptions and defineSlots: Vue 3.3+"
+  },
+  {
+    "title": "Svelte reactive declarations ($:) — how and when they run",
+    "category": "pattern",
+    "tags": ["svelte", "reactive", "reactive-declarations", "derived-state", "svelte4"],
+    "problem": "Svelte $: statements run in unexpected order or don't re-run when expected. Developers put side effects in $: where they should use afterUpdate, or miss that $: only tracks variables read during execution.",
+    "solution": "Use $: for derived values and simple side effects:\n\n<script>\n  let count = 0;\n  let name = 'Alice';\n\n  // Derived value — re-runs whenever count changes\n  $: doubled = count * 2;\n  $: message = `${name} has ${count} items`;\n\n  // Side effect — re-runs when count changes\n  $: if (count > 10) {\n    console.log('Count exceeded 10');\n    alert('Too many items!');\n  }\n\n  // Block — tracks ALL variables used inside\n  $: {\n    const formatted = name.toUpperCase();\n    console.log(formatted, count);  // tracks both name and count\n  }\n\n  // Common mistake: assignment doesn't make it reactive\n  // let doubled = count * 2;  // NOT reactive — runs once\n</script>",
+    "why": "Svelte's reactive declarations are compiled to code that re-runs the statement when any reactive dependency (variable read during execution) changes. Svelte's compiler analyzes the dependency graph at compile time and inserts invalidation calls after assignments.",
+    "gotchas": [
+      "$: runs after the DOM updates but before the browser paints — not synchronous with assignments",
+      "Reactive declarations are ordered by dependency — Svelte topologically sorts them",
+      "Mutating an array/object (push, splice) doesn't trigger reactivity — reassign: arr = arr",
+      "Svelte 5 replaces $: with $derived() and $effect() runes"
+    ],
+    "language": "javascript",
+    "framework": "svelte",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["reactive declarations", "$:", "svelte reactivity", "derived state", "dependency tracking", "invalidation"],
+    "severity": "moderate",
+    "context": "When creating derived values or side effects in Svelte 4 components",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// Mutation doesn't trigger reactivity\nlet items = [1, 2, 3];\nitems.push(4);      // NOT reactive\nitems = [...items, 4]; // reactive — reassignment\n\n// Or use splice and reassign\nitems.splice(0, 1);\nitems = items;      // triggers reactivity",
+        "description": "Triggering array/object reactivity in Svelte 4"
+      }
+    ],
+    "version_info": "Svelte 4 (for $: syntax)"
+  },
+  {
+    "title": "Svelte stores: writable, readable, and derived",
+    "category": "pattern",
+    "tags": ["svelte", "stores", "writable", "derived", "readable", "state-management"],
+    "problem": "Sharing state across unrelated Svelte components without prop drilling or context. Not using derived stores leads to duplicated subscription logic and stale values.",
+    "solution": "Use the svelte/store primitives:\n\n// stores/user.ts\nimport { writable, derived, readable } from 'svelte/store';\n\n// writable: mutable shared state\nexport const user = writable<User | null>(null);\nexport const theme = writable('light');\n\n// readable: external data source (no .set from outside)\nexport const time = readable(new Date(), (set) => {\n  const interval = setInterval(() => set(new Date()), 1000);\n  return () => clearInterval(interval);  // cleanup\n});\n\n// derived: computed from other stores\nexport const isLoggedIn = derived(user, $user => $user !== null);\nexport const greeting = derived(\n  [user, time],\n  ([$user, $time]) => `Hi ${$user?.name}, it's ${$time.toTimeString()}`\n);\n\n// In a component — $ prefix auto-subscribes and unsubscribes\n<script>\nimport { user, greeting } from '../stores/user';\n</script>\n<p>{$greeting}</p>\n<button on:click={() => user.set(null)}>Logout</button>",
+    "why": "Svelte stores implement a simple contract: subscribe(), set(), update(). The $ prefix in a component is compiler sugar that subscribes on mount and unsubscribes on destroy automatically. Derived stores recalculate lazily when subscribed.",
+    "gotchas": [
+      "The $ prefix only works inside .svelte files — in .ts files, manually subscribe/unsubscribe",
+      "Subscribing in .ts without cleanup leaks memory — always return the unsubscribe function",
+      "derived() is lazy — it only recalculates when there's at least one subscriber",
+      "store.update(fn) is atomic — use it instead of set when new value depends on old value"
+    ],
+    "language": "javascript",
+    "framework": "svelte",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["svelte stores", "writable", "derived", "readable", "auto-subscribe", "$ prefix", "state management"],
+    "severity": "moderate",
+    "context": "When sharing state across Svelte components with stores",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// Manual subscribe in .ts (not .svelte)\nimport { get } from 'svelte/store';\n// Snapshot value without subscribing\nconst currentUser = get(user);\n\n// Subscribe manually\nconst unsubscribe = user.subscribe($user => {\n  console.log($user);\n});\n// Later:\nunsubscribe();",
+        "description": "Using stores in non-Svelte files"
+      }
+    ],
+    "version_info": "Svelte 3/4"
+  },
+  {
+    "title": "SvelteKit load functions — server vs universal data loading",
+    "category": "pattern",
+    "tags": ["sveltekit", "load", "page-server", "server-data", "data-loading"],
+    "problem": "Confusion between +page.server.ts and +page.ts load functions causes data to load in the wrong environment, expose server-side secrets to the client, or fail to load on client-side navigation.",
+    "solution": "Choose the correct load file based on where the data lives:\n\n// +page.server.ts — runs ONLY on the server\n// Use for: database queries, private API keys, auth sessions\nexport async function load({ locals, params, cookies }) {\n  const session = locals.session;\n  if (!session) throw redirect(303, '/login');\n\n  const user = await db.user.findUnique({ where: { id: params.id } });\n  if (!user) throw error(404, 'User not found');\n\n  return { user };  // serialized and sent to client\n}\n\n// +page.ts — runs on server AND client\n// Use for: public APIs, data that's safe to expose\nexport async function load({ fetch, params }) {\n  // Use the SvelteKit fetch (adds credentials, handles SSR)\n  const res = await fetch(`/api/products/${params.id}`);\n  if (!res.ok) throw error(res.status);\n  return { product: await res.json() };\n}\n\n// +page.svelte — access via data prop\n<script>\n  export let data;  // typed by $types\n  // data.user or data.product\n</script>",
+    "why": "+page.server.ts only runs on the server — its return value is serialized (no functions, Dates need care). +page.ts runs server-side during SSR and on the client during navigation — it can use fetch but cannot access Node.js APIs or secrets.",
+    "gotchas": [
+      "Never put API keys or secrets in +page.ts — it ships to the browser",
+      "Return values from server load must be serializable (use devalue for Dates/Maps/Sets)",
+      "Parent layout load data is available via the parent() function",
+      "Use $page.data in components without prop drilling through all levels"
+    ],
+    "language": "javascript",
+    "framework": "svelte",
+    "environment": [],
+    "error_messages": [
+      "Error: Cannot serialize non-POJOs",
+      "Error: Cannot find module '$app/navigation'"
+    ],
+    "keywords": ["sveltekit load", "page.server.ts", "page.ts", "server load", "universal load", "data loading"],
+    "severity": "major",
+    "context": "When loading data for SvelteKit page components",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// Access parent layout data\nexport async function load({ parent }) {\n  const { session } = await parent();\n  return { userId: session.userId };\n}",
+        "description": "Accessing parent layout data in SvelteKit load"
+      }
+    ],
+    "version_info": "SvelteKit 1.x+"
+  },
+  {
+    "title": "SvelteKit form actions for progressive enhancement",
+    "category": "pattern",
+    "tags": ["sveltekit", "form-actions", "forms", "progressive-enhancement", "use:enhance"],
+    "problem": "Building forms in SvelteKit with JavaScript-only fetch calls requires reimplementing loading states, error handling, and redirect logic. Form actions provide a server-side handler that works without JS.",
+    "solution": "Define actions in +page.server.ts and enhance with use:enhance:\n\n// +page.server.ts\nimport { fail, redirect } from '@sveltejs/kit';\n\nexport const actions = {\n  login: async ({ request, cookies }) => {\n    const data = await request.formData();\n    const email = data.get('email') as string;\n    const password = data.get('password') as string;\n\n    if (!email || !password) {\n      return fail(400, { email, missing: true });\n    }\n\n    const user = await authenticate(email, password);\n    if (!user) return fail(401, { email, incorrect: true });\n\n    cookies.set('session', user.token, { path: '/' });\n    throw redirect(303, '/dashboard');\n  }\n};\n\n<!-- +page.svelte -->\n<script>\n  import { enhance } from '$app/forms';\n  export let form;  // form action result\n</script>\n\n<form method=\"POST\" action=\"?/login\" use:enhance>\n  <input name=\"email\" value={form?.email ?? ''} />\n  {#if form?.missing}<p>Email required</p>{/if}\n  {#if form?.incorrect}<p>Invalid credentials</p>{/if}\n  <button>Login</button>\n</form>",
+    "why": "Form actions use native HTML forms — they work without JavaScript via standard POST. use:enhance intercepts the submit with fetch for a JavaScript-enhanced experience (no full page reload), while preserving the same server action. This is progressive enhancement.",
+    "gotchas": [
+      "use:enhance prevents the default browser POST but still calls the same server action",
+      "fail() returns data as form prop — redirect() must use status 303 in form actions",
+      "Default action (?/) is used when there's only one action; named actions use ?/name",
+      "File uploads require body parsing — use request.formData() not request.json()"
+    ],
+    "language": "javascript",
+    "framework": "svelte",
+    "environment": [],
+    "error_messages": [
+      "Error: Actions must use a 303 redirect, not 301 or 302"
+    ],
+    "keywords": ["form actions", "use:enhance", "progressive enhancement", "fail", "redirect", "sveltekit forms"],
+    "severity": "moderate",
+    "context": "When building forms in SvelteKit that work without JavaScript",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// Custom enhance callback\n<form use:enhance={({ formData, cancel }) => {\n  // Optionally cancel the submission\n  // cancel();\n  return async ({ result, update }) => {\n    // result.type: 'success' | 'failure' | 'redirect' | 'error'\n    await update(); // apply default behavior\n  };\n}}>",
+        "description": "Custom use:enhance callback for fine-grained control"
+      }
+    ],
+    "version_info": "SvelteKit 1.x+"
+  },
+  {
+    "title": "SvelteKit hooks.server.ts for global request handling",
+    "category": "pattern",
+    "tags": ["sveltekit", "hooks", "server-hooks", "middleware", "locals", "authentication"],
+    "problem": "Authentication checks and request preprocessing are duplicated across every load function. There is no centralized place to set user context before routes run.",
+    "solution": "Use hooks.server.ts to run code for every request:\n\n// src/hooks.server.ts\nimport type { Handle } from '@sveltejs/kit';\nimport { sequence } from '@sveltejs/kit/hooks';\n\nconst auth: Handle = async ({ event, resolve }) => {\n  const sessionToken = event.cookies.get('session');\n\n  if (sessionToken) {\n    event.locals.user = await validateSession(sessionToken);\n  } else {\n    event.locals.user = null;\n  }\n\n  return resolve(event);\n};\n\nconst security: Handle = async ({ event, resolve }) => {\n  const response = await resolve(event);\n  response.headers.set('X-Frame-Options', 'DENY');\n  response.headers.set('X-Content-Type-Options', 'nosniff');\n  return response;\n};\n\n// Compose multiple hooks\nexport const handle = sequence(auth, security);\n\n// src/app.d.ts — type locals\ndeclare global {\n  namespace App {\n    interface Locals {\n      user: User | null;\n    }\n  }\n}",
+    "why": "hooks.server.ts runs on the server for every request before any load function. event.locals is a per-request object for passing data (like the authenticated user) to load functions and server actions without re-querying on every route.",
+    "gotchas": [
+      "locals are only available server-side — don't try to access them in +page.ts",
+      "sequence() composes multiple Handle functions in order",
+      "handleFetch hook can intercept and modify SvelteKit's internal fetch calls",
+      "handleError hook catches unexpected server-side errors for logging"
+    ],
+    "language": "javascript",
+    "framework": "svelte",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["hooks.server.ts", "handle hook", "locals", "sequence", "middleware", "authentication", "request lifecycle"],
+    "severity": "moderate",
+    "context": "When adding authentication or global request processing in SvelteKit",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// handleError: log unexpected errors\nexport const handleError: HandleServerError = async ({ error, event }) => {\n  console.error(error);\n  return { message: 'Internal server error', code: 'UNKNOWN' };\n};",
+        "description": "SvelteKit global error handler"
+      }
+    ],
+    "version_info": "SvelteKit 1.x+"
+  },
+  {
+    "title": "SvelteKit adapter configuration for deployment targets",
+    "category": "pattern",
+    "tags": ["sveltekit", "adapter", "deployment", "node", "vercel", "cloudflare"],
+    "problem": "SvelteKit apps fail to deploy because the wrong adapter is used, or the adapter is not configured for the target environment. Default adapter-auto doesn't always detect the platform correctly.",
+    "solution": "Install and configure the correct adapter in svelte.config.js:\n\n// For Node.js (self-hosted)\nimport adapter from '@sveltejs/adapter-node';\nexport default {\n  kit: {\n    adapter: adapter({ out: 'build', precompress: true })\n  }\n};\n\n// For Vercel\nimport adapter from '@sveltejs/adapter-vercel';\nexport default {\n  kit: {\n    adapter: adapter({ runtime: 'nodejs20.x' })\n  }\n};\n\n// For Cloudflare Pages\nimport adapter from '@sveltejs/adapter-cloudflare';\nexport default { kit: { adapter: adapter() } };\n\n// For static sites (no SSR)\nimport adapter from '@sveltejs/adapter-static';\nexport default {\n  kit: {\n    adapter: adapter({ fallback: '200.html' })\n  }\n};\n// Also set in each page that needs static:\n// export const prerender = true;\n// OR globally:\n// export const prerender = true; in +layout.ts",
+    "why": "SvelteKit is platform-agnostic — adapters transform the build output to match the target runtime. Without the correct adapter, the server entrypoint, asset handling, and edge function configuration will be wrong for the deployment platform.",
+    "gotchas": [
+      "adapter-auto detects Vercel/Netlify/Cloudflare but falls back to adapter-node in ambiguous environments",
+      "adapter-static requires all pages to be prerenderable — dynamic routes that depend on request data cannot be static",
+      "Cloudflare Workers have no Node.js APIs — use platform-specific APIs or compatibility flags",
+      "ORIGIN environment variable must be set for non-static deployments to prevent CSRF issues"
+    ],
+    "language": "javascript",
+    "framework": "svelte",
+    "environment": [],
+    "error_messages": [
+      "Error: Cannot find module '@sveltejs/adapter-node'",
+      "Error: INVALID_URL: relative URL without a base"
+    ],
+    "keywords": ["sveltekit adapter", "adapter-node", "adapter-vercel", "adapter-static", "deployment", "svelte.config.js"],
+    "severity": "major",
+    "context": "When deploying a SvelteKit application to a hosting platform",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// Hybrid: most pages static, some server-rendered\n// +layout.ts\nexport const prerender = true;  // default all pages to static\n\n// +page.server.ts (dynamic page — overrides layout)\nexport const prerender = false;\nexport const ssr = true;",
+        "description": "Hybrid static/SSR rendering in SvelteKit"
+      }
+    ],
+    "version_info": "SvelteKit 1.x+"
+  },
+  {
+    "title": "Svelte 5 runes: $state, $derived, $effect replace reactive declarations",
+    "category": "pattern",
+    "tags": ["svelte5", "runes", "$state", "$derived", "$effect", "reactivity"],
+    "problem": "Svelte 4's $: reactive declarations and mutable let variables are implicit and hard to understand. Svelte 5 introduces explicit runes that clarify reactivity intent and work in .ts files too.",
+    "solution": "Use Svelte 5 runes for explicit reactivity:\n\n<script>\n  // $state: reactive variable (replaces let)\n  let count = $state(0);\n  let user = $state({ name: 'Alice', age: 30 });\n\n  // $derived: synchronous computed (replaces $:)\n  const doubled = $derived(count * 2);\n  const greeting = $derived(`Hello ${user.name}`);\n\n  // $derived.by: for complex derivations\n  const stats = $derived.by(() => {\n    return { total: count, average: count / 2 };\n  });\n\n  // $effect: side effect (replaces $: for side effects)\n  $effect(() => {\n    document.title = `Count: ${count}`;\n    return () => {\n      // cleanup — runs before re-executing and on destroy\n      document.title = 'App';\n    };\n  });\n\n  // $props: replaces export let (in components)\n  const { name, size = 'md' } = $props();\n</script>\n\n<button onclick={() => count++}>{count}</button>",
+    "why": "Runes are explicit compiler signals that work in any context — .svelte files, .ts files, and .svelte.ts files. They make reactive intent clear and allow sharing reactive logic in plain TypeScript files (like custom state classes).",
+    "gotchas": [
+      "Runes mode is opt-in per file or per project — mixing Svelte 4 and 5 syntax in one file causes errors",
+      "$state objects have deep reactivity by default — mutations are tracked without reassignment",
+      "$effect.pre runs before DOM updates (like beforeUpdate), $effect runs after",
+      "Arrays and objects in $state use proxies — you can push/splice without reassigning"
+    ],
+    "language": "javascript",
+    "framework": "svelte",
+    "environment": [],
+    "error_messages": [
+      "State referenced in its own initializer",
+      "Cannot use runes in legacy mode"
+    ],
+    "keywords": ["svelte5", "runes", "$state", "$derived", "$effect", "$props", "reactivity model"],
+    "severity": "moderate",
+    "context": "When writing Svelte 5 components with the new runes reactivity model",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// Shared reactive state in a .svelte.ts file\nclass Counter {\n  count = $state(0);\n  doubled = $derived(this.count * 2);\n  increment() { this.count++; }\n}\nexport const counter = new Counter();",
+        "description": "Shared reactive class with Svelte 5 runes"
+      }
+    ],
+    "version_info": "Svelte 5.0+"
+  },
+  {
+    "title": "SvelteKit error handling: expected vs unexpected errors",
+    "category": "pattern",
+    "tags": ["sveltekit", "error-handling", "error()", "unexpected-errors", "+error.svelte"],
+    "problem": "Unhandled errors in SvelteKit load functions crash pages without useful feedback. Expected errors (404, 401) and unexpected errors require different handling strategies.",
+    "solution": "Use error() for expected errors, let unexpected errors propagate to handleError:\n\n// +page.server.ts\nimport { error } from '@sveltejs/kit';\n\nexport async function load({ params }) {\n  // Expected error — user sees +error.svelte\n  const post = await db.post.findUnique({ where: { id: params.id } });\n  if (!post) throw error(404, { message: 'Post not found' });\n\n  // Unexpected error — don't throw error(), just let it throw\n  // It goes to handleError in hooks.server.ts\n  const related = await db.post.findMany(); // if this throws, it's unexpected\n  return { post, related };\n}\n\n<!-- src/routes/+error.svelte -->\n<script>\n  import { page } from '$app/stores';\n</script>\n<h1>{$page.status}</h1>\n<p>{$page.error?.message}</p>\n\n<!-- Layout-level error boundary -->\n<!-- Create +error.svelte next to +layout.svelte to catch errors for that layout -->\n\n// hooks.server.ts\nexport const handleError: HandleServerError = ({ error, event }) => {\n  console.error('Unexpected error:', error);\n  // Return safe user-facing message\n  return { message: 'Something went wrong', errorId: crypto.randomUUID() };\n};",
+    "why": "error() throws a special HttpError that SvelteKit catches and renders the nearest +error.svelte with the status code. Unexpected errors (unhandled exceptions) go through handleError for logging, and the user sees a generic 500 error page.",
+    "gotchas": [
+      "+error.svelte must be colocated with the +layout.svelte it belongs to",
+      "error() inside a load function is caught by the parent layout's +error.svelte",
+      "redirect() is similar — it throws and must not be caught in a try/catch",
+      "Client-side errors in components are not caught by +error.svelte — use onError event"
+    ],
+    "language": "javascript",
+    "framework": "svelte",
+    "environment": [],
+    "error_messages": [
+      "Not found",
+      "Error: Redirect inside try/catch will be caught"
+    ],
+    "keywords": ["sveltekit error", "error()", "+error.svelte", "handleError", "404", "expected error"],
+    "severity": "major",
+    "context": "When handling errors in SvelteKit load functions and server actions",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// Don't catch redirect or error throws\ntry {\n  const data = await loadData();\n  if (!data) throw error(404);  // NOT caught by try/catch below\n} catch (e) {\n  // This also catches redirect/error — re-throw them!\n  if (e instanceof HttpError || e instanceof Redirect) throw e;\n  console.error(e);\n}",
+        "description": "Re-throwing SvelteKit special errors inside try/catch"
+      }
+    ],
+    "version_info": "SvelteKit 1.x+"
+  },
+  {
+    "title": "Astro islands architecture — partial hydration with client directives",
+    "category": "pattern",
+    "tags": ["astro", "islands", "partial-hydration", "performance", "client-directives"],
+    "problem": "Sending a fully interactive JavaScript bundle for every component when most content is static. Developers hydrate the entire page unnecessarily, destroying Astro's performance advantage.",
+    "solution": "Use client: directives to hydrate only interactive components:\n\n---\n// Only import interactive components where needed\nimport StaticHeader from './Header.astro';        // zero JS\nimport InteractiveCart from './Cart.vue';          // needs hydration\nimport LazyChart from './Chart.svelte';            // heavy — load late\nimport AboveFold from './Hero.react';             // visible immediately\n---\n\n<!-- Zero JS: Astro component, rendered server-side only -->\n<StaticHeader />\n\n<!-- Hydrate immediately on page load -->\n<AboveFold client:load />\n\n<!-- Hydrate when visible in viewport (best for below-fold) -->\n<LazyChart client:visible />\n\n<!-- Hydrate when browser is idle (non-critical) -->\n<InteractiveCart client:idle />\n\n<!-- Hydrate only on matching media query -->\n<MobileMenu client:media=\"(max-width: 768px)\" />\n\n<!-- Hydrate only on the client, skip SSR entirely -->\n<BrowserOnlyWidget client:only=\"react\" />",
+    "why": "Astro's islands architecture treats interactive components as isolated 'islands' of JavaScript in a sea of static HTML. Server-renders everything by default (zero JS), and hydrates only the islands that need it, with precise timing control.",
+    "gotchas": [
+      "client:only skips server rendering — the component won't appear in SSG/SSR HTML",
+      "client:visible uses IntersectionObserver — not available in all environments",
+      "Props passed to hydrated components must be serializable (no functions, class instances)",
+      "Islands don't share state by default — use nanostores or a global store for cross-island communication"
+    ],
+    "language": "javascript",
+    "framework": "astro",
+    "environment": [],
+    "error_messages": [
+      "Error: Component must be used with a client directive when using SSR"
+    ],
+    "keywords": ["astro islands", "partial hydration", "client:load", "client:visible", "client:idle", "client:only", "zero javascript"],
+    "severity": "moderate",
+    "context": "When choosing how to hydrate interactive components in an Astro application",
+    "code_snippets": [
+      {
+        "lang": "astro",
+        "code": "---\n// Cross-island state with nanostores\nimport { cartCount } from '../stores/cart';\n---\n<CartIcon client:load />\n<CartDrawer client:idle />\n<!-- Both components import and share the same nanostores store -->",
+        "description": "Cross-island communication with nanostores"
+      }
+    ],
+    "version_info": "Astro 2.0+"
+  },
+  {
+    "title": "Astro content collections for typed, validated content",
+    "category": "pattern",
+    "tags": ["astro", "content-collections", "zod", "mdx", "type-safety"],
+    "problem": "Managing blog posts, docs, or other Markdown content with no type safety — frontmatter fields are unvalidated, typos in slugs go undetected, and querying is done with raw glob imports.",
+    "solution": "Define content collections with Zod schemas in src/content/config.ts:\n\n// src/content/config.ts\nimport { defineCollection, z } from 'astro:content';\n\nconst blog = defineCollection({\n  type: 'content',  // markdown/mdx\n  schema: z.object({\n    title: z.string(),\n    description: z.string(),\n    pubDate: z.date(),\n    tags: z.array(z.string()).default([]),\n    draft: z.boolean().default(false),\n    cover: z.object({\n      src: z.string(),\n      alt: z.string()\n    }).optional()\n  })\n});\n\nconst authors = defineCollection({\n  type: 'data',  // JSON/YAML only\n  schema: z.object({\n    name: z.string(),\n    bio: z.string()\n  })\n});\n\nexport const collections = { blog, authors };\n\n// In a page:\nimport { getCollection, getEntry } from 'astro:content';\n\nconst posts = await getCollection('blog', ({ data }) => !data.draft);\nconst author = await getEntry('authors', 'alice');",
+    "why": "Content collections give Markdown files a typed schema enforced at build time. Zod validates frontmatter — missing fields and wrong types throw build errors rather than silent runtime bugs. getCollection() returns fully typed entries with IntelliSense.",
+    "gotchas": [
+      "Content must be in src/content/ — not src/pages/ or public/",
+      "z.date() parses ISO date strings from frontmatter — use quotes in YAML: pubDate: '2024-01-01'",
+      "getCollection() is async — it cannot be used outside of Astro frontmatter or server endpoints",
+      "Images in frontmatter can use z.image() to get width/height metadata automatically"
+    ],
+    "language": "javascript",
+    "framework": "astro",
+    "environment": [],
+    "error_messages": [
+      "ZodError: Invalid frontmatter in content entry",
+      "Cannot find module 'astro:content'"
+    ],
+    "keywords": ["content collections", "astro:content", "zod schema", "frontmatter", "getCollection", "type-safe content"],
+    "severity": "moderate",
+    "context": "When managing structured content like blog posts or documentation in Astro",
+    "code_snippets": [
+      {
+        "lang": "astro",
+        "code": "---\nimport { getCollection } from 'astro:content';\nconst posts = await getCollection('blog', ({ data }) => !data.draft);\nconst sorted = posts.sort((a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf());\n---\n{sorted.map(post => (\n  <article>\n    <a href={`/blog/${post.slug}`}>{post.data.title}</a>\n  </article>\n))}",
+        "description": "Fetching and sorting blog posts from a collection"
+      }
+    ],
+    "version_info": "Astro 2.0+ (content collections stable)"
+  },
+  {
+    "title": "Astro middleware for authentication and request processing",
+    "category": "pattern",
+    "tags": ["astro", "middleware", "authentication", "locals", "request"],
+    "problem": "Running authentication checks or preprocessing logic on every request in Astro without a central place to handle it. Duplicating auth logic in every page.",
+    "solution": "Create src/middleware.ts to intercept all requests:\n\n// src/middleware.ts\nimport { defineMiddleware, sequence } from 'astro:middleware';\n\nconst auth = defineMiddleware(async (context, next) => {\n  const session = context.cookies.get('session')?.value;\n\n  if (session) {\n    const user = await validateSession(session);\n    context.locals.user = user;  // available in all pages\n  } else {\n    context.locals.user = null;\n  }\n\n  // Protect /admin routes\n  if (context.url.pathname.startsWith('/admin')) {\n    if (!context.locals.user) {\n      return context.redirect('/login');\n    }\n  }\n\n  return next();\n});\n\nconst logging = defineMiddleware(async (context, next) => {\n  const start = Date.now();\n  const response = await next();\n  console.log(`${context.request.method} ${context.url.pathname} ${Date.now() - start}ms`);\n  return response;\n});\n\nexport const onRequest = sequence(auth, logging);\n\n// src/env.d.ts — type locals\ndeclare namespace App {\n  interface Locals {\n    user: User | null;\n  }\n}",
+    "why": "Astro middleware runs before every page render and API endpoint. context.locals carries per-request data to pages and endpoints. sequence() composes middleware functions in order, similar to Express middleware chains.",
+    "gotchas": [
+      "Middleware only runs in SSR mode (output: server or hybrid) — not for purely static pages",
+      "Always call next() unless explicitly short-circuiting with a redirect",
+      "context.locals is not available in client-side JavaScript — server-only",
+      "Middleware runs for ALL requests including static assets unless filtered by URL"
+    ],
+    "language": "javascript",
+    "framework": "astro",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["astro middleware", "defineMiddleware", "locals", "authentication", "sequence", "request interceptor"],
+    "severity": "moderate",
+    "context": "When adding authentication or request preprocessing to an Astro SSR application",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// Access locals in an Astro page\n---\nconst { user } = Astro.locals;\nif (!user) return Astro.redirect('/login');\n---\n<h1>Welcome {user.name}</h1>",
+        "description": "Accessing middleware locals in Astro page"
+      }
+    ],
+    "version_info": "Astro 2.6+ (middleware stable)"
+  },
+  {
+    "title": "Astro View Transitions for SPA-like page navigation",
+    "category": "pattern",
+    "tags": ["astro", "view-transitions", "animations", "navigation", "spa"],
+    "problem": "Multi-page Astro apps have full-page reloads between routes, losing the smooth navigation experience of SPAs. Adding a full SPA framework adds unnecessary JavaScript.",
+    "solution": "Add <ViewTransitions /> to the layout and name elements for persistent state:\n\n// src/layouts/BaseLayout.astro\n---\nimport { ViewTransitions } from 'astro:transitions';\n---\n<html>\n  <head>\n    <ViewTransitions />\n  </head>\n  <body>\n    <slot />\n  </body>\n</html>\n\n// Persist an element across page transitions\n<nav transition:persist>\n  <!-- nav stays mounted between pages -->\n</nav>\n\n// Named transitions for matched elements\n<img\n  src={post.cover}\n  transition:name={`cover-${post.slug}`}\n/>\n<!-- The image morphs between list and detail page -->\n\n// Custom animation\n<div transition:animate=\"slide\">\n  Content slides in from the right\n</div>\n\n// Opt-out individual links\n<a href=\"/external\" data-astro-reload>Full reload</a>\n\n// Lifecycle events\ndocument.addEventListener('astro:page-load', () => {\n  // Runs after every navigation (like DOMContentLoaded for SPA)\n  initializePlugins();\n});",
+    "why": "Astro View Transitions uses the browser's native View Transitions API with a JavaScript fallback. It intercepts clicks, fetches the new page, and morphs the DOM with CSS animations — no framework router needed. Pages remain fully server-rendered.",
+    "gotchas": [
+      "transition:name must be unique on the page — duplicate names cause broken animations",
+      "Scripts in <head> run once — use astro:page-load event for per-navigation scripts",
+      "transition:persist keeps component state mounted — reinitialize if the component needs fresh state",
+      "Native View Transitions API requires Chrome 111+ — fallback is an instant swap without animation"
+    ],
+    "language": "javascript",
+    "framework": "astro",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["view transitions", "page transitions", "SPA navigation", "transition:name", "transition:persist", "astro:page-load"],
+    "severity": "tip",
+    "context": "When adding smooth page transitions to an Astro multi-page application",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// Re-run scripts after navigation\ndocument.addEventListener('astro:page-load', () => {\n  initCarousel();\n  setupAnalytics();\n});\n\n// Before navigation starts\ndocument.addEventListener('astro:before-swap', (e) => {\n  saveScrollPosition();\n});",
+        "description": "View Transition lifecycle events"
+      }
+    ],
+    "version_info": "Astro 3.0+ (View Transitions stable)"
+  },
+  {
+    "title": "Astro server endpoints for API routes",
+    "category": "pattern",
+    "tags": ["astro", "server-endpoints", "api-routes", "rest", "ssr"],
+    "problem": "Astro is used for static content but needs API endpoints for form submissions, data fetching, or webhooks. Without endpoints, developers add a separate API server.",
+    "solution": "Create .ts files in src/pages/api/ that export HTTP method handlers:\n\n// src/pages/api/users/[id].ts\nimport type { APIRoute } from 'astro';\n\nexport const GET: APIRoute = async ({ params, request, locals }) => {\n  const { id } = params;\n  const user = await db.user.findUnique({ where: { id } });\n\n  if (!user) {\n    return new Response(JSON.stringify({ error: 'Not found' }), {\n      status: 404,\n      headers: { 'Content-Type': 'application/json' }\n    });\n  }\n\n  return new Response(JSON.stringify(user), {\n    status: 200,\n    headers: { 'Content-Type': 'application/json' }\n  });\n};\n\nexport const PUT: APIRoute = async ({ request, params }) => {\n  const body = await request.json();\n  const updated = await db.user.update({ where: { id: params.id }, data: body });\n  return Response.json(updated);  // shorthand in newer Astro\n};\n\nexport const DELETE: APIRoute = async ({ params }) => {\n  await db.user.delete({ where: { id: params.id } });\n  return new Response(null, { status: 204 });\n};\n\n// Prerender: false means this endpoint is always server-rendered\nexport const prerender = false;",
+    "why": "Astro server endpoints are plain Response objects — they follow the Web Fetch API standard. Each exported HTTP method name becomes a handler. They run server-side only and have access to locals set by middleware.",
+    "gotchas": [
+      "Endpoint files must have output: 'server' or 'hybrid' in astro.config.mjs — or export prerender = false",
+      "Response.json() is available in Astro 4.0+ — use new Response(JSON.stringify(), { headers }) for older versions",
+      "CORS must be set manually — add Access-Control-Allow-Origin headers in the response",
+      "POST body parsing: request.json(), request.formData(), request.text() depending on content type"
+    ],
+    "language": "javascript",
+    "framework": "astro",
+    "environment": [],
+    "error_messages": [
+      "Cannot prerender: dynamic params require SSR",
+      "Error: Route requires server rendering"
+    ],
+    "keywords": ["astro endpoints", "api routes", "APIRoute", "server endpoints", "REST API", "Response"],
+    "severity": "moderate",
+    "context": "When building REST API endpoints within an Astro SSR application",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// src/pages/api/webhook.ts\nexport const POST: APIRoute = async ({ request }) => {\n  const signature = request.headers.get('x-signature');\n  const body = await request.text();\n  if (!verify(body, signature)) {\n    return new Response('Unauthorized', { status: 401 });\n  }\n  await processWebhook(JSON.parse(body));\n  return new Response('OK', { status: 200 });\n};",
+        "description": "Webhook endpoint with signature verification"
+      }
+    ],
+    "version_info": "Astro 1.0+ (endpoints stable)"
+  },
+  {
+    "title": "Astro hybrid rendering: mix static and server-rendered pages",
+    "category": "pattern",
+    "tags": ["astro", "hybrid-rendering", "ssr", "static", "output-hybrid"],
+    "problem": "Using output: 'server' makes every page server-rendered, losing static generation benefits for content pages. Using output: 'static' prevents any server-side dynamic behavior.",
+    "solution": "Use output: 'hybrid' (Astro 2.6+) or output: 'static' with opt-in SSR:\n\n// astro.config.mjs\nimport { defineConfig } from 'astro/config';\nimport node from '@sveltejs/adapter-node';\n\nexport default defineConfig({\n  output: 'hybrid',  // static by default, SSR opt-in\n  adapter: node(),\n});\n\n// src/pages/blog/[slug].astro — static (default)\n---\nexport async function getStaticPaths() {\n  const posts = await getCollection('blog');\n  return posts.map(post => ({ params: { slug: post.slug }, props: { post } }));\n}\n---\n\n// src/pages/dashboard.astro — server rendered\n---\nexport const prerender = false;  // opt-in to SSR\nconst { user } = Astro.locals;\nif (!user) return Astro.redirect('/login');\n---\n\n// src/pages/api/subscribe.ts — always server\nexport const prerender = false;\nexport const POST: APIRoute = async ({ request }) => { /* ... */ };",
+    "why": "Hybrid rendering lets you prerender marketing pages, blog posts, and docs at build time (fast, cacheable) while keeping dashboards, user-specific pages, and API routes server-rendered. This combines CDN speed with dynamic capability.",
+    "gotchas": [
+      "In hybrid mode, pages are static by default — add prerender = false to opt into SSR",
+      "In server mode, pages are SSR by default — add prerender = true to opt into static",
+      "getStaticPaths() is only used in static/hybrid mode for dynamic routes",
+      "Server-rendered pages bypass CDN caches — add Cache-Control headers where appropriate"
+    ],
+    "language": "javascript",
+    "framework": "astro",
+    "environment": [],
+    "error_messages": [
+      "getStaticPaths() ignored: dynamic routes require server output",
+      "Cannot prerender route with dynamic params"
+    ],
+    "keywords": ["hybrid rendering", "output hybrid", "prerender", "SSR", "static generation", "getStaticPaths"],
+    "severity": "moderate",
+    "context": "When mixing static and server-rendered pages in an Astro application",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// astro.config.mjs\nexport default defineConfig({\n  output: 'hybrid',  // pages static by default\n  // or: output: 'server'  — pages SSR by default\n});",
+        "description": "Hybrid vs server output mode"
+      }
+    ],
+    "version_info": "Astro 2.6+ (hybrid output mode)"
+  },
+  {
+    "title": "Astro component framework integration — using React, Vue, Svelte together",
+    "category": "pattern",
+    "tags": ["astro", "integrations", "react", "vue", "svelte", "multi-framework"],
+    "problem": "Adding a UI framework to Astro (React, Vue, Svelte) and encountering errors because the integration is not installed, or mixing frameworks incorrectly.",
+    "solution": "Install integrations and configure them in astro.config.mjs:\n\n# Install integrations\nnpx astro add react vue svelte\n\n// astro.config.mjs\nimport { defineConfig } from 'astro/config';\nimport react from '@astrojs/react';\nimport vue from '@astrojs/vue';\nimport svelte from '@astrojs/svelte';\n\nexport default defineConfig({\n  integrations: [react(), vue(), svelte()],\n});\n\n// Now use any framework in .astro files\n---\nimport ReactCounter from './Counter.jsx';\nimport VueAlert from './Alert.vue';\nimport SvelteSlider from './Slider.svelte';\n---\n\n<ReactCounter client:load />\n<VueAlert message=\"Hello\" client:visible />\n<SvelteSlider client:idle />\n\n// Passing complex props\n---\nconst items = [{ id: 1, name: 'Item 1' }];\n---\n<ReactList items={items} client:load />\n<!-- Astro serializes items as JSON automatically -->",
+    "why": "Each Astro integration registers a renderer for that framework's components. Multiple frameworks can coexist because each island is independently hydrated — they don't share a runtime. Props are serialized between server and client automatically.",
+    "gotchas": [
+      "Framework components cannot import .astro components — only Astro can import both",
+      "Props must be JSON-serializable — no functions, Dates, or class instances unless handled by the framework",
+      "Each framework adds its runtime to the client bundle for that island — don't use all three if only one is needed",
+      "Sharing state across framework islands requires a framework-agnostic store like nanostores"
+    ],
+    "language": "javascript",
+    "framework": "astro",
+    "environment": [],
+    "error_messages": [
+      "Unable to render: no renderer found for component",
+      "Error: Cannot import .astro component inside React component"
+    ],
+    "keywords": ["astro integrations", "react integration", "vue integration", "svelte integration", "multi-framework", "nanostores"],
+    "severity": "moderate",
+    "context": "When using multiple UI frameworks together in an Astro project",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// Cross-island state with nanostores\n// src/stores/cart.ts\nimport { atom, computed } from 'nanostores';\nexport const cartItems = atom([]);\nexport const cartTotal = computed(cartItems, items =>\n  items.reduce((sum, i) => sum + i.price, 0)\n);\n\n// Use in React island\nimport { useStore } from '@nanostores/react';\nconst items = useStore(cartItems);\n\n// Use in Vue island\nimport { useStore } from '@nanostores/vue';\nconst items = useStore(cartItems);",
+        "description": "Cross-framework state with nanostores"
+      }
+    ],
+    "version_info": "Astro 2.0+"
+  },
+  {
+    "title": "Vue 3 Composition API: options API to composition API migration patterns",
+    "category": "pattern",
+    "tags": ["vue3", "composition-api", "options-api", "migration", "script-setup"],
+    "problem": "Migrating Vue 2/3 Options API components to Composition API causes confusion about where to put lifecycle hooks, data, computed, and methods.",
+    "solution": "Map each Options API section to its Composition API equivalent:\n\n// Options API\nexport default {\n  name: 'UserProfile',\n  props: { userId: String },\n  data() {\n    return { user: null, loading: false };\n  },\n  computed: {\n    displayName() {\n      return this.user?.name ?? 'Loading...';\n    }\n  },\n  watch: {\n    userId(newId) { this.fetchUser(newId); }\n  },\n  async created() {\n    await this.fetchUser(this.userId);\n  },\n  methods: {\n    async fetchUser(id) {\n      this.loading = true;\n      this.user = await api.getUser(id);\n      this.loading = false;\n    }\n  }\n};\n\n// Composition API equivalent\n<script setup lang=\"ts\">\nimport { ref, computed, watch, onMounted } from 'vue';\n\nconst props = defineProps<{ userId: string }>();\nconst user = ref(null);\nconst loading = ref(false);\n\nconst displayName = computed(() => user.value?.name ?? 'Loading...');\n\nasync function fetchUser(id: string) {\n  loading.value = true;\n  user.value = await api.getUser(id);\n  loading.value = false;\n}\n\nwatch(() => props.userId, (newId) => fetchUser(newId));\nonMounted(() => fetchUser(props.userId));\n</script>",
+    "why": "The Composition API is not a replacement API — it's an additive system. Both APIs compile to the same internal component instance. Composition API collocates related logic (data + computed + methods for one feature) rather than separating by type.",
+    "gotchas": [
+      "Composition API does not have beforeCreate or created — use onMounted or run code directly in setup",
+      "this is not available in <script setup> — use refs and props directly",
+      "Mixins map to composable functions (useXxx) in Composition API",
+      "Both APIs can coexist in a component — <script> for options, <script setup> for composition"
+    ],
+    "language": "javascript",
+    "framework": "vue",
+    "environment": [],
+    "error_messages": [],
+    "keywords": ["options api", "composition api", "migration", "vue3", "onMounted", "script setup", "composables"],
+    "severity": "tip",
+    "context": "When migrating Vue components from Options API to Composition API",
+    "code_snippets": [
+      {
+        "lang": "javascript",
+        "code": "// Lifecycle hook mapping\n// beforeCreate/created -> setup() top level\n// beforeMount -> onBeforeMount\n// mounted -> onMounted\n// beforeUpdate -> onBeforeUpdate\n// updated -> onUpdated\n// beforeUnmount -> onBeforeUnmount\n// unmounted -> onUnmounted\n// errorCaptured -> onErrorCaptured",
+        "description": "Options API to Composition API lifecycle hook mapping"
+      }
+    ],
+    "version_info": "Vue 3.0+"
+  },
+  {
+    "title": "SvelteKit layout data inheritance and typed $page store",
+    "category": "pattern",
+    "tags": ["sveltekit", "layouts", "layout-data", "page-store", "$page", "data-inheritance"],
+    "problem": "Data loaded in a layout's load function is not accessible in child pages, or the $page store is used without TypeScript types, causing property access errors.",
+    "solution": "Layout load data is automatically merged and accessible in all child pages:\n\n// src/routes/+layout.server.ts\nexport async function load({ locals }) {\n  // This data is available to ALL child pages\n  return {\n    session: locals.session,\n    notifications: await getNotifications(locals.user?.id)\n  };\n}\n\n// src/routes/dashboard/+page.server.ts\nexport async function load({ parent }) {\n  // Access layout data via parent()\n  const { session } = await parent();\n  if (!session) throw redirect(303, '/login');\n\n  const stats = await getDashboardStats(session.userId);\n  return { stats };\n}\n\n// src/routes/dashboard/+page.svelte\n<script lang=\"ts\">\n  import { page } from '$app/stores';\n  import type { PageData } from './$types';\n\n  // Option 1: data prop (recommended)\n  export let data: PageData;\n  const { stats } = data;\n\n  // Option 2: $page store (for accessing from anywhere)\n  $: ({ session } = $page.data);  // includes layout data too\n</script>",
+    "why": "SvelteKit merges layout load data and page load data into a single data object available as the data prop. $page.data reflects this merged object and is reactive. The $types module provides auto-generated TypeScript types for each route's data shape.",
+    "gotchas": [
+      "Call await parent() in page load to access layout data — forgetting this causes missing layout data",
+      "Layout data is cached and does not re-run on client-side navigation within the same layout unless invalidated",
+      "Use invalidate('app:session') or invalidateAll() to force a layout load refresh",
+      "$page.data types are inferred automatically — import PageData from './$types' for explicit typing"
+    ],
+    "language": "javascript",
+    "framework": "svelte",
+    "environment": [],
+    "error_messages": [
+      "Type '{}' has no property 'session'",
+      "Cannot read properties of undefined (reading 'userId')"
+    ],
+    "keywords": ["layout data", "page store", "$page", "parent()", "data inheritance", "sveltekit types", "$types"],
+    "severity": "moderate",
+    "context": "When accessing layout-level data in child pages and components in SvelteKit",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// Force refresh of layout data\nimport { invalidate, invalidateAll } from '$app/navigation';\n\n// Invalidate specific load dependency\nawait invalidate('app:session');\n\n// Invalidate everything and re-run all load functions\nawait invalidateAll();",
+        "description": "Invalidating SvelteKit layout data after a mutation"
+      }
+    ],
+    "version_info": "SvelteKit 1.x+"
+  },
+  {
+    "title": "Vue 3 composables: extracting and reusing stateful logic",
+    "category": "pattern",
+    "tags": ["vue3", "composables", "reusability", "composition-api", "useXxx"],
+    "problem": "Logic is duplicated across components — data fetching, form validation, event listeners — and can't be shared without mixins (which have naming collisions and unclear origins). Options API mixins are opaque and conflict-prone.",
+    "solution": "Extract reusable logic into composable functions (useXxx convention):\n\n// composables/useFetch.ts\nimport { ref, watchEffect } from 'vue';\n\nexport function useFetch<T>(url: () => string) {\n  const data = ref<T | null>(null);\n  const error = ref<Error | null>(null);\n  const loading = ref(false);\n\n  watchEffect(async () => {\n    loading.value = true;\n    error.value = null;\n    try {\n      const res = await fetch(url());\n      if (!res.ok) throw new Error(`HTTP ${res.status}`);\n      data.value = await res.json();\n    } catch (e) {\n      error.value = e as Error;\n    } finally {\n      loading.value = false;\n    }\n  });\n\n  return { data, error, loading };\n}\n\n// composables/useLocalStorage.ts\nimport { ref, watch } from 'vue';\n\nexport function useLocalStorage<T>(key: string, defaultValue: T) {\n  const stored = localStorage.getItem(key);\n  const value = ref<T>(stored ? JSON.parse(stored) : defaultValue);\n\n  watch(value, (newVal) => {\n    localStorage.setItem(key, JSON.stringify(newVal));\n  }, { deep: true });\n\n  return value;\n}\n\n// Usage in a component\n<script setup>\nimport { useFetch } from '@/composables/useFetch';\nconst { data: users, loading } = useFetch(() => `/api/users`);\n</script>",
+    "why": "Composables are plain functions that use Vue's Composition API internally. They collocate related reactive state and logic, return named values (unlike mixins), have zero naming collisions, and are trivially testable. They replace mixins entirely.",
+    "gotchas": [
+      "Composables must be called inside setup() or <script setup> — not inside conditions or loops",
+      "Reactive values from composables must be unwrapped with .value outside templates",
+      "Composables that register lifecycle hooks (onMounted) must be called during setup",
+      "watchEffect in a composable is tied to the calling component's lifecycle — it auto-stops on unmount"
+    ],
+    "language": "javascript",
+    "framework": "vue",
+    "environment": [],
+    "error_messages": [
+      "[Vue warn]: onMounted is called when there is no active component instance"
+    ],
+    "keywords": ["composables", "useXxx", "reusable logic", "mixins replacement", "composition api", "watchEffect"],
+    "severity": "tip",
+    "context": "When extracting shared stateful logic from Vue 3 components into reusable composables",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// composables/useEventListener.ts\nimport { onMounted, onUnmounted } from 'vue';\n\nexport function useEventListener(\n  target: EventTarget,\n  event: string,\n  handler: EventListener\n) {\n  onMounted(() => target.addEventListener(event, handler));\n  onUnmounted(() => target.removeEventListener(event, handler));\n}",
+        "description": "Event listener composable with automatic cleanup"
+      }
+    ],
+    "version_info": "Vue 3.0+"
+  },
+  {
+    "title": "SvelteKit page.server.ts vs page.ts — when to use each",
+    "category": "gotcha",
+    "tags": ["sveltekit", "page-server", "universal-load", "ssr", "client-navigation"],
+    "problem": "A +page.server.ts load function runs during SSR but then data is missing during client-side navigation. Or a +page.ts load function accidentally exposes secrets because it runs in the browser too.",
+    "solution": "Understand the execution environment of each file type:\n\n// +page.server.ts — SERVER ONLY\n// Runs: initial SSR + client-side navigations (via fetch from browser to server)\n// Can access: locals, cookies, process.env, Node.js APIs, databases\n// Cannot: be cached aggressively (always hits server)\nexport async function load({ locals, cookies, params }) {\n  const token = process.env.SECRET_API_KEY;  // safe\n  const user = locals.user;                  // set by hooks.server.ts\n  return { user, data: await db.query(params.id) };\n}\n\n// +page.ts — UNIVERSAL (runs on server AND client)\n// Runs on server: initial SSR request\n// Runs on client: subsequent navigations (no server roundtrip)\n// Can access: fetch (SvelteKit-enhanced), URL, params\n// Cannot: access Node.js APIs, secrets, cookies, locals\nexport async function load({ fetch, params, url }) {\n  // Uses SvelteKit's fetch — works on both server and client\n  const res = await fetch(`/api/products/${params.id}`);\n  return { product: await res.json() };\n}\n\n// Rule of thumb:\n// Private data / auth / DB -> +page.server.ts\n// Public API calls -> +page.ts (faster client navigation, no server roundtrip)",
+    "why": "+page.ts runs in the browser during client-side navigation, which avoids a server roundtrip and speeds up navigation. +page.server.ts always hits the server, enabling access to server-only resources. The return value of +page.server.ts is serialized (JSON) and sent to the browser.",
+    "gotchas": [
+      "Both files can coexist for a route — server data is merged with universal data",
+      "+page.ts using fetch('/api/x') on the server makes an HTTP request to itself — ensure the dev server is running",
+      "Secrets in +page.ts will appear in the client JavaScript bundle — they are NOT safe",
+      "Return types from +page.server.ts must be JSON-serializable — use devalue for Dates, Maps, Sets"
+    ],
+    "language": "javascript",
+    "framework": "svelte",
+    "environment": [],
+    "error_messages": [
+      "Cannot read properties of undefined (reading 'env')",
+      "ReferenceError: process is not defined"
+    ],
+    "keywords": ["page.server.ts", "page.ts", "universal load", "server load", "client navigation", "secrets", "sveltekit load"],
+    "severity": "major",
+    "context": "When deciding which load file to use for fetching data in a SvelteKit route",
+    "code_snippets": [
+      {
+        "lang": "typescript",
+        "code": "// Both files coexist — data is merged\n// +page.server.ts\nexport async function load({ locals }) {\n  return { user: locals.user };\n}\n\n// +page.ts\nexport async function load({ fetch }) {\n  const products = await fetch('/api/products').then(r => r.json());\n  return { products };\n}\n\n// +page.svelte receives both: { user, products }",
+        "description": "Combining server and universal load for the same route"
+      }
+    ],
+    "version_info": "SvelteKit 1.x+"
+  }
+]
