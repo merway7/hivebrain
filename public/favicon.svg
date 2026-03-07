@@ -5,23 +5,10 @@
       <stop offset="100%" stop-color="#a855f7"/>
     </linearGradient>
   </defs>
-  <!-- Hexagon background -->
-  <path d="M64 8 L112 34 L112 94 L64 120 L16 94 L16 34 Z" fill="url(#g)" rx="4"/>
-  <!-- Neural network nodes -->
-  <circle cx="64" cy="40" r="6" fill="white" opacity="0.95"/>
-  <circle cx="42" cy="64" r="5" fill="white" opacity="0.85"/>
-  <circle cx="86" cy="64" r="5" fill="white" opacity="0.85"/>
-  <circle cx="48" cy="88" r="4.5" fill="white" opacity="0.75"/>
-  <circle cx="80" cy="88" r="4.5" fill="white" opacity="0.75"/>
-  <circle cx="64" cy="68" r="5.5" fill="white" opacity="0.9"/>
-  <!-- Connections -->
-  <line x1="64" y1="40" x2="42" y2="64" stroke="white" stroke-width="2" opacity="0.5"/>
-  <line x1="64" y1="40" x2="86" y2="64" stroke="white" stroke-width="2" opacity="0.5"/>
-  <line x1="64" y1="40" x2="64" y2="68" stroke="white" stroke-width="2" opacity="0.5"/>
-  <line x1="42" y1="64" x2="64" y2="68" stroke="white" stroke-width="2" opacity="0.4"/>
-  <line x1="86" y1="64" x2="64" y2="68" stroke="white" stroke-width="2" opacity="0.4"/>
-  <line x1="42" y1="64" x2="48" y2="88" stroke="white" stroke-width="2" opacity="0.4"/>
-  <line x1="86" y1="64" x2="80" y2="88" stroke="white" stroke-width="2" opacity="0.4"/>
-  <line x1="64" y1="68" x2="48" y2="88" stroke="white" stroke-width="2" opacity="0.35"/>
-  <line x1="64" y1="68" x2="80" y2="88" stroke="white" stroke-width="2" opacity="0.35"/>
+  <rect width="128" height="128" rx="28" fill="url(#g)"/>
+  <g transform="translate(64,64) scale(3.2)" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M0-14L-10-9 0-4 10-9Z"/>
+    <path d="M-10 1L0 6 10 1"/>
+    <path d="M-10-4L0 1 10-4"/>
+  </g>
 </svg>
