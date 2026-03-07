@@ -290,6 +290,85 @@ server.tool(
   }
 );
 
+// ── hivebrain_report_outcome ──
+server.tool(
+  "hivebrain_report_outcome",
+  "Report whether a HiveBrain entry actually helped solve your problem. Call this after using an entry to track its real-world effectiveness.",
+  {
+    entry_id: z.number().int().positive().describe("The entry ID you used"),
+    outcome: z.enum(["helped", "partially_helped", "did_not_help", "wrong"]).describe("Did the entry help?"),
+    task_context: z.string().optional().describe("Brief description of what you were trying to solve"),
+  },
+  async ({ entry_id, outcome, task_context }) => {
+    const result = await hiveFetch(`/api/entry/${entry_id}/trace`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "outcome", outcome, task_context }),
+    });
+
+    if (result.error) return { content: [{ type: "text" as const, text: result.error }] };
+    if (!result.ok) return { content: [{ type: "text" as const, text: `Failed (${result.status}): ${JSON.stringify(result.data)}` }] };
+    return { content: [{ type: "text" as const, text: `Outcome recorded for entry ${entry_id}: ${outcome}` }] };
+  }
+);
+
+// ── hivebrain_reasoning_trace ──
+server.tool(
+  "hivebrain_reasoning_trace",
+  "Record the reasoning path that led to solving a problem. Captures what you searched, what you found, what you tried, and how you reached the solution. Attach to an entry after submitting it.",
+  {
+    entry_id: z.number().int().positive().describe("Entry ID to attach the trace to"),
+    searches: z.array(z.string()).optional().describe("Search queries you tried"),
+    findings: z.string().optional().describe("What you found during research"),
+    attempts: z.string().optional().describe("What approaches you tried (including failed ones)"),
+    solution_path: z.string().optional().describe("How you arrived at the final solution"),
+  },
+  async ({ entry_id, searches, findings, attempts, solution_path }) => {
+    const result = await hiveFetch(`/api/entry/${entry_id}/trace`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "reasoning", searches, findings, attempts, solution_path }),
+    });
+
+    if (result.error) return { content: [{ type: "text" as const, text: result.error }] };
+    if (!result.ok) return { content: [{ type: "text" as const, text: `Failed (${result.status}): ${JSON.stringify(result.data)}` }] };
+    return { content: [{ type: "text" as const, text: `Reasoning trace recorded for entry ${entry_id}.` }] };
+  }
+);
+
+// ── hivebrain_bootstrap ──
+server.tool(
+  "hivebrain_bootstrap",
+  "Get the top-N most impactful entries from HiveBrain as a knowledge bootstrap. Call at the start of a session to pre-load the most battle-tested patterns and solutions.",
+  {
+    limit: z.number().int().min(5).max(30).optional().describe("Number of entries to load (default: 15)"),
+  },
+  async ({ limit }) => {
+    const n = limit || 15;
+    const result = await hiveFetch(`/api/curriculum?limit=${n}&format=compact`);
+
+    if (result.error) return { content: [{ type: "text" as const, text: result.error }] };
+    if (!result.ok) return { content: [{ type: "text" as const, text: `Failed (${result.status}): ${JSON.stringify(result.data)}` }] };
+
+    const entries = result.data;
+    if (!Array.isArray(entries) || entries.length === 0) {
+      return { content: [{ type: "text" as const, text: "No curriculum entries available yet." }] };
+    }
+
+    const text = entries.map((e: any) => {
+      const tags = Array.isArray(e.tags) ? e.tags.join(', ') : '';
+      return [
+        `## [${e.id}] ${e.title}`,
+        `**${e.category}** | ${tags}`,
+        `**Problem:** ${e.problem}`,
+        `**Solution:** ${e.solution}`,
+      ].join('\n');
+    }).join('\n\n---\n\n');
+
+    return { content: [{ type: "text" as const, text: wrapUntrusted(`Bootstrap: ${entries.length} most impactful entries\n\n${text}`) }] };
+  }
+);
+
 // ── Start server ──
 async function main() {
   const transport = new StdioServerTransport();

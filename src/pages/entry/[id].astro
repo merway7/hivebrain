@@ -19,6 +19,17 @@ const netScore = (entry.upvotes || 0) - (entry.downvotes || 0);
 const qualityStatus = entry.quality_status || 'unverified';
 const authorRep = entry.submitted_by && entry.submitted_by !== 'anonymous' ? await getReputation(entry.submitted_by) : null;
 
+let reasoningTraces: any[] = [];
+let retrievalStats: any = null;
+try {
+  const traceRes = await fetch(`http://localhost:4321/api/entry/${id}/trace`);
+  if (traceRes.ok) {
+    const traceData = await traceRes.json();
+    reasoningTraces = traceData.reasoning_traces || [];
+    retrievalStats = traceData.retrieval_stats;
+  }
+} catch { /* optional data */ }
+
 const tags = JSON.parse(entry.tags || '[]') as string[];
 const gotchas = JSON.parse(entry.gotchas || '[]') as string[];
 const errorMessages: string[] = (() => {
@@ -279,6 +290,79 @@ function mdToHtml(text: string): string {
                   @{uc.submitted_by} &middot; {new Date(uc.created_at * 1000).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
                 </span>
               </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {retrievalStats && (
+        <section class="section retrieval-section">
+          <h2>Retrieval Stats</h2>
+          <div class="retrieval-overview">
+            <div class="retrieval-stat-card">
+              <span class="retrieval-stat-label">Total Retrievals</span>
+              <span class="retrieval-stat-value">{retrievalStats.total_retrievals || 0}</span>
+            </div>
+            {retrievalStats.success_rate != null && (
+              <div class="retrieval-stat-card">
+                <span class="retrieval-stat-label">Success Rate</span>
+                <div class="success-bar-container">
+                  <div class="success-bar">
+                    <div class="success-bar-fill" style={`width: ${Math.round(retrievalStats.success_rate * 100)}%`}></div>
+                  </div>
+                  <span class="retrieval-stat-value">{Math.round(retrievalStats.success_rate * 100)}%</span>
+                </div>
+              </div>
+            )}
+            {retrievalStats.outcomes && (
+              <div class="retrieval-stat-card outcomes">
+                <span class="retrieval-stat-label">Outcome Breakdown</span>
+                <div class="outcome-pills">
+                  {Object.entries(retrievalStats.outcomes).map(([outcome, count]) => (
+                    <span class={`outcome-pill outcome-${outcome}`}>{outcome}: {count}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
+      {reasoningTraces.length > 0 && (
+        <section class="section trace-section">
+          <h2>Reasoning Traces ({reasoningTraces.length})</h2>
+          <p class="trace-desc">How agents discovered and applied this entry</p>
+          <div class="trace-list">
+            {reasoningTraces.map((trace: any, idx: number) => (
+              <details class="trace-item">
+                <summary class="trace-summary">
+                  <span class="trace-number">#{idx + 1}</span>
+                  <span class="trace-agent">{trace.agent_id || 'unknown agent'}</span>
+                  {trace.outcome && (
+                    <span class={`trace-outcome outcome-${trace.outcome}`}>{trace.outcome}</span>
+                  )}
+                  {trace.timestamp && (
+                    <span class="trace-time">{new Date(trace.timestamp * 1000).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</span>
+                  )}
+                </summary>
+                <div class="trace-steps">
+                  {(trace.steps || []).map((step: any) => (
+                    <div class={`trace-step step-${step.type || 'info'}`}>
+                      <span class="step-type">{step.type || 'step'}</span>
+                      <span class="step-content">{step.content}</span>
+                    </div>
+                  ))}
+                  {trace.search_query && (
+                    <div class="trace-step step-search">
+                      <span class="step-type">search</span>
+                      <span class="step-content">{trace.search_query}</span>
+                    </div>
+                  )}
+                  {trace.notes && (
+                    <div class="trace-notes">{trace.notes}</div>
+                  )}
+                </div>
+              </details>
             ))}
           </div>
         </section>
@@ -835,5 +919,246 @@ function mdToHtml(text: string): string {
   .usage-context-meta {
     font-size: 0.75rem;
     color: var(--text-muted);
+  }
+
+  /* Retrieval Stats */
+  .retrieval-overview {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  .retrieval-stat-card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 12px 16px;
+    background: var(--bg-overlay);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    min-width: 140px;
+  }
+
+  .retrieval-stat-card.outcomes {
+    flex: 1;
+    min-width: 200px;
+  }
+
+  .retrieval-stat-label {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .retrieval-stat-value {
+    font-family: var(--font-mono);
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .success-bar-container {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .success-bar {
+    flex: 1;
+    height: 8px;
+    background: rgba(160, 160, 176, 0.15);
+    border-radius: 4px;
+    overflow: hidden;
+    min-width: 60px;
+  }
+
+  .success-bar-fill {
+    height: 100%;
+    background: #4ade80;
+    border-radius: 4px;
+    transition: width 0.3s ease;
+  }
+
+  .outcome-pills {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .outcome-pill {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-family: var(--font-mono);
+    background: rgba(160, 160, 176, 0.1);
+    color: var(--text-muted);
+  }
+
+  .outcome-success, .outcome-solved {
+    background: rgba(74, 222, 128, 0.15);
+    color: #4ade80;
+  }
+
+  .outcome-partial {
+    background: rgba(251, 191, 36, 0.15);
+    color: #fbbf24;
+  }
+
+  .outcome-failed, .outcome-failure {
+    background: rgba(248, 113, 113, 0.15);
+    color: #f87171;
+  }
+
+  /* Reasoning Traces */
+  .trace-desc {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+  }
+
+  .trace-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .trace-item {
+    background: var(--bg-overlay);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+
+  .trace-item[open] {
+    border-color: var(--border-hover, var(--border));
+  }
+
+  .trace-summary {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    transition: background 0.15s ease;
+    list-style: none;
+  }
+
+  .trace-summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .trace-summary::before {
+    content: '\25B6';
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    transition: transform 0.15s ease;
+  }
+
+  .trace-item[open] .trace-summary::before {
+    transform: rotate(90deg);
+  }
+
+  .trace-summary:hover {
+    background: var(--bg-hover, rgba(160, 160, 176, 0.05));
+  }
+
+  .trace-number {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+
+  .trace-agent {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--text-primary);
+    font-weight: 500;
+  }
+
+  .trace-outcome {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-weight: 600;
+  }
+
+  .trace-time {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--text-muted);
+  }
+
+  .trace-steps {
+    padding: 0 14px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .trace-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: 4px;
+    background: rgba(160, 160, 176, 0.05);
+  }
+
+  .step-type {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 1px 6px;
+    border-radius: 3px;
+    white-space: nowrap;
+    color: var(--text-muted);
+    background: rgba(160, 160, 176, 0.1);
+  }
+
+  .step-search .step-type {
+    background: rgba(96, 165, 250, 0.15);
+    color: #60a5fa;
+  }
+
+  .step-find .step-type {
+    background: rgba(74, 222, 128, 0.15);
+    color: #4ade80;
+  }
+
+  .step-try .step-type {
+    background: rgba(251, 191, 36, 0.15);
+    color: #fbbf24;
+  }
+
+  .step-solve .step-type {
+    background: rgba(192, 132, 252, 0.15);
+    color: #c084fc;
+  }
+
+  .step-content {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  .trace-notes {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    padding: 8px 10px;
+    border-top: 1px solid var(--border);
+    margin-top: 4px;
+    font-style: italic;
   }
 </style>

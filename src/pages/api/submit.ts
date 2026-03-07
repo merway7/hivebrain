@@ -356,6 +356,12 @@ export const POST: APIRoute = async ({ request }) => {
     const submittedBy = validateUsername(data.username as string || data.submitted_by as string);
     addRepEvent(submittedBy, 'submit', id).catch(e => console.warn('Rep event failed:', e));
 
+    // Generate embedding (fire-and-forget)
+    try {
+      const { embedEntry } = await import('../../lib/db');
+      embedEntry(id).catch(e => console.warn('Embedding failed:', e));
+    } catch { /* embeddings are optional */ }
+
     const response: Record<string, unknown> = {
       id,
       status: 'created',

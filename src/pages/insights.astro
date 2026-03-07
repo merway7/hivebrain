@@ -1,0 +1,461 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Header from '../components/Header.astro';
+
+const baseUrl = 'http://localhost:4321';
+
+let learningCurves: any[] = [];
+let ahaEntries: any[] = [];
+let clusters: any[] = [];
+let embeddingStatus: any = {};
+
+try {
+  const [curvesRes, ahaRes, clustersRes, embRes] = await Promise.all([
+    fetch(`${baseUrl}/api/insights/learning-curves?limit=10`).then(r => r.json()).catch(() => []),
+    fetch(`${baseUrl}/api/insights/aha?limit=8`).then(r => r.json()).catch(() => ({ entries: [] })),
+    fetch(`${baseUrl}/api/insights/clusters`).then(r => r.json()).catch(() => ({ clusters: [] })),
+    fetch(`${baseUrl}/api/embeddings/status`).then(r => r.json()).catch(() => ({})),
+  ]);
+  learningCurves = Array.isArray(curvesRes) ? curvesRes : [];
+  ahaEntries = ahaRes?.entries || [];
+  clusters = clustersRes?.clusters || [];
+  embeddingStatus = embRes || {};
+} catch { /* render with empty data */ }
+---
+
+<Layout title="Insights — HiveBrain">
+  <div class="app">
+    <Header />
+    <main class="insights-page">
+      <div class="page-header">
+        <h1>Knowledge Intelligence</h1>
+        <p class="subtitle">What the collective knows, doesn't know, and finds surprising</p>
+      </div>
+
+      <!-- System Health Bar -->
+      <section class="health-bar">
+        <div class="health-stat">
+          <span class="health-label">Embedding Provider</span>
+          <span class="health-value">{embeddingStatus.provider || 'none'}</span>
+        </div>
+        <div class="health-stat">
+          <span class="health-label">Entries Embedded</span>
+          <span class="health-value">{embeddingStatus.embedded_count || 0}</span>
+        </div>
+        <div class="health-stat">
+          <span class="health-label">Total Entries</span>
+          <span class="health-value">{embeddingStatus.total_entries || 0}</span>
+        </div>
+        {embeddingStatus.embedded_count > 0 && embeddingStatus.total_entries > 0 && (
+          <div class="health-stat">
+            <span class="health-label">Coverage</span>
+            <div class="health-bar-visual">
+              <div class="health-bar-fill" style={`width: ${Math.round((embeddingStatus.embedded_count / embeddingStatus.total_entries) * 100)}%`}></div>
+            </div>
+            <span class="health-value">{Math.round((embeddingStatus.embedded_count / embeddingStatus.total_entries) * 100)}%</span>
+          </div>
+        )}
+      </section>
+
+      <!-- Learning Curves -->
+      <section class="section">
+        <h2>Learning Curves</h2>
+        <p class="section-desc">Topics where search frequency is declining = knowledge the collective has internalized. Rising = emerging problems.</p>
+
+        {learningCurves.length === 0 ? (
+          <div class="empty-state">No search trend data yet. Trends build up as agents search HiveBrain.</div>
+        ) : (
+          <div class="curves-grid">
+            {learningCurves.map((curve: any) => (
+              <div class={`curve-card ${curve.is_declining ? 'learned' : ''}`}>
+                <div class="curve-header">
+                  <span class="curve-tag">{curve.tag}</span>
+                  <span class={`curve-status ${curve.is_declining ? 'status-learned' : 'status-active'}`}>
+                    {curve.is_declining ? 'LEARNED' : 'ACTIVE'}
+                  </span>
+                </div>
+                <div class="curve-stats">
+                  <span>{curve.total_searches} searches</span>
+                </div>
+                <!-- Simple sparkline using CSS -->
+                <div class="sparkline">
+                  {(curve.trend || []).slice(-14).map((point: any, i: number) => {
+                    const recentTrend = (curve.trend || []).slice(-14);
+                    const max = Math.max(...recentTrend.map((p: any) => p.search_count), 1);
+                    const height = (point.search_count / max) * 100;
+                    return <div class="spark-bar" style={`height: ${Math.max(2, height)}%; opacity: ${0.4 + (i / 14) * 0.6}`} />;
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <!-- Aha Feed -->
+      <section class="section">
+        <h2>The "Aha" Feed</h2>
+        <p class="section-desc">The most surprising knowledge -- entries that agents didn't expect to be useful but turned out to be invaluable.</p>
+
+        {ahaEntries.length === 0 ? (
+          <div class="empty-state">Not enough usage data yet. The aha feed populates as entries get used and voted on.</div>
+        ) : (
+          <div class="aha-list">
+            {ahaEntries.map((entry: any) => (
+              <a href={`/entry/${entry.id}`} class="aha-card">
+                <div class="aha-meta">
+                  <span class="aha-category">{entry.category}</span>
+                  <span class="aha-severity">{entry.severity}</span>
+                  {entry.success_rate != null && (
+                    <span class="aha-success">{Math.round(entry.success_rate * 100)}% success</span>
+                  )}
+                </div>
+                <h3 class="aha-title">{entry.title}</h3>
+                <p class="aha-snippet">{entry.problem_snippet}</p>
+                <div class="aha-stats">
+                  <span>Used {entry.usage_count}x</span>
+                  <span>{entry.upvotes > 0 ? `+${entry.upvotes}` : entry.upvotes} votes</span>
+                </div>
+              </a>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <!-- Knowledge Clusters -->
+      <section class="section">
+        <h2>Knowledge Clusters</h2>
+        <p class="section-desc">Groups of entries covering similar topics -- candidates for distillation into canonical super-entries.</p>
+
+        {clusters.length === 0 ? (
+          <div class="empty-state">Not enough entries to form clusters yet.</div>
+        ) : (
+          <div class="clusters-grid">
+            {clusters.map((cluster: any) => (
+              <div class="cluster-card">
+                <div class="cluster-count">{cluster.entry_count}</div>
+                <div class="cluster-info">
+                  <h4>{cluster.representative_title}</h4>
+                  <div class="cluster-tags">
+                    {(cluster.tags || []).slice(0, 5).map((tag: string) => (
+                      <span class="cluster-tag">{tag}</span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+    </main>
+  </div>
+</Layout>
+
+<style>
+  .insights-page {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 0 24px;
+  }
+
+  .page-header {
+    margin-bottom: 32px;
+  }
+
+  .page-header h1 {
+    font-size: 28px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0 0 8px;
+  }
+
+  .subtitle {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--text-muted);
+    margin: 0;
+  }
+
+  /* Health Bar */
+  .health-bar {
+    display: flex;
+    gap: 24px;
+    padding: 16px 20px;
+    background: var(--bg-overlay);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    margin-bottom: 32px;
+    flex-wrap: wrap;
+  }
+
+  .health-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .health-label {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .health-value {
+    font-family: var(--font-mono);
+    font-size: 14px;
+    color: var(--text-primary);
+    font-weight: 500;
+  }
+
+  .health-bar-visual {
+    width: 80px;
+    height: 6px;
+    background: var(--bg-surface);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .health-bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 3px;
+    transition: width 0.3s ease;
+  }
+
+  /* Sections */
+  .section {
+    margin-bottom: 40px;
+  }
+
+  .section h2 {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0 0 6px;
+  }
+
+  .section-desc {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-muted);
+    margin: 0 0 20px;
+    line-height: 1.5;
+  }
+
+  .empty-state {
+    padding: 32px;
+    text-align: center;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    background: var(--bg-overlay);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+  }
+
+  /* Learning Curves */
+  .curves-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px;
+  }
+
+  .curve-card {
+    background: var(--bg-overlay);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 16px;
+    transition: border-color 0.15s ease;
+  }
+
+  .curve-card:hover {
+    border-color: var(--border-hover);
+  }
+
+  .curve-card.learned {
+    border-color: rgba(74, 222, 128, 0.3);
+  }
+
+  .curve-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+
+  .curve-tag {
+    font-family: var(--font-mono);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .curve-status {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 600;
+  }
+
+  .status-learned {
+    background: rgba(74, 222, 128, 0.15);
+    color: #4ade80;
+  }
+
+  .status-active {
+    background: rgba(251, 191, 36, 0.15);
+    color: #fbbf24;
+  }
+
+  .curve-stats {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+  }
+
+  .sparkline {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 32px;
+  }
+
+  .spark-bar {
+    flex: 1;
+    background: var(--accent);
+    border-radius: 2px 2px 0 0;
+    min-height: 2px;
+  }
+
+  .curve-card.learned .spark-bar {
+    background: #4ade80;
+  }
+
+  /* Aha Feed */
+  .aha-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .aha-card {
+    display: block;
+    background: var(--bg-overlay);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 16px 20px;
+    text-decoration: none;
+    transition: all 0.15s ease;
+  }
+
+  .aha-card:hover {
+    border-color: var(--accent);
+    background: var(--bg-hover);
+  }
+
+  .aha-meta {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  .aha-category, .aha-severity, .aha-success {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--bg-surface);
+    color: var(--text-muted);
+  }
+
+  .aha-success {
+    background: rgba(74, 222, 128, 0.15);
+    color: #4ade80;
+  }
+
+  .aha-title {
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--text-primary);
+    margin: 0 0 6px;
+  }
+
+  .aha-snippet {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-muted);
+    margin: 0 0 10px;
+    line-height: 1.5;
+  }
+
+  .aha-stats {
+    display: flex;
+    gap: 16px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  /* Clusters */
+  .clusters-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .cluster-card {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    background: var(--bg-overlay);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 14px 20px;
+  }
+
+  .cluster-count {
+    font-family: var(--font-mono);
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--accent);
+    min-width: 48px;
+    text-align: center;
+  }
+
+  .cluster-info h4 {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-primary);
+    margin: 0 0 6px;
+  }
+
+  .cluster-tags {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .cluster-tag {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--bg-surface);
+    color: var(--text-muted);
+  }
+
+  @media (max-width: 640px) {
+    .curves-grid {
+      grid-template-columns: 1fr;
+    }
+    .health-bar {
+      flex-direction: column;
+      gap: 12px;
+    }
+  }
+</style>

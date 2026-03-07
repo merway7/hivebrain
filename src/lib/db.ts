@@ -282,6 +282,52 @@ export async function initDb(): Promise<void> {
     )
   `);
 
+  // v9: Karpathy features — new columns
+  await migrateAddColumn(db, 'entries', 'surprise_score', 'REAL DEFAULT 0');
+  await migrateAddColumn(db, 'entries', 'success_rate', 'REAL DEFAULT NULL');
+  await migrateAddColumn(db, 'entries', 'retrieval_count', 'INTEGER DEFAULT 0');
+
+  // v9: Karpathy features — new tables
+  await db.execute(`CREATE TABLE IF NOT EXISTS entry_embeddings (
+    entry_id INTEGER PRIMARY KEY REFERENCES entries(id),
+    embedding TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT 'bag-of-words',
+    dimensions INTEGER NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+  )`);
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS retrieval_traces (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_id INTEGER NOT NULL REFERENCES entries(id),
+    outcome TEXT NOT NULL CHECK(outcome IN ('helped', 'partially_helped', 'did_not_help', 'wrong')),
+    task_context TEXT,
+    agent_session TEXT,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+  )`);
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_retrieval_traces_entry ON retrieval_traces(entry_id)'); } catch {}
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS reasoning_traces (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_id INTEGER NOT NULL REFERENCES entries(id),
+    searches TEXT DEFAULT '[]',
+    findings TEXT,
+    attempts TEXT,
+    solution_path TEXT,
+    agent_session TEXT,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+  )`);
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_reasoning_traces_entry ON reasoning_traces(entry_id)'); } catch {}
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS topic_search_trends (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tag TEXT NOT NULL,
+    date TEXT NOT NULL,
+    search_count INTEGER NOT NULL DEFAULT 0,
+    usage_count INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(tag, date)
+  )`);
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_topic_trends_tag ON topic_search_trends(tag)'); } catch {}
+
   // In hybrid mode, the write DB is a separate local SQLite — init its schema too
   if (wdb !== rdb) {
     for (const stmt of statements) {
@@ -350,6 +396,28 @@ export async function initDb(): Promise<void> {
       notify_upvotes INTEGER NOT NULL DEFAULT 1, notify_usages INTEGER NOT NULL DEFAULT 1,
       notify_verifications INTEGER NOT NULL DEFAULT 1, notify_revisions INTEGER NOT NULL DEFAULT 1,
       notify_badges INTEGER NOT NULL DEFAULT 1)`);
+    // v9: Karpathy features
+    await migrateAddColumn(wdb, 'entries', 'surprise_score', 'REAL DEFAULT 0');
+    await migrateAddColumn(wdb, 'entries', 'success_rate', 'REAL DEFAULT NULL');
+    await migrateAddColumn(wdb, 'entries', 'retrieval_count', 'INTEGER DEFAULT 0');
+    await wdb.execute(`CREATE TABLE IF NOT EXISTS entry_embeddings (
+      entry_id INTEGER PRIMARY KEY REFERENCES entries(id), embedding TEXT NOT NULL,
+      model TEXT NOT NULL DEFAULT 'bag-of-words', dimensions INTEGER NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
+    await wdb.execute(`CREATE TABLE IF NOT EXISTS retrieval_traces (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, entry_id INTEGER NOT NULL REFERENCES entries(id),
+      outcome TEXT NOT NULL CHECK(outcome IN ('helped', 'partially_helped', 'did_not_help', 'wrong')),
+      task_context TEXT, agent_session TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_retrieval_traces_entry ON retrieval_traces(entry_id)'); } catch {}
+    await wdb.execute(`CREATE TABLE IF NOT EXISTS reasoning_traces (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, entry_id INTEGER NOT NULL REFERENCES entries(id),
+      searches TEXT DEFAULT '[]', findings TEXT, attempts TEXT, solution_path TEXT,
+      agent_session TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_reasoning_traces_entry ON reasoning_traces(entry_id)'); } catch {}
+    await wdb.execute(`CREATE TABLE IF NOT EXISTS topic_search_trends (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, tag TEXT NOT NULL, date TEXT NOT NULL,
+      search_count INTEGER NOT NULL DEFAULT 0, usage_count INTEGER NOT NULL DEFAULT 0, UNIQUE(tag, date))`);
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_topic_trends_tag ON topic_search_trends(tag)'); } catch {}
   }
 
   initialized = true;
@@ -397,6 +465,9 @@ export interface Entry {
   view_count: number;
   is_canonical: number;
   freshness_status: string;
+  surprise_score: number;
+  success_rate: number | null;
+  retrieval_count: number;
 }
 
 // ── Row helper ──
@@ -431,6 +502,9 @@ function rowToEntry(row: Row): Entry {
     view_count: Number(row.view_count ?? 0),
     is_canonical: Number(row.is_canonical ?? 0),
     freshness_status: String(row.freshness_status ?? 'fresh'),
+    surprise_score: Number(row.surprise_score ?? 0),
+    success_rate: row.success_rate != null ? Number(row.success_rate) : null,
+    retrieval_count: Number(row.retrieval_count ?? 0),
   };
 }
 
@@ -1849,4 +1923,460 @@ export async function importEntries(entries: {
     throw e;
   }
   return { imported };
+}
+
+// ── Karpathy Features ──
+
+import { embed, entryToText, cosineSimilarity, type EmbeddingVector } from './embeddings';
+
+// ── Embeddings CRUD ──
+
+export async function storeEmbedding(entryId: number, embedding: number[], model: string, dimensions: number): Promise<void> {
+  const db = getWriteDb();
+  await db.execute({
+    sql: `INSERT INTO entry_embeddings (entry_id, embedding, model, dimensions)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(entry_id) DO UPDATE SET
+            embedding = excluded.embedding,
+            model = excluded.model,
+            dimensions = excluded.dimensions,
+            created_at = unixepoch()`,
+    args: [entryId, JSON.stringify(embedding), model, dimensions],
+  });
+}
+
+export async function getEmbedding(entryId: number): Promise<{ embedding: number[]; model: string } | null> {
+  const db = getDb();
+  const result = await db.execute({
+    sql: 'SELECT embedding, model FROM entry_embeddings WHERE entry_id = ?',
+    args: [entryId],
+  });
+  if (result.rows.length === 0) return null;
+  return {
+    embedding: JSON.parse(String(result.rows[0].embedding)),
+    model: String(result.rows[0].model),
+  };
+}
+
+export async function getAllEmbeddings(): Promise<{ entry_id: number; embedding: number[]; model: string }[]> {
+  const db = getDb();
+  const result = await db.execute('SELECT entry_id, embedding, model FROM entry_embeddings');
+  return result.rows.map(r => ({
+    entry_id: Number(r.entry_id),
+    embedding: JSON.parse(String(r.embedding)),
+    model: String(r.model),
+  }));
+}
+
+export async function getEmbeddingCount(): Promise<number> {
+  const db = getDb();
+  const result = await db.execute('SELECT COUNT(*) as c FROM entry_embeddings');
+  return Number(result.rows[0].c);
+}
+
+export async function getEntriesWithoutEmbeddings(limit: number = 50): Promise<number[]> {
+  const db = getDb();
+  const result = await db.execute({
+    sql: `SELECT e.id FROM entries e
+          LEFT JOIN entry_embeddings ee ON e.id = ee.entry_id
+          WHERE ee.entry_id IS NULL
+          ORDER BY e.id ASC LIMIT ?`,
+    args: [limit],
+  });
+  return result.rows.map(r => Number(r.id));
+}
+
+// ── Semantic search ──
+
+const MAX_SEMANTIC_SEARCH_EMBEDDINGS = 5000;
+
+export async function semanticSearch(query: string, limit: number = 10): Promise<{ entry_id: number; similarity: number }[]> {
+  // Scale guard: skip semantic search if embedding count is too large for in-memory comparison
+  const count = await getEmbeddingCount();
+  if (count > MAX_SEMANTIC_SEARCH_EMBEDDINGS) return [];
+
+  const queryEmbedding = await embed(query);
+  const allEmbeddings = await getAllEmbeddings();
+
+  if (allEmbeddings.length === 0) return [];
+
+  const scored = allEmbeddings
+    .map(e => ({
+      entry_id: e.entry_id,
+      similarity: cosineSimilarity(queryEmbedding.values, e.embedding),
+    }))
+    .filter(e => e.similarity > 0.1) // threshold
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, limit);
+
+  return scored;
+}
+
+// ── Embed entry on insert (fire-and-forget) ──
+
+export async function embedEntry(entryId: number): Promise<void> {
+  const entry = await getEntry(entryId);
+  if (!entry) return;
+
+  const text = entryToText(entry);
+  const vec = await embed(text);
+  await storeEmbedding(entryId, vec.values, vec.model, vec.dimensions);
+}
+
+// ── Retrieval traces ──
+
+export async function addRetrievalTrace(entryId: number, outcome: string, taskContext?: string, agentSession?: string): Promise<{ id: number }> {
+  const db = getWriteDb();
+  const result = await db.execute({
+    sql: 'INSERT INTO retrieval_traces (entry_id, outcome, task_context, agent_session) VALUES (?, ?, ?, ?)',
+    args: [entryId, outcome, taskContext || null, agentSession || null],
+  });
+
+  // Update entry's retrieval_count
+  await db.execute({
+    sql: 'UPDATE entries SET retrieval_count = retrieval_count + 1 WHERE id = ?',
+    args: [entryId],
+  });
+
+  // Recompute success_rate
+  const stats = await db.execute({
+    sql: `SELECT
+            COUNT(*) as total,
+            SUM(CASE WHEN outcome = 'helped' THEN 1 ELSE 0 END) as helped,
+            SUM(CASE WHEN outcome = 'partially_helped' THEN 1 ELSE 0 END) as partial
+          FROM retrieval_traces WHERE entry_id = ?`,
+    args: [entryId],
+  });
+  const total = Number(stats.rows[0].total);
+  const helped = Number(stats.rows[0].helped);
+  const partial = Number(stats.rows[0].partial);
+  const successRate = total > 0 ? (helped + partial * 0.5) / total : null;
+
+  await db.execute({
+    sql: 'UPDATE entries SET success_rate = ? WHERE id = ?',
+    args: [successRate, entryId],
+  });
+
+  return { id: Number(result.lastInsertRowid) };
+}
+
+export async function getRetrievalStats(entryId: number): Promise<{
+  total: number; helped: number; partially_helped: number; did_not_help: number; wrong: number; success_rate: number | null;
+}> {
+  const db = getDb();
+  const result = await db.execute({
+    sql: `SELECT
+            COUNT(*) as total,
+            SUM(CASE WHEN outcome = 'helped' THEN 1 ELSE 0 END) as helped,
+            SUM(CASE WHEN outcome = 'partially_helped' THEN 1 ELSE 0 END) as partial,
+            SUM(CASE WHEN outcome = 'did_not_help' THEN 1 ELSE 0 END) as not_helped,
+            SUM(CASE WHEN outcome = 'wrong' THEN 1 ELSE 0 END) as wrong
+          FROM retrieval_traces WHERE entry_id = ?`,
+    args: [entryId],
+  });
+  const r = result.rows[0];
+  const total = Number(r.total);
+  const helped = Number(r.helped);
+  const partial = Number(r.partial);
+  return {
+    total,
+    helped,
+    partially_helped: partial,
+    did_not_help: Number(r.not_helped),
+    wrong: Number(r.wrong),
+    success_rate: total > 0 ? (helped + partial * 0.5) / total : null,
+  };
+}
+
+// ── Reasoning traces ──
+
+export async function addReasoningTrace(entryId: number, trace: {
+  searches?: string[];
+  findings?: string;
+  attempts?: string;
+  solution_path?: string;
+  agent_session?: string;
+}): Promise<{ id: number }> {
+  const db = getWriteDb();
+  const result = await db.execute({
+    sql: 'INSERT INTO reasoning_traces (entry_id, searches, findings, attempts, solution_path, agent_session) VALUES (?, ?, ?, ?, ?, ?)',
+    args: [
+      entryId,
+      JSON.stringify(trace.searches || []),
+      trace.findings || null,
+      trace.attempts || null,
+      trace.solution_path || null,
+      trace.agent_session || null,
+    ],
+  });
+  return { id: Number(result.lastInsertRowid) };
+}
+
+export async function getReasoningTraces(entryId: number, limit: number = 5): Promise<{
+  id: number; searches: string[]; findings: string | null; attempts: string | null;
+  solution_path: string | null; agent_session: string | null; created_at: number;
+}[]> {
+  const db = getDb();
+  const result = await db.execute({
+    sql: 'SELECT * FROM reasoning_traces WHERE entry_id = ? ORDER BY created_at DESC LIMIT ?',
+    args: [entryId, limit],
+  });
+  return result.rows.map(r => ({
+    id: Number(r.id),
+    searches: JSON.parse(String(r.searches || '[]')),
+    findings: r.findings != null ? String(r.findings) : null,
+    attempts: r.attempts != null ? String(r.attempts) : null,
+    solution_path: r.solution_path != null ? String(r.solution_path) : null,
+    agent_session: r.agent_session != null ? String(r.agent_session) : null,
+    created_at: Number(r.created_at),
+  }));
+}
+
+// ── Topic search trends (learning curves) ──
+
+export async function trackTopicSearch(tags: string[]): Promise<void> {
+  const db = getWriteDb();
+  const today = new Date().toISOString().split('T')[0];
+  for (const tag of tags) {
+    await db.execute({
+      sql: `INSERT INTO topic_search_trends (tag, date, search_count)
+            VALUES (?, ?, 1)
+            ON CONFLICT(tag, date) DO UPDATE SET search_count = search_count + 1`,
+      args: [tag.toLowerCase(), today],
+    });
+  }
+}
+
+export async function trackTopicUsage(tags: string[]): Promise<void> {
+  const db = getWriteDb();
+  const today = new Date().toISOString().split('T')[0];
+  for (const tag of tags) {
+    await db.execute({
+      sql: `INSERT INTO topic_search_trends (tag, date, usage_count)
+            VALUES (?, ?, 1)
+            ON CONFLICT(tag, date) DO UPDATE SET usage_count = usage_count + 1`,
+      args: [tag.toLowerCase(), today],
+    });
+  }
+}
+
+export async function getLearningCurves(opts?: {
+  tag?: string;
+  days?: number;
+  limit?: number;
+}): Promise<{
+  tag: string;
+  trend: { date: string; search_count: number; usage_count: number }[];
+  total_searches: number;
+  is_declining: boolean;
+}[]> {
+  const db = getDb();
+  const days = opts?.days || 90;
+  const cutoffDate = new Date(Date.now() - days * 86400000).toISOString().split('T')[0];
+
+  if (opts?.tag) {
+    const result = await db.execute({
+      sql: `SELECT date, search_count, usage_count FROM topic_search_trends
+            WHERE tag = ? AND date >= ? ORDER BY date ASC`,
+      args: [opts.tag.toLowerCase(), cutoffDate],
+    });
+    const trend = result.rows.map(r => ({
+      date: String(r.date),
+      search_count: Number(r.search_count),
+      usage_count: Number(r.usage_count),
+    }));
+    const totalSearches = trend.reduce((sum, t) => sum + t.search_count, 0);
+    // Declining = last 7 days avg < first 7 days avg
+    const firstWeek = trend.slice(0, 7);
+    const lastWeek = trend.slice(-7);
+    const firstAvg = firstWeek.length > 0 ? firstWeek.reduce((s, t) => s + t.search_count, 0) / firstWeek.length : 0;
+    const lastAvg = lastWeek.length > 0 ? lastWeek.reduce((s, t) => s + t.search_count, 0) / lastWeek.length : 0;
+
+    return [{
+      tag: opts.tag.toLowerCase(),
+      trend,
+      total_searches: totalSearches,
+      is_declining: lastAvg < firstAvg * 0.5,
+    }];
+  }
+
+  // Top tags by search volume
+  const topTags = await db.execute({
+    sql: `SELECT tag, SUM(search_count) as total FROM topic_search_trends
+          WHERE date >= ? GROUP BY tag ORDER BY total DESC LIMIT ?`,
+    args: [cutoffDate, opts?.limit || 20],
+  });
+
+  const results = [];
+  for (const row of topTags.rows) {
+    const tag = String(row.tag);
+    const trendResult = await db.execute({
+      sql: `SELECT date, search_count, usage_count FROM topic_search_trends
+            WHERE tag = ? AND date >= ? ORDER BY date ASC`,
+      args: [tag, cutoffDate],
+    });
+    const trend = trendResult.rows.map(r => ({
+      date: String(r.date),
+      search_count: Number(r.search_count),
+      usage_count: Number(r.usage_count),
+    }));
+    const totalSearches = Number(row.total);
+    const firstWeek = trend.slice(0, 7);
+    const lastWeek = trend.slice(-7);
+    const firstAvg = firstWeek.length > 0 ? firstWeek.reduce((s, t) => s + t.search_count, 0) / firstWeek.length : 0;
+    const lastAvg = lastWeek.length > 0 ? lastWeek.reduce((s, t) => s + t.search_count, 0) / lastWeek.length : 0;
+
+    results.push({
+      tag,
+      trend,
+      total_searches: totalSearches,
+      is_declining: lastAvg < firstAvg * 0.5,
+    });
+  }
+
+  return results;
+}
+
+// ── Curriculum / Bootstrap ──
+
+export async function getCurriculum(limit: number = 20): Promise<Entry[]> {
+  const db = getDb();
+  // Score = (upvotes - downvotes) * usage_count * COALESCE(success_rate, 0.5) / age_months
+  // Higher = more impactful and battle-tested
+  const result = await db.execute({
+    sql: `SELECT *,
+            ((upvotes - downvotes + 1) * (usage_count + 1) * COALESCE(success_rate, 0.5)) /
+            (MAX(1, (unixepoch() - created_at) / (30 * 86400))) as impact_score
+          FROM entries
+          WHERE upvotes > 0 OR usage_count > 0
+          ORDER BY impact_score DESC
+          LIMIT ?`,
+    args: [limit],
+  });
+  return result.rows.map(rowToEntry);
+}
+
+// ── Contradiction detection ──
+
+export async function findContradictions(entryId: number): Promise<{ id: number; title: string; similarity: number }[]> {
+  // Find entries with similar topic but different solutions
+  const entry = await getEntry(entryId);
+  if (!entry) return [];
+
+  const tags = JSON.parse(entry.tags || '[]') as string[];
+  const related = await findRelatedByFTS(entry.title, tags, entryId);
+
+  // For each related entry, check if solutions differ significantly
+  const contradictions: { id: number; title: string; similarity: number }[] = [];
+  for (const rel of related) {
+    const relEntry = await getEntry(rel.id);
+    if (!relEntry) continue;
+
+    // Simple heuristic: same tags but different solution keywords
+    const relTags = JSON.parse(relEntry.tags || '[]') as string[];
+    const tagOverlap = tags.filter(t => relTags.includes(t)).length;
+    if (tagOverlap < 1) continue;
+
+    // Check if solutions use different approaches
+    const solA = entry.solution.toLowerCase();
+    const solB = relEntry.solution.toLowerCase();
+
+    // Negation patterns suggest contradiction
+    const negationWords = ['instead', 'don\'t', 'avoid', 'never', 'not', 'wrong', 'incorrect', 'deprecated', 'obsolete'];
+    const hasContradiction = negationWords.some(w =>
+      (solA.includes(w) && !solB.includes(w)) || (solB.includes(w) && !solA.includes(w))
+    );
+
+    if (hasContradiction || tagOverlap >= 3) {
+      contradictions.push({
+        id: rel.id,
+        title: relEntry.title,
+        similarity: tagOverlap / Math.max(tags.length, relTags.length),
+      });
+    }
+  }
+
+  return contradictions;
+}
+
+// ── "Aha" / Surprise score ──
+
+export async function computeSurpriseScore(entryId: number): Promise<number> {
+  const entry = await getEntry(entryId);
+  if (!entry) return 0;
+
+  // Surprise = entries that get used a lot but were found via unexpected search terms
+  // Proxy: high usage_count + low view_count = people don't browse to it, they use it directly
+  // Also: entries where the search query that leads to them doesn't match their title keywords
+  const viewRatio = entry.view_count > 0 ? entry.usage_count / entry.view_count : 0;
+  const voteStrength = (entry.upvotes - entry.downvotes) / Math.max(1, entry.upvotes + entry.downvotes);
+
+  // Entries with high usage relative to views are "hidden gems" — surprising finds
+  const score = viewRatio * 0.5 + voteStrength * 0.3 + (entry.usage_count > 5 ? 0.2 : 0);
+
+  const wdb = getWriteDb();
+  await wdb.execute({
+    sql: 'UPDATE entries SET surprise_score = ? WHERE id = ?',
+    args: [score, entryId],
+  });
+
+  return score;
+}
+
+export async function getAhaEntries(limit: number = 10): Promise<Entry[]> {
+  const db = getDb();
+  // Entries with highest surprise: high usage, strong votes, relatively low views
+  const result = await db.execute({
+    sql: `SELECT *,
+            CASE WHEN view_count > 0 THEN CAST(usage_count AS REAL) / view_count ELSE 0 END as view_ratio
+          FROM entries
+          WHERE usage_count > 2 AND (upvotes - downvotes) > 0
+          ORDER BY surprise_score DESC, view_ratio DESC
+          LIMIT ?`,
+    args: [limit],
+  });
+  return result.rows.map(rowToEntry);
+}
+
+// ── Knowledge distillation ──
+
+export async function getDistillationClusters(minClusterSize: number = 3): Promise<{
+  representative_title: string;
+  tags: string[];
+  entry_ids: number[];
+  entry_count: number;
+}[]> {
+  const db = getDb();
+  // Group entries by their primary tag combinations
+  const result = await db.execute(
+    'SELECT id, title, tags FROM entries ORDER BY (upvotes - downvotes + usage_count) DESC'
+  );
+
+  const tagGroups = new Map<string, { ids: number[]; title: string; tags: string[] }>();
+
+  for (const row of result.rows) {
+    const id = Number(row.id);
+    const title = String(row.title);
+    const tags = JSON.parse(String(row.tags || '[]')) as string[];
+    // Create a canonical key from sorted top-3 tags
+    const key = [...tags].sort().slice(0, 3).join('|').toLowerCase();
+    if (!key) continue;
+
+    if (!tagGroups.has(key)) {
+      tagGroups.set(key, { ids: [id], title, tags });
+    } else {
+      tagGroups.get(key)!.ids.push(id);
+    }
+  }
+
+  return Array.from(tagGroups.values())
+    .filter(g => g.ids.length >= minClusterSize)
+    .map(g => ({
+      representative_title: g.title,
+      tags: g.tags,
+      entry_ids: g.ids,
+      entry_count: g.ids.length,
+    }))
+    .sort((a, b) => b.entry_count - a.entry_count)
+    .slice(0, 20);
 }

@@ -195,3 +195,53 @@ CREATE TABLE IF NOT EXISTS notification_preferences (
   notify_revisions INTEGER NOT NULL DEFAULT 1,
   notify_badges INTEGER NOT NULL DEFAULT 1
 );
+
+-- ── Karpathy Features ──
+
+-- Migration: ALTER TABLE entries ADD COLUMN surprise_score REAL DEFAULT 0;
+-- Migration: ALTER TABLE entries ADD COLUMN success_rate REAL DEFAULT NULL;
+-- Migration: ALTER TABLE entries ADD COLUMN retrieval_count INTEGER DEFAULT 0;
+
+-- Embeddings for semantic search
+CREATE TABLE IF NOT EXISTS entry_embeddings (
+  entry_id INTEGER PRIMARY KEY REFERENCES entries(id),
+  embedding TEXT NOT NULL,
+  model TEXT NOT NULL DEFAULT 'bag-of-words',
+  dimensions INTEGER NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+-- Retrieval outcome tracking: "did this entry actually help?"
+CREATE TABLE IF NOT EXISTS retrieval_traces (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entry_id INTEGER NOT NULL REFERENCES entries(id),
+  outcome TEXT NOT NULL CHECK(outcome IN ('helped', 'partially_helped', 'did_not_help', 'wrong')),
+  task_context TEXT,
+  agent_session TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_retrieval_traces_entry ON retrieval_traces(entry_id);
+
+-- Agent reasoning traces: the path from problem to solution
+CREATE TABLE IF NOT EXISTS reasoning_traces (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entry_id INTEGER NOT NULL REFERENCES entries(id),
+  searches TEXT DEFAULT '[]',
+  findings TEXT,
+  attempts TEXT,
+  solution_path TEXT,
+  agent_session TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_reasoning_traces_entry ON reasoning_traces(entry_id);
+
+-- Per-tag daily search trends for learning curves
+CREATE TABLE IF NOT EXISTS topic_search_trends (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tag TEXT NOT NULL,
+  date TEXT NOT NULL,
+  search_count INTEGER NOT NULL DEFAULT 0,
+  usage_count INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(tag, date)
+);
+CREATE INDEX IF NOT EXISTS idx_topic_trends_tag ON topic_search_trends(tag);

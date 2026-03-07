@@ -1,5 +1,5 @@
 import type { APIRoute } from 'astro';
-import { searchEntries, trackSearch, type SearchSort } from '../../lib/db';
+import { searchEntries, trackSearch, semanticSearch, getEntry, trackTopicSearch, type SearchSort } from '../../lib/db';
 import { jsonResponse, requestId, parseJsonField, truncate, stripEmpty } from '../../lib/api-utils';
 
 const VALID_SORTS: SearchSort[] = ['relevance', 'votes', 'newest', 'oldest', 'most_used', 'severity'];
@@ -20,8 +20,39 @@ export const GET: APIRoute = async ({ request }) => {
 
   try {
     const results = await searchEntries(q.trim(), sort);
+
+    // Semantic search boost (blend with FTS results)
+    try {
+      const semanticResults = await semanticSearch(q.trim(), 10);
+      const ftsIds = new Set(results.map((r: any) => r.id));
+      if (semanticResults.length > 0) {
+        for (const sr of semanticResults) {
+          if (!ftsIds.has(sr.entry_id) && sr.similarity > 0.3) {
+            const entry = await getEntry(sr.entry_id);
+            if (entry) {
+              (results as any[]).push({ ...entry, _score: sr.similarity * 60, _semantic: true });
+            }
+          }
+        }
+      }
+    } catch { /* semantic search is best-effort */ }
+
     const source = url.searchParams.get('source') || 'api';
     await trackSearch(q.trim(), results.length, source);
+
+    // Track topic search trends for learning curves (only terms that match actual entry tags)
+    try {
+      const matchedTags = new Set<string>();
+      for (const r of results) {
+        const entryTags = typeof (r as any).tags === 'string' ? JSON.parse((r as any).tags) : [];
+        for (const t of entryTags) {
+          if (typeof t === 'string') matchedTags.add(t.toLowerCase());
+        }
+      }
+      if (matchedTags.size > 0) {
+        trackTopicSearch([...matchedTags].slice(0, 10)).catch(() => {});
+      }
+    } catch { /* best-effort */ }
 
     // Apply limit if specified
     const limited = limit ? results.slice(0, limit) : results;
