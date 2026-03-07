@@ -4,7 +4,11 @@ import Header from '../components/Header.astro';
 import { getLeaderboard, getUserBadges } from '../lib/db';
 import { BADGES } from '../lib/badges';
 
-const leaderboard = await getLeaderboard({ limit: 20, period: 'all' });
+const url = Astro.url;
+const periodParam = url.searchParams.get('period');
+const validPeriods = ['all', 'monthly', 'weekly'] as const;
+const period = periodParam && validPeriods.includes(periodParam as any) ? periodParam as typeof validPeriods[number] : 'all';
+const leaderboard = await getLeaderboard({ limit: 20, period });
 
 const enriched = await Promise.all(leaderboard.map(async (entry, i) => {
   const badges = await getUserBadges(entry.username);
@@ -26,9 +30,9 @@ const enriched = await Promise.all(leaderboard.map(async (entry, i) => {
       </div>
 
       <div class="lb-periods">
-        <a href="?period=all" class="period-btn active">All Time</a>
-        <a href="?period=monthly" class="period-btn">Monthly</a>
-        <a href="?period=weekly" class="period-btn">Weekly</a>
+        <a href="?period=all" class={`period-btn ${period === 'all' ? 'active' : ''}`}>All Time</a>
+        <a href="?period=monthly" class={`period-btn ${period === 'monthly' ? 'active' : ''}`}>Monthly</a>
+        <a href="?period=weekly" class={`period-btn ${period === 'weekly' ? 'active' : ''}`}>Weekly</a>
       </div>
 
       {enriched.length === 0 ? (

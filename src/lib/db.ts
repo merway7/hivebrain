@@ -1516,13 +1516,19 @@ export async function addRepEvent(username: string, eventType: RepEventType, ent
     sql: `INSERT INTO reputation_cache (username, total_rep${counterCol ? `, ${counterCol}` : ''}, updated_at)
           VALUES (?, ?${counterCol ? ', 1' : ''}, unixepoch())
           ON CONFLICT(username) DO UPDATE SET
-            total_rep = total_rep + ?${counterIncrement},
+            total_rep = MAX(0, total_rep + ?)${counterIncrement},
             updated_at = unixepoch()`,
     args: [username, points, points],
   });
 
-  // Check and award badges
-  await checkAndAwardBadges(username);
+  // Check and award badges, dispatch notifications for new ones
+  const awarded = await checkAndAwardBadges(username);
+  if (awarded.length > 0) {
+    const { dispatchNotification } = await import('./notifications');
+    for (const badgeId of awarded) {
+      dispatchNotification(username, 'badge_earned', null, { badgeId }).catch(() => {});
+    }
+  }
 }
 
 export async function getReputation(username: string): Promise<{
@@ -1640,7 +1646,8 @@ export async function checkAndAwardBadges(username: string): Promise<string[]> {
 
 export async function createAccount(username: string, email: string): Promise<{ id: number; verification_token: string }> {
   const db = getWriteDb();
-  const token = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+  const { randomBytes } = await import('crypto');
+  const token = randomBytes(32).toString('hex');
   const expires = Math.floor(Date.now() / 1000) + 24 * 3600; // 24 hours
   const result = await db.execute({
     sql: 'INSERT INTO accounts (username, email, verification_token, verification_expires) VALUES (?, ?, ?, ?)',

@@ -1,4 +1,4 @@
-import { createNotification, getNotificationPrefs, getAccountByUsername } from './db';
+import { createNotification, getNotificationPrefs } from './db';
 import { getBadgeById } from './badges';
 
 type NotificationType = 'upvote' | 'downvote' | 'usage' | 'verification' | 'revision' | 'badge_earned';

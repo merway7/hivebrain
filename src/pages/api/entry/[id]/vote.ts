@@ -43,12 +43,14 @@ export const POST: APIRoute = async ({ params, request }) => {
 
     const result = await addVote(id, direction, ip, validateUsername(username));
 
-    // Reputation + notification for entry author (fire-and-forget)
+    // Reputation + notification for entry author (fire-and-forget, skip self-votes)
     const voterName = validateUsername(username);
-    const repType = direction === 'up' ? 'upvote_received' : 'downvote_received';
-    addRepEvent(entry.submitted_by, repType, id, voterName).catch(e => console.warn('Rep event failed:', e));
-    const notifType = direction === 'up' ? 'upvote' : 'downvote';
-    dispatchNotification(entry.submitted_by, notifType, id, { sourceUsername: voterName, entryTitle: entry.title }).catch(() => {});
+    if (voterName === 'anonymous' || voterName !== entry.submitted_by) {
+      const repType = direction === 'up' ? 'upvote_received' : 'downvote_received';
+      addRepEvent(entry.submitted_by, repType, id, voterName).catch(e => console.warn('Rep event failed:', e));
+      const notifType = direction === 'up' ? 'upvote' : 'downvote';
+      dispatchNotification(entry.submitted_by, notifType, id, { sourceUsername: voterName, entryTitle: entry.title }).catch(() => {});
+    }
 
     return jsonResponse({ id: result.id, status: 'recorded', direction }, 201);
   } catch (err) {
