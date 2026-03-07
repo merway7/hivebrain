@@ -1,14 +1,22 @@
 ---
 import Layout from '../../layouts/Layout.astro';
 import Header from '../../components/Header.astro';
-import { getEntry } from '../../lib/db';
+import { getEntry, getRevisions, getUsageContexts, getVerifications, computeFreshness, getLatestVerification } from '../../lib/db';
 
 const { id } = Astro.params;
-const entry = getEntry(Number(id));
+const entry = await getEntry(Number(id));
 
 if (!entry) {
   return Astro.redirect('/');
 }
+
+const revisions = await getRevisions(entry.id);
+const usageContexts = await getUsageContexts(entry.id, 5);
+const verifications = await getVerifications(entry.id);
+const latestVerification = verifications.length > 0 ? verifications[0] : null;
+const freshness = computeFreshness(entry, latestVerification?.verified_at);
+const netScore = (entry.upvotes || 0) - (entry.downvotes || 0);
+const qualityStatus = entry.quality_status || 'unverified';
 
 const tags = JSON.parse(entry.tags || '[]') as string[];
 const gotchas = JSON.parse(entry.gotchas || '[]') as string[];
@@ -65,8 +73,11 @@ function mdToHtml(text: string): string {
   // 4. Inline code (single backtick)
   html = html.replace(/`([^`]+)`/g, (_match, code) => `<code class="inline-code">${code}</code>`);
 
-  // 5. Links: [text](url) → <a href="url" ...>text</a>
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // 5. Links: [text](url) → <a href="url" ...>text</a> (only http/https/mailto)
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, text, url) => {
+    if (!/^https?:\/\/|^mailto:/i.test(url)) return text;
+    return `<a href="${url}" target="_blank" rel="noopener">${text}</a>`;
+  });
 
   // 6. Unordered lists: consecutive lines starting with "- "
   html = html.replace(/((?:^|\n)- .+(?:\n- .+)*)/g, (block) => {
@@ -118,18 +129,33 @@ function mdToHtml(text: string): string {
           <span class={`severity-badge severity-${severity}`}>
             {severityLabels[severity] || severity}
           </span>
+          {qualityStatus !== 'unverified' && (
+            <span class={`quality-badge quality-${qualityStatus}`}>{qualityStatus}</span>
+          )}
+          {entry.is_canonical === 1 && (
+            <span class="canonical-badge">Canonical</span>
+          )}
+          {freshness !== 'fresh' && (
+            <span class={`freshness-badge freshness-${freshness}`}>{freshness}</span>
+          )}
         </div>
         <h1>{entry.title}</h1>
         <div class="meta">
-          <span>by <strong>{entry.submitted_by}</strong></span>
+          <span>Submitted by: <strong>@{entry.submitted_by}</strong></span>
           <span>&middot;</span>
           <time>{new Date(entry.created_at * 1000).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</time>
-          {entry.upvotes > 0 && (
-            <>
-              <span>&middot;</span>
-              <span>{entry.upvotes} upvote{entry.upvotes !== 1 ? 's' : ''}</span>
-            </>
+          <span>&middot;</span>
+          <div class="vote-section" data-entry-id={entry.id}>
+            <button class="vote-btn" data-direction="up" title="Upvote">&#9650;</button>
+            <span class="vote-score" id="vote-score">{netScore}</span>
+            <button class="vote-btn" data-direction="down" title="Downvote">&#9660;</button>
+          </div>
+        </div>
+        <div class="usage-stats">
+          {(entry.usage_count || 0) > 0 && (
+            <span class="agent-solved">This entry has helped agents solve {entry.usage_count} problems</span>
           )}
+          <span>Viewed {entry.view_count || 0} times</span>
         </div>
         {entry.version_info && (
           <p class="version-info">{entry.version_info}</p>
@@ -213,9 +239,156 @@ function mdToHtml(text: string): string {
           <p>{entry.learned_from}</p>
         </section>
       )}
+
+      {verifications.length > 0 && (
+        <section class="section verification-section">
+          <h2>Verifications ({verifications.length})</h2>
+          <div class="verification-list">
+            {verifications.map(v => (
+              <div class="verification-item">
+                <span class="verification-badge">Verified</span>
+                <span class="verification-meta">
+                  by @{v.verified_by}
+                  {v.version_tested && <span class="version-tag">{v.version_tested}</span>}
+                  {v.environment && <span class="env-tag">{v.environment}</span>}
+                  &middot; {new Date(v.verified_at * 1000).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
+                </span>
+                {v.notes && <p class="verification-notes">{v.notes}</p>}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {usageContexts.length > 0 && (
+        <section class="section usage-context-section">
+          <h2>How This Helped ({usageContexts.length})</h2>
+          <div class="usage-context-list">
+            {usageContexts.map(uc => (
+              <div class="usage-context-item">
+                <p>{uc.context}</p>
+                <span class="usage-context-meta">
+                  @{uc.submitted_by} &middot; {new Date(uc.created_at * 1000).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      <section class="section">
+        <h2>Revisions ({revisions.length})</h2>
+        {revisions.length > 0 ? (
+          <div class="revision-timeline" id="revision-list">
+            {revisions.map(rev => (
+              <div class="revision-item">
+                <div class="revision-item-header">
+                  <span class={`revision-type-badge type-${rev.revision_type}`}>{rev.revision_type}</span>
+                  <span class="revision-item-meta">
+                    @{rev.submitted_by} &middot; {new Date(rev.created_at * 1000).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
+                  </span>
+                </div>
+                <div class="revision-item-content">{rev.content}</div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p style="color: var(--text-dim); font-size: 13px;">No revisions yet.</p>
+        )}
+
+        <div class="revision-form" id="revision-form">
+          <textarea id="revision-content" placeholder="Add a revision (min 20 characters)..." rows="3"></textarea>
+          <div class="revision-form-row">
+            <select id="revision-type">
+              <option value="comment">Comment</option>
+              <option value="improvement">Improvement</option>
+              <option value="correction">Correction</option>
+              <option value="outdated">Outdated</option>
+            </select>
+            <button class="btn" id="revision-submit">Submit Revision</button>
+          </div>
+        </div>
+      </section>
     </article>
   </main>
 </Layout>
+
+<script define:vars={{ entryId: entry.id }}>
+  // ── Vote buttons ──
+  let voteInFlight = false;
+  document.querySelectorAll('.vote-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (voteInFlight) return;
+      voteInFlight = true;
+      btn.disabled = true;
+      const direction = btn.dataset.direction;
+      try {
+        const res = await fetch(`/api/entry/${entryId}/vote`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ direction }),
+        });
+        if (res.ok) {
+          const scoreEl = document.getElementById('vote-score');
+          if (scoreEl) {
+            const current = parseInt(scoreEl.textContent || '0', 10);
+            scoreEl.textContent = String(current + (direction === 'up' ? 1 : -1));
+          }
+          document.querySelectorAll('.vote-btn').forEach(b => {
+            b.classList.remove('active-up', 'active-down');
+            b.disabled = true; // Disable both after successful vote
+          });
+          btn.classList.add(direction === 'up' ? 'active-up' : 'active-down');
+        } else {
+          btn.disabled = false;
+          const data = await res.json();
+          if (res.status === 429) {
+            alert('Rate limited: ' + data.error);
+            document.querySelectorAll('.vote-btn').forEach(b => b.disabled = true);
+          }
+        }
+      } catch (err) {
+        btn.disabled = false;
+        console.error('Vote failed:', err);
+      } finally {
+        voteInFlight = false;
+      }
+    });
+  });
+
+  // ── Revision form ──
+  const submitBtn = document.getElementById('revision-submit');
+  if (submitBtn) {
+    submitBtn.addEventListener('click', async () => {
+      const contentEl = document.getElementById('revision-content');
+      const typeEl = document.getElementById('revision-type');
+      const content = contentEl?.value?.trim();
+      const revisionType = typeEl?.value;
+
+      if (!content || content.length < 20) {
+        alert('Revision content must be at least 20 characters.');
+        return;
+      }
+
+      try {
+        const res = await fetch(`/api/entry/${entryId}/revisions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ revision_type: revisionType, content }),
+        });
+        if (res.ok) {
+          // Reload to show the new revision
+          window.location.reload();
+        } else {
+          const data = await res.json();
+          alert('Failed: ' + data.error);
+        }
+      } catch (err) {
+        console.error('Revision submit failed:', err);
+      }
+    });
+  }
+</script>
 
 <style>
   .back-link {
@@ -527,5 +700,114 @@ function mdToHtml(text: string): string {
   .learned p {
     color: var(--text-secondary);
     font-style: italic;
+  }
+
+  .meta .vote-section {
+    display: inline-flex;
+  }
+
+  .agent-solved {
+    color: var(--green) !important;
+    font-weight: 500;
+  }
+
+  .canonical-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    background: rgba(255, 215, 0, 0.2);
+    color: #ffd700;
+  }
+
+  .freshness-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .freshness-aging { background: rgba(255, 165, 0, 0.2); color: #ffa500; }
+  .freshness-stale { background: rgba(255, 68, 68, 0.2); color: #ff6666; }
+
+  .verification-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .verification-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 8px 12px;
+    background: rgba(78, 205, 196, 0.05);
+    border: 1px solid rgba(78, 205, 196, 0.15);
+    border-radius: 6px;
+  }
+
+  .verification-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    background: rgba(78, 205, 196, 0.2);
+    color: #4ecdc4;
+  }
+
+  .verification-meta {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+
+  .version-tag, .env-tag {
+    display: inline-block;
+    padding: 1px 6px;
+    margin-left: 4px;
+    border-radius: 3px;
+    font-size: 0.7rem;
+    font-family: var(--font-mono);
+    background: rgba(124, 92, 191, 0.12);
+    color: var(--text-secondary);
+  }
+
+  .verification-notes {
+    width: 100%;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin: 4px 0 0 0;
+  }
+
+  .usage-context-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .usage-context-item {
+    padding: 8px 12px;
+    background: rgba(160, 160, 176, 0.05);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+
+  .usage-context-item p {
+    font-size: 0.9rem;
+    color: var(--text-primary);
+    margin: 0 0 4px;
+  }
+
+  .usage-context-meta {
+    font-size: 0.75rem;
+    color: var(--text-muted);
   }
 </style>

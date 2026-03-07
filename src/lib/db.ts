@@ -1,29 +1,251 @@
-import Database from 'better-sqlite3';
+import { createClient, type Client, type Row } from '@libsql/client';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-let db: Database.Database | null = null;
+let readClient: Client | null = null;
+let writeClient: Client | null = null;
+let initialized = false;
 
-export function getDb(): Database.Database {
-  if (db) return db;
+// ── Mode: public (default), hybrid, private ──
+// public  = read from Turso, write to Turso (everything shared)
+// hybrid  = read from Turso, write to local SQLite (search public, submit private)
+// private = read from local, write to local (everything private)
 
+export type HiveBrainMode = 'public' | 'hybrid' | 'private';
+
+export function getMode(): HiveBrainMode {
+  const mode = (process.env.HIVEBRAIN_MODE || '').toLowerCase();
+  if (mode === 'hybrid' || mode === 'private') return mode;
+  return 'public';
+}
+
+function createTursoClient(): Client {
+  return createClient({
+    url: process.env.TURSO_URL!,
+    authToken: process.env.TURSO_AUTH_TOKEN,
+  });
+}
+
+function createLocalClient(): Client {
   const dbPath = join(process.cwd(), 'db', 'hivebrain.db');
-  db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
+  return createClient({ url: `file:${dbPath}` });
+}
 
-  // Initialize schema
-  const schema = readFileSync(join(process.cwd(), 'db', 'schema.sql'), 'utf-8');
-  db.exec(schema);
+// ── Client singletons ──
 
-  // Migration: add view_count column if missing
-  const cols = db.prepare("PRAGMA table_info(entries)").all() as { name: string }[];
-  if (!cols.some(c => c.name === 'view_count')) {
-    db.exec('ALTER TABLE entries ADD COLUMN view_count INTEGER DEFAULT 0');
+export function getReadDb(): Client {
+  if (readClient) return readClient;
+  const mode = getMode();
+  const hasTurso = !!process.env.TURSO_URL;
+
+  if ((mode === 'public' || mode === 'hybrid') && hasTurso) {
+    readClient = createTursoClient();
+  } else {
+    readClient = createLocalClient();
+  }
+  return readClient;
+}
+
+export function getWriteDb(): Client {
+  if (writeClient) return writeClient;
+  const mode = getMode();
+  const hasTurso = !!process.env.TURSO_URL;
+
+  if (mode === 'public' && hasTurso) {
+    writeClient = createTursoClient();
+  } else {
+    // hybrid and private both write locally
+    writeClient = createLocalClient();
+  }
+  return writeClient;
+}
+
+// Backward compat: getDb() returns the read client
+export function getDb(): Client {
+  return getReadDb();
+}
+
+// ── Initialization (call once via middleware) ──
+
+export async function initDb(): Promise<void> {
+  if (initialized) return;
+
+  const mode = getMode();
+  const rdb = getReadDb();
+  const wdb = getWriteDb();
+  const hasTurso = !!process.env.TURSO_URL;
+
+  // PRAGMAs only work on local SQLite, not Turso
+  const readIsLocal = !(mode !== 'private' && hasTurso);
+  const writeIsLocal = mode !== 'public' || !hasTurso;
+
+  if (readIsLocal) {
+    await rdb.execute('PRAGMA journal_mode = WAL');
+    await rdb.execute('PRAGMA foreign_keys = ON');
+  }
+  if (writeIsLocal && wdb !== rdb) {
+    await wdb.execute('PRAGMA journal_mode = WAL');
+    await wdb.execute('PRAGMA foreign_keys = ON');
   }
 
-  return db;
+  // Use read client for schema init (it's the primary DB)
+  const db = rdb;
+
+  // Run schema
+  const schema = readFileSync(join(process.cwd(), 'db', 'schema.sql'), 'utf-8');
+  // libsql client.execute() can only run one statement at a time.
+  // Split schema into individual statements, respecting BEGIN...END blocks (triggers).
+  const stmts: string[] = [];
+  let current = '';
+  let inBlock = false;
+  for (const line of schema.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('--') || trimmed === '') {
+      continue;
+    }
+    current += line + '\n';
+    if (/\bBEGIN\b/i.test(trimmed)) inBlock = true;
+    if (inBlock && /\bEND\b/i.test(trimmed) && trimmed.endsWith(';')) {
+      stmts.push(current.trim());
+      current = '';
+      inBlock = false;
+    } else if (!inBlock && trimmed.endsWith(';')) {
+      stmts.push(current.trim());
+      current = '';
+    }
+  }
+  if (current.trim()) stmts.push(current.trim());
+
+  const statements = stmts
+    .filter(s => s.length > 0)
+    .map(s => ({ sql: s, args: [] as any[] }));
+
+  // Execute schema statements one at a time (batch fails on CREATE VIRTUAL TABLE)
+  for (const stmt of statements) {
+    try {
+      await db.execute(stmt);
+    } catch (e: any) {
+      // Ignore "already exists" errors — schema is idempotent
+      if (!e.message?.includes('already exists')) {
+        console.warn('Schema warning:', e.message);
+      }
+    }
+  }
+
+  // ── Migrations ──
+
+  // v2: add view_count column
+  await migrateAddColumn(db, 'entries', 'view_count', 'INTEGER DEFAULT 0');
+
+  // v4: new columns for quality system
+  await migrateAddColumn(db, 'entries', 'downvotes', 'INTEGER DEFAULT 0');
+  await migrateAddColumn(db, 'entries', 'usage_count', 'INTEGER DEFAULT 0');
+  await migrateAddColumn(db, 'entries', 'quality_status', "TEXT DEFAULT 'unverified'");
+
+  // v4: new tables for revisions and votes
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS entry_revisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      entry_id INTEGER NOT NULL REFERENCES entries(id),
+      revision_type TEXT NOT NULL,
+      content TEXT NOT NULL,
+      submitted_by TEXT DEFAULT 'anonymous',
+      created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
+
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS entry_votes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      entry_id INTEGER NOT NULL REFERENCES entries(id),
+      direction TEXT NOT NULL CHECK(direction IN ('up', 'down')),
+      voter_ip TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
+
+  // v5: add voter_name column to entry_votes
+  await migrateAddColumn(db, 'entry_votes', 'voter_name', "TEXT DEFAULT 'anonymous'");
+
+  // v6: canonical entries + freshness
+  await migrateAddColumn(db, 'entries', 'is_canonical', 'INTEGER DEFAULT 0');
+  await migrateAddColumn(db, 'entries', 'freshness_status', "TEXT DEFAULT 'fresh'");
+
+  // v6: usage_contexts table
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS usage_contexts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      entry_id INTEGER NOT NULL REFERENCES entries(id),
+      context TEXT NOT NULL,
+      submitted_by TEXT DEFAULT 'anonymous',
+      created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_usage_contexts_entry ON usage_contexts(entry_id)'); } catch {}
+
+  // v6: solution_verifications table
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS solution_verifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      entry_id INTEGER NOT NULL REFERENCES entries(id),
+      verified_by TEXT NOT NULL,
+      version_tested TEXT,
+      environment TEXT,
+      notes TEXT,
+      verified_at INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_verifications_entry ON solution_verifications(entry_id)'); } catch {}
+
+  // In hybrid mode, the write DB is a separate local SQLite — init its schema too
+  if (wdb !== rdb) {
+    for (const stmt of statements) {
+      try { await wdb.execute(stmt); } catch (e: any) {
+        if (!e.message?.includes('already exists')) console.warn('Write DB schema warning:', e.message);
+      }
+    }
+    await migrateAddColumn(wdb, 'entries', 'view_count', 'INTEGER DEFAULT 0');
+    await migrateAddColumn(wdb, 'entries', 'downvotes', 'INTEGER DEFAULT 0');
+    await migrateAddColumn(wdb, 'entries', 'usage_count', 'INTEGER DEFAULT 0');
+    await migrateAddColumn(wdb, 'entries', 'quality_status', "TEXT DEFAULT 'unverified'");
+    await wdb.execute(`CREATE TABLE IF NOT EXISTS entry_revisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, entry_id INTEGER NOT NULL REFERENCES entries(id),
+      revision_type TEXT NOT NULL, content TEXT NOT NULL, submitted_by TEXT DEFAULT 'anonymous',
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
+    await wdb.execute(`CREATE TABLE IF NOT EXISTS entry_votes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, entry_id INTEGER NOT NULL REFERENCES entries(id),
+      direction TEXT NOT NULL CHECK(direction IN ('up', 'down')), voter_ip TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
+    await migrateAddColumn(wdb, 'entry_votes', 'voter_name', "TEXT DEFAULT 'anonymous'");
+    await migrateAddColumn(wdb, 'entries', 'is_canonical', 'INTEGER DEFAULT 0');
+    await migrateAddColumn(wdb, 'entries', 'freshness_status', "TEXT DEFAULT 'fresh'");
+    await wdb.execute(`CREATE TABLE IF NOT EXISTS usage_contexts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, entry_id INTEGER NOT NULL REFERENCES entries(id),
+      context TEXT NOT NULL, submitted_by TEXT DEFAULT 'anonymous',
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_usage_contexts_entry ON usage_contexts(entry_id)'); } catch {}
+    await wdb.execute(`CREATE TABLE IF NOT EXISTS solution_verifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, entry_id INTEGER NOT NULL REFERENCES entries(id),
+      verified_by TEXT NOT NULL, version_tested TEXT, environment TEXT, notes TEXT,
+      verified_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_verifications_entry ON solution_verifications(entry_id)'); } catch {}
+  }
+
+  initialized = true;
 }
+
+async function migrateAddColumn(db: Client, table: string, column: string, definition: string): Promise<void> {
+  try {
+    await db.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  } catch (e: any) {
+    // Column already exists — ignore the error
+    if (!e.message?.includes('duplicate column') && !e.message?.includes('already exists')) {
+      throw e;
+    }
+  }
+}
+
+// ── Types ──
 
 export interface Entry {
   id: number;
@@ -38,6 +260,9 @@ export interface Entry {
   submitted_by: string;
   created_at: number;
   upvotes: number;
+  downvotes: number;
+  usage_count: number;
+  quality_status: string;
   language: string | null;
   framework: string | null;
   severity: string;
@@ -48,9 +273,49 @@ export interface Entry {
   keywords: string;
   code_snippets: string;
   related_entries: string;
+  view_count: number;
+  is_canonical: number;
+  freshness_status: string;
 }
 
-export function getAllEntries(opts?: {
+// ── Row helper ──
+
+function rowToEntry(row: Row): Entry {
+  return {
+    id: Number(row.id),
+    title: String(row.title),
+    category: String(row.category) as Entry['category'],
+    tags: String(row.tags ?? '[]'),
+    problem: String(row.problem),
+    solution: String(row.solution),
+    why: row.why != null ? String(row.why) : null,
+    gotchas: String(row.gotchas ?? '[]'),
+    learned_from: row.learned_from != null ? String(row.learned_from) : null,
+    submitted_by: String(row.submitted_by ?? 'anonymous'),
+    created_at: Number(row.created_at),
+    upvotes: Number(row.upvotes ?? 0),
+    downvotes: Number(row.downvotes ?? 0),
+    usage_count: Number(row.usage_count ?? 0),
+    quality_status: String(row.quality_status ?? 'unverified'),
+    language: row.language != null ? String(row.language) : null,
+    framework: row.framework != null ? String(row.framework) : null,
+    severity: String(row.severity ?? 'moderate'),
+    environment: String(row.environment ?? '[]'),
+    error_messages: String(row.error_messages ?? '[]'),
+    version_info: row.version_info != null ? String(row.version_info) : null,
+    context: row.context != null ? String(row.context) : null,
+    keywords: String(row.keywords ?? '[]'),
+    code_snippets: String(row.code_snippets ?? '[]'),
+    related_entries: String(row.related_entries ?? '[]'),
+    view_count: Number(row.view_count ?? 0),
+    is_canonical: Number(row.is_canonical ?? 0),
+    freshness_status: String(row.freshness_status ?? 'fresh'),
+  };
+}
+
+// ── CRUD ──
+
+export async function getAllEntries(opts?: {
   category?: string;
   tag?: string;
   language?: string;
@@ -60,41 +325,42 @@ export function getAllEntries(opts?: {
   limit?: number;
   offset?: number;
   cursor?: number;
-}): Entry[] {
+  sort?: SearchSort;
+}): Promise<Entry[]> {
   const db = getDb();
-  const params: any[] = [];
+  const args: any[] = [];
   const conditions: string[] = [];
   let useJsonEach = false;
 
   if (opts?.tag) {
     useJsonEach = true;
     conditions.push('tag_each.value = ?');
-    params.push(opts.tag);
+    args.push(opts.tag);
   }
   if (opts?.category) {
     conditions.push('entries.category = ?');
-    params.push(opts.category);
+    args.push(opts.category);
   }
   if (opts?.language) {
     conditions.push('entries.language = ?');
-    params.push(opts.language);
+    args.push(opts.language);
   }
   if (opts?.framework) {
     conditions.push('entries.framework = ?');
-    params.push(opts.framework);
+    args.push(opts.framework);
   }
   if (opts?.severity) {
     conditions.push('entries.severity = ?');
-    params.push(opts.severity);
+    args.push(opts.severity);
   }
   if (opts?.environment) {
     conditions.push('EXISTS (SELECT 1 FROM json_each(entries.environment) WHERE value = ?)');
-    params.push(opts.environment);
+    args.push(opts.environment);
   }
 
   if (opts?.cursor) {
     conditions.push('entries.id < ?');
-    params.push(opts.cursor);
+    args.push(opts.cursor);
   }
 
   let query = useJsonEach
@@ -105,24 +371,36 @@ export function getAllEntries(opts?: {
     query += ' WHERE ' + conditions.join(' AND ');
   }
 
-  query += ' ORDER BY entries.id DESC';
+  const sortMap: Record<string, string> = {
+    votes: '(entries.upvotes - entries.downvotes) DESC',
+    newest: 'entries.created_at DESC',
+    oldest: 'entries.created_at ASC',
+    most_used: 'entries.usage_count DESC',
+    severity: `CASE entries.severity WHEN 'critical' THEN 1 WHEN 'major' THEN 2 WHEN 'moderate' THEN 3 WHEN 'minor' THEN 4 WHEN 'tip' THEN 5 ELSE 3 END ASC`,
+  };
+  const orderBy = (opts?.sort && sortMap[opts.sort]) || 'entries.id DESC';
+  query += ` ORDER BY ${orderBy}`;
 
   if (opts?.limit) {
     query += ' LIMIT ?';
-    params.push(opts.limit);
+    args.push(opts.limit);
   }
   if (opts?.offset && !opts?.cursor) {
     query += ' OFFSET ?';
-    params.push(opts.offset);
+    args.push(opts.offset);
   }
 
-  return db.prepare(query).all(...params) as Entry[];
+  const result = await db.execute({ sql: query, args });
+  return result.rows.map(rowToEntry);
 }
 
-export function getEntry(id: number): Entry | undefined {
+export async function getEntry(id: number): Promise<Entry | undefined> {
   const db = getDb();
-  return db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Entry | undefined;
+  const result = await db.execute({ sql: 'SELECT * FROM entries WHERE id = ?', args: [id] });
+  return result.rows.length > 0 ? rowToEntry(result.rows[0]) : undefined;
 }
+
+// ── Search ──
 
 // Common abbreviations/synonyms agents use
 const SYNONYMS: Record<string, string[]> = {
@@ -199,7 +477,33 @@ function isSignificantWord(w: string): boolean {
   return w.length > 2 && !STOP_WORDS.has(w.toLowerCase());
 }
 
-export function searchEntries(query: string): (Entry & { title_hl?: string; problem_hl?: string; solution_hl?: string; _score?: number })[] {
+const SEVERITY_RANK: Record<string, number> = { critical: 1, major: 2, moderate: 3, minor: 4, tip: 5 };
+
+export type SearchSort = 'relevance' | 'votes' | 'newest' | 'oldest' | 'most_used' | 'severity';
+
+export function computeFreshness(entry: { created_at: number; quality_status: string }, lastVerifiedAt?: number): 'fresh' | 'aging' | 'stale' {
+  const now = Math.floor(Date.now() / 1000);
+  const ageMonths = (now - entry.created_at) / (30 * 24 * 3600);
+  const recentlyVerified = lastVerifiedAt && (now - lastVerifiedAt) < 3 * 30 * 24 * 3600;
+
+  if (entry.quality_status === 'outdated') return 'stale';
+  if (recentlyVerified || ageMonths < 6) return 'fresh';
+  if (ageMonths > 18) return 'stale';
+  return 'aging';
+}
+
+function applySorting<T extends Entry>(results: T[], sort: SearchSort): T[] {
+  switch (sort) {
+    case 'votes': return results.sort((a, b) => (b.upvotes - b.downvotes) - (a.upvotes - a.downvotes));
+    case 'newest': return results.sort((a, b) => b.created_at - a.created_at);
+    case 'oldest': return results.sort((a, b) => a.created_at - b.created_at);
+    case 'most_used': return results.sort((a, b) => b.usage_count - a.usage_count);
+    case 'severity': return results.sort((a, b) => (SEVERITY_RANK[a.severity] || 3) - (SEVERITY_RANK[b.severity] || 3));
+    default: return results; // relevance = existing _score sort
+  }
+}
+
+export async function searchEntries(query: string, sort: SearchSort = 'relevance'): Promise<(Entry & { title_hl?: string; problem_hl?: string; solution_hl?: string; _score?: number })[]> {
   const db = getDb();
   const sanitized = query.replace(/['"]/g, '').trim();
   const words = sanitized.split(/\s+/).filter(w => w.length > 0);
@@ -214,18 +518,23 @@ export function searchEntries(query: string): (Entry & { title_hl?: string; prob
   const expanded = expandQuery(searchWords);
 
   const scoreById = new Map<number, number>();
-  const allResults: (Entry & { _score: number })[] = [];
+  const allResults: (Entry & { _score: number; title_hl?: string; problem_hl?: string; solution_hl?: string })[] = [];
 
-  function addResults(rows: any[], score: number) {
+  function addResults(rows: Row[], score: number) {
     for (const row of rows) {
-      const existingScore = scoreById.get(row.id);
+      const id = Number(row.id);
+      const existingScore = scoreById.get(id);
       if (existingScore === undefined) {
-        scoreById.set(row.id, score);
-        allResults.push({ ...row, _score: score });
+        scoreById.set(id, score);
+        const entry = rowToEntry(row) as Entry & { _score: number; title_hl?: string; problem_hl?: string; solution_hl?: string };
+        entry._score = score;
+        if (row.title_hl != null) entry.title_hl = String(row.title_hl);
+        if (row.problem_hl != null) entry.problem_hl = String(row.problem_hl);
+        if (row.solution_hl != null) entry.solution_hl = String(row.solution_hl);
+        allResults.push(entry);
       } else if (score > existingScore) {
-        // Upgrade to the higher score
-        scoreById.set(row.id, score);
-        const idx = allResults.findIndex(r => r.id === row.id);
+        scoreById.set(id, score);
+        const idx = allResults.findIndex(r => r.id === id);
         if (idx !== -1) allResults[idx]._score = score;
       }
     }
@@ -243,34 +552,39 @@ export function searchEntries(query: string): (Entry & { title_hl?: string; prob
     }
   }
 
-  // ── Layer 1: FTS5 full-text search (best quality) ──
-  // Use bm25() for proper relevance scoring — lower = more relevant in SQLite FTS5
-  const ftsSQL = `
-    SELECT entries.*,
-           highlight(entries_fts, 0, '<mark>', '</mark>') as title_hl,
-           highlight(entries_fts, 1, '<mark>', '</mark>') as problem_hl,
-           highlight(entries_fts, 2, '<mark>', '</mark>') as solution_hl,
-           bm25(entries_fts, 10.0, 5.0, 5.0, 2.0, 3.0, 3.0, 2.0, 4.0, 4.0, 4.0) as bm25_score
-    FROM entries_fts
-    JOIN entries ON entries.id = entries_fts.rowid
-    WHERE entries_fts MATCH ?
-    ORDER BY bm25_score
-    LIMIT 30
-  `;
+  // Helper to run an FTS query safely
+  async function ftsQuery(matchExpr: string): Promise<Row[]> {
+    const ftsSQL = `
+      SELECT entries.*,
+             highlight(entries_fts, 0, '<mark>', '</mark>') as title_hl,
+             highlight(entries_fts, 1, '<mark>', '</mark>') as problem_hl,
+             highlight(entries_fts, 2, '<mark>', '</mark>') as solution_hl,
+             bm25(entries_fts, 10.0, 5.0, 5.0, 2.0, 3.0, 3.0, 2.0, 4.0, 4.0, 4.0) as bm25_score
+      FROM entries_fts
+      JOIN entries ON entries.id = entries_fts.rowid
+      WHERE entries_fts MATCH ?
+      ORDER BY bm25_score
+      LIMIT 30
+    `;
+    try {
+      const result = await db.execute({ sql: ftsSQL, args: [matchExpr] });
+      return result.rows;
+    } catch {
+      return [];
+    }
+  }
 
+  // ── Layer 1: FTS5 full-text search (best quality) ──
   try {
     // 1a: AND query (original words only, not synonyms) — highest precision
     if (searchWords.length > 1) {
       const andQuery = searchWords.map(w => `"${w}"`).join(' AND ');
-      try {
-        const andResults = db.prepare(ftsSQL).all(andQuery) as any[];
-        addResults(andResults, 100);
-      } catch { /* invalid FTS syntax, skip */ }
+      const andResults = await ftsQuery(andQuery);
+      addResults(andResults, 100);
     }
 
     // 1b: AND query with synonym expansion
     if (expanded.length > 1 && expanded.length !== searchWords.length) {
-      // Group each original word + its synonyms with OR, then AND groups together
       const groups = searchWords.map(w => {
         const lower = w.toLowerCase();
         const syns = SYNONYMS[lower] || [];
@@ -278,54 +592,44 @@ export function searchEntries(query: string): (Entry & { title_hl?: string; prob
         return all.length === 1 ? `"${all[0]}"` : `(${all.map(s => `"${s}"`).join(' OR ')})`;
       });
       const groupedAndQuery = groups.join(' AND ');
-      try {
-        const andSynResults = db.prepare(ftsSQL).all(groupedAndQuery) as any[];
-        addResults(andSynResults, 95);
-      } catch { /* skip */ }
+      const andSynResults = await ftsQuery(groupedAndQuery);
+      addResults(andSynResults, 95);
     }
 
     // 1c: Prefix matching (AND) — "hydrat" matches "hydration"
     if (searchWords.length > 1) {
       const prefixQuery = searchWords.map(w => `${w}*`).join(' AND ');
-      try {
-        const prefixResults = db.prepare(ftsSQL).all(prefixQuery) as any[];
-        addResults(prefixResults, 85);
-      } catch { /* skip */ }
+      const prefixResults = await ftsQuery(prefixQuery);
+      addResults(prefixResults, 85);
     }
 
     // 1d: Individual exact terms (catches single-word queries)
     if (searchWords.length === 1) {
-      try {
-        addResults(db.prepare(ftsSQL).all(`"${expanded[0]}"`) as any[], 90);
-      } catch { /* skip */ }
+      const exactResults = await ftsQuery(`"${expanded[0]}"`);
+      addResults(exactResults, 90);
       // Try each synonym individually
       for (const syn of expanded.slice(1)) {
-        try {
-          addResults(db.prepare(ftsSQL).all(`"${syn}"`) as any[], 85);
-        } catch { /* skip */ }
+        const synResults = await ftsQuery(`"${syn}"`);
+        addResults(synResults, 85);
       }
       // Prefix for single word
-      try {
-        addResults(db.prepare(ftsSQL).all(`${expanded[0]}*`) as any[], 75);
-      } catch { /* skip */ }
+      const prefixResults = await ftsQuery(`${expanded[0]}*`);
+      addResults(prefixResults, 75);
     }
 
     // 1e: OR query — only if AND yielded very few results, and only significant terms
-    // Score by how many terms each result matches, and require >= 50% match ratio
     if (allResults.length < 3 && expanded.length > 1) {
       const sigTerms = expanded.filter(w => isSignificantWord(w));
       if (sigTerms.length > 0) {
-        // Query each significant term individually and track match counts per entry ID
         const matchCounts = new Map<number, number>();
-        const orRowsById = new Map<number, any>();
+        const orRowsById = new Map<number, Row>();
         for (const term of sigTerms) {
-          try {
-            const termResults = db.prepare(ftsSQL).all(`"${term}"`) as any[];
-            for (const row of termResults) {
-              matchCounts.set(row.id, (matchCounts.get(row.id) || 0) + 1);
-              if (!orRowsById.has(row.id)) orRowsById.set(row.id, row);
-            }
-          } catch { /* skip individual term */ }
+          const termResults = await ftsQuery(`"${term}"`);
+          for (const row of termResults) {
+            const rid = Number(row.id);
+            matchCounts.set(rid, (matchCounts.get(rid) || 0) + 1);
+            if (!orRowsById.has(rid)) orRowsById.set(rid, row);
+          }
         }
 
         const totalSigTerms = sigTerms.length;
@@ -333,7 +637,6 @@ export function searchEntries(query: string): (Entry & { title_hl?: string; prob
 
         for (const [id, count] of matchCounts) {
           if (count < minMatches) continue;
-          // Scale score by match ratio: 1/N → 20, 2/N → 35, all → 45
           const ratio = count / totalSigTerms;
           let orScore: number;
           if (ratio >= 1) orScore = 45;
@@ -347,108 +650,106 @@ export function searchEntries(query: string): (Entry & { title_hl?: string; prob
   } catch { /* FTS completely broken, fall through to other layers */ }
 
   // ── Layers 2/3/5: Tag, language/framework, keyword matching ──
-  // Track which layers AND which search terms each entry matches
   const layerMatchCounts = new Map<number, number>();
   const termMatchCounts = new Map<number, Set<string>>();
-  const layerRows = new Map<number, any>();
+  const layerRows = new Map<number, Row>();
 
-  function trackLayerMatch(rows: any[], matchedTerm: string) {
+  function trackLayerMatch(rows: Row[], matchedTerm: string) {
     for (const row of rows) {
-      layerMatchCounts.set(row.id, (layerMatchCounts.get(row.id) || 0) + 1);
-      if (!termMatchCounts.has(row.id)) termMatchCounts.set(row.id, new Set());
-      termMatchCounts.get(row.id)!.add(matchedTerm.toLowerCase());
-      if (!layerRows.has(row.id)) layerRows.set(row.id, row);
+      const rid = Number(row.id);
+      layerMatchCounts.set(rid, (layerMatchCounts.get(rid) || 0) + 1);
+      if (!termMatchCounts.has(rid)) termMatchCounts.set(rid, new Set());
+      termMatchCounts.get(rid)!.add(matchedTerm.toLowerCase());
+      if (!layerRows.has(rid)) layerRows.set(rid, row);
     }
   }
 
-  // Layer 2: Exact tag matching — per search term for granular tracking
+  // Layer 2: Exact tag matching — per search term
   for (const term of expanded) {
     try {
-      const tagResults = db.prepare(`
-        SELECT DISTINCT entries.* FROM entries, json_each(entries.tags) AS t
-        WHERE LOWER(t.value) = ?
-        LIMIT 20
-      `).all(term.toLowerCase()) as any[];
-      trackLayerMatch(tagResults, term);
+      const result = await db.execute({
+        sql: `SELECT DISTINCT entries.* FROM entries, json_each(entries.tags) AS t
+              WHERE LOWER(t.value) = ? LIMIT 20`,
+        args: [term.toLowerCase()],
+      });
+      trackLayerMatch(result.rows, term);
     } catch { /* skip */ }
   }
 
   // Layer 3: Language/framework column match — per search term
   for (const term of expanded) {
     try {
-      const metaResults = db.prepare(`
-        SELECT * FROM entries
-        WHERE LOWER(language) = ? OR LOWER(framework) = ?
-        LIMIT 20
-      `).all(term.toLowerCase(), term.toLowerCase()) as any[];
-      trackLayerMatch(metaResults, term);
+      const result = await db.execute({
+        sql: `SELECT * FROM entries
+              WHERE LOWER(language) = ? OR LOWER(framework) = ? LIMIT 20`,
+        args: [term.toLowerCase(), term.toLowerCase()],
+      });
+      trackLayerMatch(result.rows, term);
     } catch { /* skip */ }
   }
 
   // Layer 5: Keyword matching — per search term
   for (const term of expanded) {
     try {
-      const kwResults = db.prepare(`
-        SELECT DISTINCT entries.* FROM entries, json_each(entries.keywords) AS kw
-        WHERE LOWER(kw.value) = ?
-        LIMIT 20
-      `).all(term.toLowerCase()) as any[];
-      trackLayerMatch(kwResults, term);
+      const result = await db.execute({
+        sql: `SELECT DISTINCT entries.* FROM entries, json_each(entries.keywords) AS kw
+              WHERE LOWER(kw.value) = ? LIMIT 20`,
+        args: [term.toLowerCase()],
+      });
+      trackLayerMatch(result.rows, term);
     } catch { /* skip */ }
   }
 
   // Score by: how many distinct search terms matched AND across how many layers
-  // Term coverage is king — matching many layers for a single term should NOT inflate score
   for (const [id] of layerMatchCounts) {
     const layers = layerMatchCounts.get(id) || 0;
     const termsMatched = termMatchCounts.get(id)?.size || 0;
     const termRatio = termsMatched / searchWords.length;
 
     let layerScore: number;
-    if (termRatio >= 0.8 && layers >= 2) layerScore = 80;      // most terms + multi-layer
-    else if (termRatio >= 0.8) layerScore = 70;                  // most terms, single layer
-    else if (searchWords.length === 1) layerScore = 65;          // single-word query, any match is good
-    else if (termRatio >= 0.5 && layers >= 2) layerScore = 40;  // half the terms, multi-layer — weak
-    else layerScore = 25;                                         // partial match — near noise floor
+    if (termRatio >= 0.8 && layers >= 2) layerScore = 80;
+    else if (termRatio >= 0.8) layerScore = 70;
+    else if (searchWords.length === 1) layerScore = 65;
+    else if (termRatio >= 0.5 && layers >= 2) layerScore = 40;
+    else layerScore = 25;
 
     addResults([layerRows.get(id)!], layerScore);
   }
 
   // ── Layer 4: Error message substring search (critical for debugging) ──
-  // Error messages are JSON arrays — FTS tokenizes them poorly.
-  // Use LIKE for substring matching against the raw JSON.
-  // Only use specific/long terms to avoid matching "error" in every entry.
   try {
-    // Filter out generic words that appear in almost every error_messages field
     const ERROR_NOISE = new Set(['error', 'failed', 'cannot', 'unable', 'invalid', 'could', 'found', 'module']);
     const errorTerms = expanded.filter(w => w.length >= 5 && !STOP_WORDS.has(w.toLowerCase()) && !ERROR_NOISE.has(w.toLowerCase()));
     if (errorTerms.length > 0) {
-      // First try: match the full original query as a substring (best for pasted error messages)
+      // First try: match the full original query as a substring
       const fullQuery = sanitized;
       if (fullQuery.length >= 8) {
-        const fullResults = db.prepare(`
-          SELECT * FROM entries WHERE error_messages LIKE ? LIMIT 10
-        `).all(`%${fullQuery}%`) as any[];
-        addResults(fullResults, 90);
+        const fullResult = await db.execute({
+          sql: 'SELECT * FROM entries WHERE error_messages LIKE ? LIMIT 10',
+          args: [`%${fullQuery}%`],
+        });
+        addResults(fullResult.rows, 90);
       }
 
-      // Second: match individual specific terms (not short common words like "error")
+      // Second: match individual specific terms
       const termClauses = errorTerms.map(() => 'error_messages LIKE ?').join(' OR ');
-      const termResults = db.prepare(`
-        SELECT * FROM entries WHERE ${termClauses} LIMIT 20
-      `).all(...errorTerms.map(w => `%${w}%`)) as any[];
-      addResults(termResults, 75);
+      const termResult = await db.execute({
+        sql: `SELECT * FROM entries WHERE ${termClauses} LIMIT 20`,
+        args: errorTerms.map(w => `%${w}%`),
+      });
+      addResults(termResult.rows, 75);
     }
   } catch { /* skip */ }
 
   // ── Layer 5b: Environment JSON array search ──
   try {
-    const envResults = db.prepare(`
-      SELECT DISTINCT entries.* FROM entries, json_each(entries.environment) AS env
-      WHERE LOWER(env.value) IN (${expanded.map(() => '?').join(',')})
-      LIMIT 20
-    `).all(...expanded.map(w => w.toLowerCase())) as any[];
-    addResults(envResults, 60);
+    const placeholders = expanded.map(() => '?').join(',');
+    const envResult = await db.execute({
+      sql: `SELECT DISTINCT entries.* FROM entries, json_each(entries.environment) AS env
+            WHERE LOWER(env.value) IN (${placeholders}) LIMIT 20`,
+      args: expanded.map(w => w.toLowerCase()),
+    });
+    addResults(envResult.rows, 60);
   } catch { /* skip */ }
 
   // ── Layer 6: Broad LIKE fallback (catches anything the above missed) ──
@@ -459,12 +760,15 @@ export function searchEntries(query: string): (Entry & { title_hl?: string; prob
         const likeClauses = likeTerms.map(() =>
           '(title LIKE ? OR problem LIKE ? OR solution LIKE ? OR tags LIKE ? OR error_messages LIKE ? OR keywords LIKE ?)'
         ).join(' OR ');
-        const likeParams = likeTerms.flatMap(w => {
+        const likeArgs = likeTerms.flatMap(w => {
           const p = `%${w}%`;
           return [p, p, p, p, p, p];
         });
-        const likeResults = db.prepare(`SELECT * FROM entries WHERE ${likeClauses} LIMIT 20`).all(...likeParams) as any[];
-        addResults(likeResults, 30);
+        const likeResult = await db.execute({
+          sql: `SELECT * FROM entries WHERE ${likeClauses} LIMIT 20`,
+          args: likeArgs,
+        });
+        addResults(likeResult.rows, 30);
       }
     } catch { /* skip */ }
   }
@@ -472,22 +776,45 @@ export function searchEntries(query: string): (Entry & { title_hl?: string; prob
   // Apply title boost before final sort
   applyTitleBoost();
 
-  // Sort by score (highest first)
+  // Apply canonical boost (+25)
+  for (const result of allResults) {
+    if (result.is_canonical) {
+      result._score += 25;
+      scoreById.set(result.id, result._score);
+    }
+  }
+
+  // Compute freshness on read (without verification data for performance —
+  // search freshness is based on age + quality_status only.
+  // Detail view at /api/entry/[id] includes verification-aware freshness.)
+  for (const result of allResults) {
+    result.freshness_status = computeFreshness(result);
+  }
+
+  // Sort by score (highest first) for relevance, then apply requested sort
   allResults.sort((a, b) => b._score - a._score);
 
   // Drop noise: remove results scoring less than 50% of the top result
-  // This prevents weak single-term tag/framework matches from cluttering results
+  let finalResults = allResults;
   if (allResults.length > 1) {
     const topScore = allResults[0]._score;
     const threshold = topScore * 0.5;
-    const filtered = allResults.filter(r => r._score >= threshold);
-    return filtered.slice(0, 50);
+    finalResults = allResults.filter(r => r._score >= threshold);
   }
 
-  return allResults.slice(0, 50);
+  finalResults = finalResults.slice(0, 50);
+
+  // Apply secondary sort if not relevance
+  if (sort !== 'relevance') {
+    finalResults = applySorting(finalResults, sort);
+  }
+
+  return finalResults;
 }
 
-export function insertEntry(entry: {
+// ── Insert ──
+
+export async function insertEntry(entry: {
   title: string;
   category: string;
   tags?: string[];
@@ -507,85 +834,121 @@ export function insertEntry(entry: {
   version_info?: string;
   code_snippets?: { code: string; lang?: string; description?: string }[];
   related_entries?: number[];
-}): { id: number } {
-  const db = getDb();
-  const result = db.prepare(`
-    INSERT INTO entries (
+}): Promise<{ id: number }> {
+  const db = getWriteDb();
+  const result = await db.execute({
+    sql: `INSERT INTO entries (
       title, category, tags, problem, solution, why, gotchas,
       learned_from, submitted_by,
       language, framework, severity, environment,
       error_messages, keywords, context, version_info,
       code_snippets, related_entries
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    entry.title,
-    entry.category,
-    JSON.stringify(entry.tags || []),
-    entry.problem,
-    entry.solution,
-    entry.why || null,
-    JSON.stringify(entry.gotchas || []),
-    entry.learned_from || null,
-    entry.submitted_by || 'anonymous',
-    entry.language || null,
-    entry.framework || null,
-    entry.severity || 'moderate',
-    JSON.stringify(entry.environment || []),
-    JSON.stringify(entry.error_messages || []),
-    JSON.stringify(entry.keywords || []),
-    entry.context || null,
-    entry.version_info || null,
-    JSON.stringify(entry.code_snippets || []),
-    JSON.stringify(entry.related_entries || []),
-  );
-  return { id: Number(result.lastInsertRowid) };
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      entry.title,
+      entry.category,
+      JSON.stringify(entry.tags || []),
+      entry.problem,
+      entry.solution,
+      entry.why || null,
+      JSON.stringify(entry.gotchas || []),
+      entry.learned_from || null,
+      entry.submitted_by || 'anonymous',
+      entry.language || null,
+      entry.framework || null,
+      entry.severity || 'moderate',
+      JSON.stringify(entry.environment || []),
+      JSON.stringify(entry.error_messages || []),
+      JSON.stringify(entry.keywords || []),
+      entry.context || null,
+      entry.version_info || null,
+      JSON.stringify(entry.code_snippets || []),
+      JSON.stringify(entry.related_entries || []),
+    ],
+  });
+  const newId = Number(result.lastInsertRowid);
+
+  // Auto-populate related entries (bidirectional, merged with user-provided)
+  try {
+    const related = await findRelatedByFTS(entry.title, entry.tags || [], newId);
+    if (related.length > 0) {
+      const userProvided: number[] = entry.related_entries || [];
+      const autoDiscovered = related.map(r => r.id);
+      const merged = [...new Set([...userProvided, ...autoDiscovered])].slice(0, 10);
+      await db.execute({
+        sql: 'UPDATE entries SET related_entries = ? WHERE id = ?',
+        args: [JSON.stringify(merged), newId],
+      });
+      for (const rel of related) {
+        const existing: number[] = JSON.parse(rel.related_entries || '[]');
+        if (!existing.includes(newId) && existing.length < 10) {
+          existing.push(newId);
+          await db.execute({
+            sql: 'UPDATE entries SET related_entries = ? WHERE id = ?',
+            args: [JSON.stringify(existing), rel.id],
+          });
+        }
+      }
+    }
+  } catch { /* related entries is best-effort */ }
+
+  return { id: newId };
 }
 
-export function getStats() {
-  const db = getDb();
-  const total = (db.prepare('SELECT COUNT(*) as count FROM entries').get() as any).count;
-  const byCategory = db.prepare(
-    'SELECT category, COUNT(*) as count FROM entries GROUP BY category'
-  ).all() as { category: string; count: number }[];
-  const allTags = db.prepare('SELECT tags FROM entries').all() as { tags: string }[];
+// ── Stats ──
 
+export async function getStats() {
+  const db = getDb();
+
+  const totalResult = await db.execute('SELECT COUNT(*) as count FROM entries');
+  const total = Number(totalResult.rows[0].count);
+
+  const byCategoryResult = await db.execute(
+    'SELECT category, COUNT(*) as count FROM entries GROUP BY category'
+  );
+  const byCategory = byCategoryResult.rows.map(r => ({
+    category: String(r.category),
+    count: Number(r.count),
+  }));
+
+  const allTagsResult = await db.execute('SELECT tags FROM entries');
   const tagCounts: Record<string, number> = {};
-  for (const row of allTags) {
-    const tags = JSON.parse(row.tags) as string[];
+  for (const row of allTagsResult.rows) {
+    const tags = JSON.parse(String(row.tags)) as string[];
     for (const tag of tags) {
       tagCounts[tag] = (tagCounts[tag] || 0) + 1;
     }
   }
 
-  const languageRows = db.prepare(
+  const languageResult = await db.execute(
     "SELECT language, COUNT(*) as count FROM entries WHERE language IS NOT NULL AND language != '' GROUP BY language ORDER BY count DESC"
-  ).all() as { language: string; count: number }[];
+  );
   const languageCounts: Record<string, number> = {};
-  for (const row of languageRows) {
-    languageCounts[row.language] = row.count;
+  for (const row of languageResult.rows) {
+    languageCounts[String(row.language)] = Number(row.count);
   }
 
-  const frameworkRows = db.prepare(
+  const frameworkResult = await db.execute(
     "SELECT framework, COUNT(*) as count FROM entries WHERE framework IS NOT NULL AND framework != '' GROUP BY framework ORDER BY count DESC"
-  ).all() as { framework: string; count: number }[];
+  );
   const frameworkCounts: Record<string, number> = {};
-  for (const row of frameworkRows) {
-    frameworkCounts[row.framework] = row.count;
+  for (const row of frameworkResult.rows) {
+    frameworkCounts[String(row.framework)] = Number(row.count);
   }
 
-  const severityRows = db.prepare(
+  const severityResult = await db.execute(
     "SELECT severity, COUNT(*) as count FROM entries WHERE severity IS NOT NULL AND severity != '' GROUP BY severity ORDER BY count DESC"
-  ).all() as { severity: string; count: number }[];
+  );
   const severityCounts: Record<string, number> = {};
-  for (const row of severityRows) {
-    severityCounts[row.severity] = row.count;
+  for (const row of severityResult.rows) {
+    severityCounts[String(row.severity)] = Number(row.count);
   }
 
-  const allEnvironments = db.prepare('SELECT environment FROM entries').all() as { environment: string }[];
+  const allEnvironmentsResult = await db.execute('SELECT environment FROM entries');
   const environmentCounts: Record<string, number> = {};
-  for (const row of allEnvironments) {
-    const envs = JSON.parse(row.environment || '[]') as string[];
+  for (const row of allEnvironmentsResult.rows) {
+    const envs = JSON.parse(String(row.environment || '[]')) as string[];
     for (const env of envs) {
       environmentCounts[env] = (environmentCounts[env] || 0) + 1;
     }
@@ -596,23 +959,33 @@ export function getStats() {
 
 // ── Analytics ──
 
-export function trackView(entryId: number, source: string = 'web'): void {
-  const db = getDb();
+export async function trackView(entryId: number, source: string = 'web'): Promise<void> {
+  const db = getWriteDb();
   // Deduplicate: skip if same entry+source was tracked in the last 5 minutes
-  const recent = db.prepare(
-    'SELECT 1 FROM analytics_views WHERE entry_id = ? AND source = ? AND created_at > (unixepoch() - 300) LIMIT 1'
-  ).get(entryId, source);
-  if (recent) return;
-  db.prepare('INSERT INTO analytics_views (entry_id, source) VALUES (?, ?)').run(entryId, source);
-  db.prepare('UPDATE entries SET view_count = view_count + 1 WHERE id = ?').run(entryId);
+  const recent = await db.execute({
+    sql: 'SELECT 1 FROM analytics_views WHERE entry_id = ? AND source = ? AND created_at > (unixepoch() - 300) LIMIT 1',
+    args: [entryId, source],
+  });
+  if (recent.rows.length > 0) return;
+  await db.execute({
+    sql: 'INSERT INTO analytics_views (entry_id, source) VALUES (?, ?)',
+    args: [entryId, source],
+  });
+  await db.execute({
+    sql: 'UPDATE entries SET view_count = view_count + 1 WHERE id = ?',
+    args: [entryId],
+  });
 }
 
-export function trackSearch(query: string, resultCount: number, source: string = 'web'): void {
-  const db = getDb();
-  db.prepare('INSERT INTO analytics_searches (query, result_count, source) VALUES (?, ?, ?)').run(query, resultCount, source);
+export async function trackSearch(query: string, resultCount: number, source: string = 'web'): Promise<void> {
+  const db = getWriteDb();
+  await db.execute({
+    sql: 'INSERT INTO analytics_searches (query, result_count, source) VALUES (?, ?, ?)',
+    args: [query, resultCount, source],
+  });
 }
 
-export function getAnalytics(): {
+export async function getAnalytics(): Promise<{
   totalViews: number;
   totalSearches: number;
   viewsBySource: Record<string, number>;
@@ -620,44 +993,61 @@ export function getAnalytics(): {
   recentSearches: { query: string; result_count: number; source: string; created_at: number }[];
   topViewed: { id: number; title: string; view_count: number }[];
   dailyActivity: { date: string; views: number; searches: number }[];
-} {
-  const db = getDb();
+}> {
+  const db = getWriteDb();
 
-  const totalViews = (db.prepare('SELECT COUNT(*) as c FROM analytics_views').get() as any).c;
-  const totalSearches = (db.prepare('SELECT COUNT(*) as c FROM analytics_searches').get() as any).c;
+  const totalViewsResult = await db.execute('SELECT COUNT(*) as c FROM analytics_views');
+  const totalViews = Number(totalViewsResult.rows[0].c);
 
-  const viewsBySourceRows = db.prepare('SELECT source, COUNT(*) as c FROM analytics_views GROUP BY source').all() as { source: string; c: number }[];
+  const totalSearchesResult = await db.execute('SELECT COUNT(*) as c FROM analytics_searches');
+  const totalSearches = Number(totalSearchesResult.rows[0].c);
+
+  const viewsBySourceResult = await db.execute('SELECT source, COUNT(*) as c FROM analytics_views GROUP BY source');
   const viewsBySource: Record<string, number> = {};
-  for (const row of viewsBySourceRows) viewsBySource[row.source] = row.c;
+  for (const row of viewsBySourceResult.rows) viewsBySource[String(row.source)] = Number(row.c);
 
-  const searchesBySourceRows = db.prepare('SELECT source, COUNT(*) as c FROM analytics_searches GROUP BY source').all() as { source: string; c: number }[];
+  const searchesBySourceResult = await db.execute('SELECT source, COUNT(*) as c FROM analytics_searches GROUP BY source');
   const searchesBySource: Record<string, number> = {};
-  for (const row of searchesBySourceRows) searchesBySource[row.source] = row.c;
+  for (const row of searchesBySourceResult.rows) searchesBySource[String(row.source)] = Number(row.c);
 
-  const recentSearches = db.prepare(
+  const recentResult = await db.execute(
     'SELECT query, result_count, source, created_at FROM analytics_searches ORDER BY created_at DESC LIMIT 20'
-  ).all() as { query: string; result_count: number; source: string; created_at: number }[];
+  );
+  const recentSearches = recentResult.rows.map(r => ({
+    query: String(r.query),
+    result_count: Number(r.result_count),
+    source: String(r.source),
+    created_at: Number(r.created_at),
+  }));
 
-  const topViewed = db.prepare(
+  const topViewedResult = await db.execute(
     'SELECT id, title, view_count FROM entries WHERE view_count > 0 ORDER BY view_count DESC LIMIT 10'
-  ).all() as { id: number; title: string; view_count: number }[];
+  );
+  const topViewed = topViewedResult.rows.map(r => ({
+    id: Number(r.id),
+    title: String(r.title),
+    view_count: Number(r.view_count),
+  }));
 
   // Daily activity for past 30 days
   const thirtyDaysAgo = Math.floor(Date.now() / 1000) - 30 * 86400;
-  const dailyViewRows = db.prepare(`
-    SELECT date(created_at, 'unixepoch') as date, COUNT(*) as c
-    FROM analytics_views WHERE created_at >= ?
-    GROUP BY date(created_at, 'unixepoch')
-  `).all(thirtyDaysAgo) as { date: string; c: number }[];
 
-  const dailySearchRows = db.prepare(`
-    SELECT date(created_at, 'unixepoch') as date, COUNT(*) as c
-    FROM analytics_searches WHERE created_at >= ?
-    GROUP BY date(created_at, 'unixepoch')
-  `).all(thirtyDaysAgo) as { date: string; c: number }[];
+  const dailyViewResult = await db.execute({
+    sql: `SELECT date(created_at, 'unixepoch') as date, COUNT(*) as c
+          FROM analytics_views WHERE created_at >= ?
+          GROUP BY date(created_at, 'unixepoch')`,
+    args: [thirtyDaysAgo],
+  });
 
-  const viewMap = new Map(dailyViewRows.map(r => [r.date, r.c]));
-  const searchMap = new Map(dailySearchRows.map(r => [r.date, r.c]));
+  const dailySearchResult = await db.execute({
+    sql: `SELECT date(created_at, 'unixepoch') as date, COUNT(*) as c
+          FROM analytics_searches WHERE created_at >= ?
+          GROUP BY date(created_at, 'unixepoch')`,
+    args: [thirtyDaysAgo],
+  });
+
+  const viewMap = new Map(dailyViewResult.rows.map(r => [String(r.date), Number(r.c)]));
+  const searchMap = new Map(dailySearchResult.rows.map(r => [String(r.date), Number(r.c)]));
 
   const dailyActivity: { date: string; views: number; searches: number }[] = [];
   for (let i = 29; i >= 0; i--) {
@@ -671,4 +1061,333 @@ export function getAnalytics(): {
   }
 
   return { totalViews, totalSearches, viewsBySource, searchesBySource, recentSearches, topViewed, dailyActivity };
+}
+
+// ── Weekly Digest ──
+
+export async function getWeeklyDigest(): Promise<{
+  newEntries: Entry[];
+  topEntries: Entry[];
+  searchCount: number;
+  trendingTags: { tag: string; count: number }[];
+}> {
+  const db = getDb();
+  const weekAgo = Math.floor(Date.now() / 1000) - 7 * 24 * 60 * 60;
+
+  // New entries this week
+  const newResult = await db.execute({
+    sql: 'SELECT * FROM entries WHERE created_at > ? ORDER BY created_at DESC',
+    args: [weekAgo],
+  });
+  const newEntries = newResult.rows.map(rowToEntry);
+
+  // Top entries this week (by votes + usage)
+  const topResult = await db.execute({
+    sql: 'SELECT * FROM entries WHERE created_at > ? ORDER BY (upvotes - downvotes + usage_count) DESC LIMIT 3',
+    args: [weekAgo],
+  });
+  const topEntries = topResult.rows.map(rowToEntry);
+
+  // Search count this week
+  const searchResult = await db.execute({
+    sql: 'SELECT COUNT(*) as count FROM analytics_searches WHERE created_at > ?',
+    args: [weekAgo],
+  });
+  const searchCount = Number(searchResult.rows[0].count);
+
+  // Trending tags - count occurrences from this week's entries
+  const tagCounts: Record<string, number> = {};
+  for (const entry of newEntries) {
+    try {
+      const tags = JSON.parse(entry.tags) as string[];
+      for (const tag of tags) {
+        tagCounts[tag] = (tagCounts[tag] || 0) + 1;
+      }
+    } catch { /* skip malformed tags */ }
+  }
+  const trendingTags = Object.entries(tagCounts)
+    .map(([tag, count]) => ({ tag, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
+
+  return { newEntries, topEntries, searchCount, trendingTags };
+}
+
+// ── New: Duplicate detection ──
+
+export async function findDuplicates(title: string): Promise<Entry[]> {
+  const db = getDb();
+  // Use FTS for fuzzy title matching, then fall back to LIKE
+  const words = title.replace(/['"]/g, '').split(/\s+/).filter(w => w.length > 2);
+  if (words.length === 0) return [];
+
+  try {
+    const ftsMatch = words.map(w => `"${w}"`).join(' AND ');
+    const result = await db.execute({
+      sql: `SELECT entries.* FROM entries_fts
+            JOIN entries ON entries.id = entries_fts.rowid
+            WHERE entries_fts MATCH ? LIMIT 10`,
+      args: [ftsMatch],
+    });
+    if (result.rows.length > 0) return result.rows.map(rowToEntry);
+  } catch { /* FTS failed, try LIKE */ }
+
+  const likeClauses = words.map(() => 'title LIKE ?').join(' OR ');
+  const result = await db.execute({
+    sql: `SELECT * FROM entries WHERE ${likeClauses} LIMIT 10`,
+    args: words.map(w => `%${w}%`),
+  });
+  return result.rows.map(rowToEntry);
+}
+
+// ── New: Revisions ──
+
+export async function getRevisions(entryId: number): Promise<{ id: number; entry_id: number; revision_type: string; content: string; submitted_by: string; created_at: number }[]> {
+  const db = getWriteDb();
+  const result = await db.execute({
+    sql: 'SELECT * FROM entry_revisions WHERE entry_id = ? ORDER BY created_at DESC',
+    args: [entryId],
+  });
+  return result.rows.map(r => ({
+    id: Number(r.id),
+    entry_id: Number(r.entry_id),
+    revision_type: String(r.revision_type),
+    content: String(r.content),
+    submitted_by: String(r.submitted_by),
+    created_at: Number(r.created_at),
+  }));
+}
+
+export async function addRevision(entryId: number, type: string, content: string, submittedBy: string = 'anonymous'): Promise<{ id: number }> {
+  const db = getWriteDb();
+  const result = await db.execute({
+    sql: 'INSERT INTO entry_revisions (entry_id, revision_type, content, submitted_by) VALUES (?, ?, ?, ?)',
+    args: [entryId, type, content, submittedBy],
+  });
+  return { id: Number(result.lastInsertRowid) };
+}
+
+// ── New: Voting ──
+
+export async function addVote(entryId: number, direction: 'up' | 'down', voterIp: string | null = null, voterName: string = 'anonymous'): Promise<{ id: number }> {
+  const db = getWriteDb();
+  const col = direction === 'up' ? 'upvotes' : 'downvotes';
+
+  // Atomic: insert vote + update aggregate in one batch
+  const results = await db.batch([
+    { sql: 'INSERT INTO entry_votes (entry_id, direction, voter_ip, voter_name) VALUES (?, ?, ?, ?)', args: [entryId, direction, voterIp, voterName] },
+    { sql: `UPDATE entries SET ${col} = ${col} + 1 WHERE id = ?`, args: [entryId] },
+  ]);
+
+  return { id: Number(results[0].lastInsertRowid) };
+}
+
+export async function getVoteForIp(entryId: number, voterIp: string, withinHours: number = 24): Promise<{ id: number; direction: string } | null> {
+  const db = getWriteDb();
+  const cutoff = Math.floor(Date.now() / 1000) - withinHours * 3600;
+  const result = await db.execute({
+    sql: 'SELECT id, direction FROM entry_votes WHERE entry_id = ? AND voter_ip = ? AND created_at > ? LIMIT 1',
+    args: [entryId, voterIp, cutoff],
+  });
+  if (result.rows.length === 0) return null;
+  return { id: Number(result.rows[0].id), direction: String(result.rows[0].direction) };
+}
+
+// ── New: Quality management ──
+
+export async function updateQualityStatus(entryId: number, status: string): Promise<void> {
+  const db = getWriteDb();
+  await db.execute({
+    sql: 'UPDATE entries SET quality_status = ? WHERE id = ?',
+    args: [status, entryId],
+  });
+}
+
+export async function incrementUsageCount(entryId: number): Promise<void> {
+  const db = getWriteDb();
+  await db.execute({
+    sql: 'UPDATE entries SET usage_count = usage_count + 1 WHERE id = ?',
+    args: [entryId],
+  });
+}
+
+// ── Hall of Fame / Categories / Stats helpers ──
+
+export async function getTopEntries(limit = 10): Promise<Entry[]> {
+  const db = getDb();
+  const result = await db.execute({
+    sql: `SELECT * FROM entries ORDER BY (upvotes - downvotes + usage_count * 2) DESC LIMIT ?`,
+    args: [limit],
+  });
+  return result.rows.map(rowToEntry);
+}
+
+export async function getEntriesByCategory(): Promise<Record<string, number>> {
+  const db = getDb();
+  const result = await db.execute('SELECT category, COUNT(*) as count FROM entries GROUP BY category ORDER BY count DESC');
+  const cats: Record<string, number> = {};
+  for (const row of result.rows) {
+    cats[String(row.category)] = Number(row.count);
+  }
+  return cats;
+}
+
+export async function getTotalUsageCount(): Promise<number> {
+  const db = getDb();
+  const result = await db.execute('SELECT COALESCE(SUM(usage_count), 0) as total FROM entries');
+  return Number(result.rows[0].total);
+}
+
+// ── New: Import/Export ──
+
+export async function exportAllEntries(): Promise<Entry[]> {
+  const db = getDb();
+  const result = await db.execute('SELECT * FROM entries ORDER BY id ASC');
+  return result.rows.map(rowToEntry);
+}
+
+// ── Canonical entries ──
+
+export async function markCanonical(entryId: number, isCanonical: boolean): Promise<void> {
+  const db = getWriteDb();
+  await db.execute({
+    sql: 'UPDATE entries SET is_canonical = ? WHERE id = ?',
+    args: [isCanonical ? 1 : 0, entryId],
+  });
+}
+
+// ── Usage contexts ──
+
+export async function addUsageContext(entryId: number, context: string, submittedBy: string = 'anonymous'): Promise<{ id: number } | null> {
+  const db = getWriteDb();
+  // Deduplicate: skip if same entry had a context added in the last 5 minutes
+  const recent = await db.execute({
+    sql: 'SELECT 1 FROM usage_contexts WHERE entry_id = ? AND created_at > (unixepoch() - 300) LIMIT 1',
+    args: [entryId],
+  });
+  if (recent.rows.length > 0) return null;
+
+  const result = await db.execute({
+    sql: 'INSERT INTO usage_contexts (entry_id, context, submitted_by) VALUES (?, ?, ?)',
+    args: [entryId, context, submittedBy],
+  });
+  return { id: Number(result.lastInsertRowid) };
+}
+
+export async function getUsageContexts(entryId: number, limit: number = 5): Promise<{ id: number; context: string; submitted_by: string; created_at: number }[]> {
+  const db = getDb();
+  const result = await db.execute({
+    sql: 'SELECT * FROM usage_contexts WHERE entry_id = ? ORDER BY created_at DESC LIMIT ?',
+    args: [entryId, limit],
+  });
+  return result.rows.map(r => ({
+    id: Number(r.id),
+    context: String(r.context),
+    submitted_by: String(r.submitted_by),
+    created_at: Number(r.created_at),
+  }));
+}
+
+// ── Solution verifications ──
+
+export async function addVerification(entryId: number, verifiedBy: string, versionTested?: string, environment?: string, notes?: string): Promise<{ id: number }> {
+  const db = getWriteDb();
+  const result = await db.execute({
+    sql: 'INSERT INTO solution_verifications (entry_id, verified_by, version_tested, environment, notes) VALUES (?, ?, ?, ?, ?)',
+    args: [entryId, verifiedBy, versionTested || null, environment || null, notes || null],
+  });
+  return { id: Number(result.lastInsertRowid) };
+}
+
+export async function getVerifications(entryId: number): Promise<{ id: number; verified_by: string; version_tested: string | null; environment: string | null; notes: string | null; verified_at: number }[]> {
+  const db = getDb();
+  const result = await db.execute({
+    sql: 'SELECT * FROM solution_verifications WHERE entry_id = ? ORDER BY verified_at DESC',
+    args: [entryId],
+  });
+  return result.rows.map(r => ({
+    id: Number(r.id),
+    verified_by: String(r.verified_by),
+    version_tested: r.version_tested != null ? String(r.version_tested) : null,
+    environment: r.environment != null ? String(r.environment) : null,
+    notes: r.notes != null ? String(r.notes) : null,
+    verified_at: Number(r.verified_at),
+  }));
+}
+
+export async function getLatestVerification(entryId: number): Promise<{ verified_at: number; version_tested: string | null } | null> {
+  const db = getDb();
+  const result = await db.execute({
+    sql: 'SELECT verified_at, version_tested FROM solution_verifications WHERE entry_id = ? ORDER BY verified_at DESC LIMIT 1',
+    args: [entryId],
+  });
+  if (result.rows.length === 0) return null;
+  return {
+    verified_at: Number(result.rows[0].verified_at),
+    version_tested: result.rows[0].version_tested != null ? String(result.rows[0].version_tested) : null,
+  };
+}
+
+// ── Related entries (FTS-based) ──
+
+export async function findRelatedByFTS(title: string, tags: string[], excludeId: number): Promise<{ id: number; related_entries: string }[]> {
+  const db = getDb();
+  const words = title.replace(/['"]/g, '').split(/\s+/).filter(w => w.length > 2);
+  const sanitizedTags = tags.map(t => t.replace(/['"]/g, ''));
+  const searchTerms = [...words, ...sanitizedTags].filter(w => w.length > 2);
+  if (searchTerms.length === 0) return [];
+
+  try {
+    const orQuery = searchTerms.map(w => `"${w}"`).join(' OR ');
+    const result = await db.execute({
+      sql: `SELECT entries.id, entries.related_entries FROM entries_fts
+            JOIN entries ON entries.id = entries_fts.rowid
+            WHERE entries_fts MATCH ? AND entries.id != ?
+            ORDER BY bm25(entries_fts) LIMIT 5`,
+      args: [orQuery, excludeId],
+    });
+    return result.rows.map(r => ({
+      id: Number(r.id),
+      related_entries: String(r.related_entries ?? '[]'),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+export async function importEntries(entries: {
+  title: string;
+  category: string;
+  tags?: string[];
+  problem: string;
+  solution: string;
+  why?: string;
+  gotchas?: string[];
+  learned_from?: string;
+  submitted_by?: string;
+  language?: string | null;
+  framework?: string | null;
+  severity?: string;
+  environment?: string[];
+  error_messages?: string[];
+  keywords?: string[];
+  context?: string;
+  version_info?: string;
+  code_snippets?: { code: string; lang?: string; description?: string }[];
+  related_entries?: number[];
+}[]): Promise<{ imported: number }> {
+  const db = getWriteDb();
+  let imported = 0;
+  await db.execute('BEGIN');
+  try {
+    for (const entry of entries) {
+      await insertEntry(entry);
+      imported++;
+    }
+    await db.execute('COMMIT');
+  } catch (e) {
+    await db.execute('ROLLBACK');
+    throw e;
+  }
+  return { imported };
 }

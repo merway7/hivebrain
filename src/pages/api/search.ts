@@ -1,24 +1,33 @@
 import type { APIRoute } from 'astro';
-import { searchEntries, trackSearch } from '../../lib/db';
+import { searchEntries, trackSearch, type SearchSort } from '../../lib/db';
 import { jsonResponse, requestId, parseJsonField, truncate, stripEmpty } from '../../lib/api-utils';
+
+const VALID_SORTS: SearchSort[] = ['relevance', 'votes', 'newest', 'oldest', 'most_used', 'severity'];
 
 export const GET: APIRoute = async ({ request }) => {
   const reqId = requestId();
   const url = new URL(request.url);
   const q = url.searchParams.get('q');
   const full = url.searchParams.get('full') === 'true';
+  const limitParam = url.searchParams.get('limit');
+  const limit = limitParam ? Math.max(1, Math.min(50, parseInt(limitParam, 10) || 50)) : undefined;
+  const sortParam = url.searchParams.get('sort') as SearchSort | null;
+  const sort: SearchSort = sortParam && VALID_SORTS.includes(sortParam) ? sortParam : 'relevance';
 
   if (!q || q.trim() === '') {
     return jsonResponse({ error: 'Query parameter "q" is required. Add &full=true for complete entries.' }, 400);
   }
 
   try {
-    const results = searchEntries(q.trim());
+    const results = await searchEntries(q.trim(), sort);
     const source = url.searchParams.get('source') || 'api';
-    trackSearch(q.trim(), results.length, source);
+    await trackSearch(q.trim(), results.length, source);
+
+    // Apply limit if specified
+    const limited = limit ? results.slice(0, limit) : results;
 
     if (full) {
-      const parsed = results.map(({ _score, bm25_score, ...entry }: any) => stripEmpty({
+      const parsed = limited.map(({ _score, bm25_score, ...entry }: any) => stripEmpty({
         ...entry,
         tags: parseJsonField(entry.tags),
         gotchas: parseJsonField(entry.gotchas),
@@ -32,7 +41,7 @@ export const GET: APIRoute = async ({ request }) => {
     }
 
     // Default: compact mode — just enough to decide which entry to read
-    const compact = results.map(({ _score, bm25_score, ...entry }: any) => {
+    const compact = limited.map(({ _score, bm25_score, ...entry }: any) => {
       const tags = parseJsonField(entry.tags) as string[];
       const errorMsgs = parseJsonField(entry.error_messages) as string[];
 
@@ -47,6 +56,8 @@ export const GET: APIRoute = async ({ request }) => {
         error_messages: Array.isArray(errorMsgs) ? errorMsgs.slice(0, 1) : [],
         problem_snippet: truncate(entry.problem, 120),
         url: `/api/entry/${entry.id}`,
+        is_canonical: entry.is_canonical ? true : undefined,
+        freshness: entry.freshness_status !== 'fresh' ? entry.freshness_status : undefined,
       });
     });
 

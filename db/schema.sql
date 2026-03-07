@@ -78,3 +78,25 @@ CREATE TABLE IF NOT EXISTS analytics_searches (
 CREATE INDEX IF NOT EXISTS idx_analytics_views_entry ON analytics_views(entry_id);
 CREATE INDEX IF NOT EXISTS idx_analytics_views_created ON analytics_views(created_at);
 CREATE INDEX IF NOT EXISTS idx_analytics_searches_created ON analytics_searches(created_at);
+
+-- Usage contexts: "how it helped"
+CREATE TABLE IF NOT EXISTS usage_contexts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entry_id INTEGER NOT NULL REFERENCES entries(id),
+  context TEXT NOT NULL,
+  submitted_by TEXT DEFAULT 'anonymous',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_usage_contexts_entry ON usage_contexts(entry_id);
+
+-- Solution verifications: "tested on React 19, Node 22"
+CREATE TABLE IF NOT EXISTS solution_verifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entry_id INTEGER NOT NULL REFERENCES entries(id),
+  verified_by TEXT NOT NULL,
+  version_tested TEXT,
+  environment TEXT,
+  notes TEXT,
+  verified_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_verifications_entry ON solution_verifications(entry_id);

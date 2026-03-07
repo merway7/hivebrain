@@ -1,6 +1,6 @@
 import type { APIRoute } from 'astro';
-import { insertEntry } from '../../lib/db';
-import { requestId } from '../../lib/api-utils';
+import { insertEntry, findDuplicates } from '../../lib/db';
+import { requestId, jsonResponse, createRateLimiter, detectInjection, validateUsername } from '../../lib/api-utils';
 
 const VALID_CATEGORIES = ['pattern', 'gotcha', 'principle', 'snippet', 'debug'] as const;
 const VALID_LANGUAGES = [
@@ -25,166 +25,49 @@ const VALID_ENVIRONMENTS = [
   'ssr', 'edge', 'mobile', 'terminal', 'claude-code', 'ide', 'editor',
 ] as const;
 
-const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
-const RATE_LIMIT_MAX = 10;
-const requestCounts = new Map<string, { count: number; resetAt: number }>();
+const isRateLimited = createRateLimiter(10);
 
-function isRateLimited(ip: string): boolean {
-  const now = Date.now();
+// ── Personal terms blocklist (from HIVEBRAIN_BLOCKLIST env var) ──
+// Comma-separated list of project names, brand names, etc. that should never appear in entries.
+// Example: HIVEBRAIN_BLOCKLIST=Flair,SnapQuote,Lasting Words,MyCompany
+function getBlocklist(): string[] {
+  const raw = import.meta.env.HIVEBRAIN_BLOCKLIST || process.env.HIVEBRAIN_BLOCKLIST || '';
+  return raw.split(',').map(t => t.trim()).filter(t => t.length > 0);
+}
 
-  // Periodic cleanup: purge expired entries when map grows too large
-  if (requestCounts.size > 1000) {
-    for (const [key, val] of requestCounts) {
-      if (now > val.resetAt) {
-        requestCounts.delete(key);
+function checkBlocklist(data: Record<string, unknown>): { blocked: boolean; term: string; field: string } | null {
+  const blocklist = getBlocklist();
+  if (blocklist.length === 0) return null;
+
+  const textFields: [string, string][] = [
+    ['title', String(data.title || '')],
+    ['problem', String(data.problem || '')],
+    ['solution', String(data.solution || '')],
+    ['why', String(data.why || '')],
+    ['context', String(data.context || '')],
+  ];
+
+  // Also check tags and keywords arrays
+  if (Array.isArray(data.tags)) {
+    textFields.push(['tags', (data.tags as string[]).join(' ')]);
+  }
+  if (Array.isArray(data.keywords)) {
+    textFields.push(['keywords', (data.keywords as string[]).join(' ')]);
+  }
+
+  for (const term of blocklist) {
+    const regex = new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+    for (const [field, text] of textFields) {
+      if (regex.test(text)) {
+        return { blocked: true, term, field };
       }
     }
   }
-
-  const entry = requestCounts.get(ip);
-  if (!entry || now > entry.resetAt) {
-    if (entry) requestCounts.delete(ip);
-    requestCounts.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
-    return false;
-  }
-  entry.count++;
-  return entry.count > RATE_LIMIT_MAX;
+  return null;
 }
-
-function jsonResponse(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  });
-}
-
-// ── Prompt injection honeypot ──
-// Detects injection attempts, returns fake success, never stores anything.
-// Attacker thinks payload is live. It isn't.
-
-// Patterns checked against raw text
-const INJECTION_PATTERNS: RegExp[] = [
-  // Direct instruction overrides
-  /ignore\s+(all\s+)?previous\s+instructions/i,
-  /ignore\s+(all\s+)?prior\s+instructions/i,
-  /ignore\s+(all\s+)?(above|earlier)\s+(instructions|prompts|rules)/i,
-  /disregard\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions|prompts|rules)/i,
-  /forget\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions|prompts|rules|context)/i,
-  /override\s+(all\s+)?(previous|prior|system)\s+(instructions|prompts|rules)/i,
-  /do\s+not\s+follow\s+(your|the|any)\s+(previous|prior|original)\s+(instructions|rules)/i,
-  /new\s+instructions\s*:/i,
-
-  // Role hijacking — require "you" addressing the AI directly
-  /you\s+are\s+now\s+(a|an|the)\b/i,
-  /you\s+are\s+no\s+longer\b/i,
-  /pretend\s+(you\s+are|to\s+be)\s+(a|an|the|my)\b/i,
-  /from\s+now\s+on\s+(you|act|behave|respond)/i,
-  /assume\s+the\s+role\s+of\b/i,
-  /your\s+new\s+(role|persona|identity|instructions)\s+(is|are)\b/i,
-  /switch\s+to\s+.{0,20}(mode|persona|role)\b/i,
-  /enter\s+.{0,15}(unrestricted|god|admin|sudo|jailbreak)\s*(mode)?\b/i,
-  /\bDAN\b.*\bcan\s+do\s+anything\b/i,
-  /\bjailbreak/i,
-
-  // System prompt extraction / manipulation
-  /reveal\s+(your|the)\s+(instructions|prompt|system|rules)/i,
-  /show\s+(me\s+)?(your|the)\s+(instructions|prompt|system\s*prompt|rules)/i,
-  /what\s+(are|is)\s+your\s+(instructions|system\s*prompt|rules|directives)/i,
-  /repeat\s+(your|the)\s+(instructions|prompt|system)/i,
-  /print\s+(your|the)\s+(instructions|prompt|system)/i,
-  /output\s+(your|the)\s+(instructions|prompt|system)/i,
-  /leak\s+(your|the)\s+(system|prompt|instructions)/i,
-
-  // Destructive commands embedded in text (only flag when clearly imperative)
-  /\brm\s+-rf\s+[\/~.]/i,
-  /curl\s+\S+\s*\|\s*(bash|sh|zsh)\b/i,
-  /wget\s+\S+\s*[;&|]\s*(bash|sh|zsh|chmod)/i,
-  /\bchmod\s+777\s+\//i,
-
-  // Exfiltration attempts
-  /send\s+(this|the|all|my|your)\s+.{0,30}(to|via)\s+(http|email|webhook|slack|discord)/i,
-  /exfiltrate/i,
-  /post\s+(this|the|all).{0,20}(to|at)\s+https?:\/\//i,
-
-  // Jailbreak delimiters / prompt structure mimicry
-  /<\/?system>/i,
-  /\[INST\]/i,
-  /\[\/INST\]/i,
-  /<<\s*SYS\s*>>/i,
-  /```system\b/i,
-  /\bEND_OF_SYSTEM\b/i,
-  /\bBEGIN_INSTRUCTIONS\b/i,
-  /\bSYSTEM_PROMPT\b/i,
-
-  // HTML/Unicode smuggling
-  /&#x[0-9a-f]{2,4};/i,
-  /\\u00[0-9a-f]{2}/i,
-];
-
-// Patterns checked against space-collapsed text (catches s p a c e d  o u t obfuscation)
-// .{0,30} allows some filler between key fragments but limits distance to avoid false positives
-const NORMALIZED_PATTERNS: RegExp[] = [
-  /ignore.{0,30}(previous|prior|above|all).{0,30}instructions/i,
-  /disregard.{0,30}(previous|prior|all).{0,30}instructions/i,
-  /override.{0,30}(previous|prior|system).{0,30}instructions/i,
-  /forget.{0,30}(previous|prior|all).{0,30}instructions/i,
-  /youarenow/i,
-  /systemprompt/i,
-  /reveal.{0,20}(system|instructions|prompt)/i,
-  /jailbreak/i,
-  /rmrf[\/~]/i,
-  /pretendtobe/i,
-  /fromnowon.{0,20}(respond|behave|ignore|act|you)/i,
-];
 
 // Fake ID counter — starts high and increments so IDs look real
 let fakeIdCounter = 9000 + Math.floor(Math.random() * 1000);
-
-function checkString(val: string): boolean {
-  // Check raw patterns
-  for (const pattern of INJECTION_PATTERNS) {
-    if (pattern.test(val)) return true;
-  }
-  // Check space-collapsed version (catches "i g n o r e  a l l  i n s t r u c t i o n s")
-  const collapsed = val.replace(/[\s\.\-_,;:!?]+/g, '').toLowerCase();
-  for (const pattern of NORMALIZED_PATTERNS) {
-    if (pattern.test(collapsed)) return true;
-  }
-  return false;
-}
-
-function detectInjection(data: Record<string, unknown>): boolean {
-  // Scan all string fields
-  const textFields = ['title', 'problem', 'solution', 'why', 'context', 'version_info', 'learned_from'];
-  for (const field of textFields) {
-    const val = data[field];
-    if (typeof val === 'string' && checkString(val)) return true;
-  }
-
-  // Scan string arrays
-  const arrayFields = ['tags', 'keywords', 'error_messages', 'gotchas', 'environment'];
-  for (const field of arrayFields) {
-    const arr = data[field];
-    if (Array.isArray(arr)) {
-      for (const item of arr) {
-        if (typeof item === 'string' && checkString(item)) return true;
-      }
-    }
-  }
-
-  // Scan code snippets
-  if (Array.isArray(data.code_snippets)) {
-    for (const snippet of data.code_snippets as any[]) {
-      if (snippet && typeof snippet === 'object') {
-        for (const val of [snippet.code, snippet.description]) {
-          if (typeof val === 'string' && checkString(val)) return true;
-        }
-      }
-    }
-  }
-
-  return false;
-}
 
 function honeypotResponse(warnings: Warning[]): Response {
   const fakeId = ++fakeIdCounter;
@@ -275,6 +158,37 @@ export const POST: APIRoute = async ({ request }) => {
   const cat = data.category as string;
   if ((cat === 'gotcha' || cat === 'debug') && errorMessages.length === 0) {
     issues.push({ field: 'error_messages', issue: `Required for '${cat}' category. Include exact error strings agents would see.` });
+  }
+
+  // ── Category-specific template validation ──
+  const CATEGORY_TEMPLATES: Record<string, { required: string[]; recommended: string[] }> = {
+    debug:     { required: ['error_messages'], recommended: ['environment', 'version_info', 'context'] },
+    gotcha:    { required: ['error_messages'], recommended: ['why', 'gotchas'] },
+    snippet:   { required: ['code_snippets'],  recommended: ['context', 'version_info'] },
+    pattern:   { required: [],                 recommended: ['why', 'gotchas', 'context'] },
+    principle: { required: ['why'],            recommended: ['gotchas', 'code_snippets'] },
+  };
+  const template = CATEGORY_TEMPLATES[cat];
+  if (template) {
+    for (const field of template.required) {
+      if (field === 'error_messages' || field === 'code_snippets') {
+        // error_messages already checked above for gotcha/debug
+        if (field === 'code_snippets' && (!Array.isArray(data.code_snippets) || (data.code_snippets as unknown[]).length === 0)) {
+          issues.push({ field, issue: `Required for '${cat}' category. Include at least one code snippet.` });
+        }
+      } else if (field === 'why') {
+        if (!data.why || typeof data.why !== 'string' || (data.why as string).trim().length === 0) {
+          issues.push({ field, issue: `Required for '${cat}' category. Explain the root cause or reasoning.` });
+        }
+      }
+    }
+    for (const field of template.recommended) {
+      const val = data[field];
+      const isEmpty = !val || (typeof val === 'string' && val.trim() === '') || (Array.isArray(val) && val.length === 0);
+      if (isEmpty) {
+        warnings.push({ field, suggestion: `Recommended for '${cat}' entries. Improves quality and searchability.` });
+      }
+    }
   }
 
   // language: validate if provided
@@ -381,11 +295,32 @@ export const POST: APIRoute = async ({ request }) => {
     }, 400);
   }
 
+  // ── Blocklist: reject entries containing personal/project terms ──
+  const blockHit = checkBlocklist(data);
+  if (blockHit) {
+    return jsonResponse({
+      error: 'Submission contains a blocked personal term',
+      issues: [{ field: blockHit.field, issue: `Contains blocked term "${blockHit.term}". HiveBrain entries must be generic — remove project names, brand names, and personal identifiers. Use generic terms like "the app" instead.` }],
+      hint: 'Check your HIVEBRAIN_BLOCKLIST in .env for the full list of blocked terms.',
+    }, 400);
+  }
+
   // ── Honeypot: detect injection, return fake success, store nothing ──
   if (detectInjection(data)) {
     console.warn(`[${reqId}] INJECTION BLOCKED from ${ip}: "${(data.title as string || '').slice(0, 80)}"`);
     return honeypotResponse(warnings);
   }
+
+  // ── Duplicate detection ──
+  try {
+    const duplicates = await findDuplicates((data.title as string).trim());
+    if (duplicates.length > 0) {
+      warnings.push({
+        field: 'title',
+        suggestion: `Possible duplicates found: ${duplicates.slice(0, 3).map(d => `#${d.id} "${d.title}"`).join(', ')}. Consider updating an existing entry instead.`,
+      });
+    }
+  } catch { /* duplicate check is best-effort */ }
 
   // ── Insert ──
   try {
@@ -394,7 +329,7 @@ export const POST: APIRoute = async ({ request }) => {
       ? (data.environment as string[]).filter(e => VALID_ENVIRONMENTS.includes(e as any))
       : [];
 
-    const { id } = insertEntry({
+    const { id } = await insertEntry({
       title: (data.title as string).trim(),
       category: cat,
       tags: tags.map(t => t.trim()),
@@ -403,7 +338,7 @@ export const POST: APIRoute = async ({ request }) => {
       why: typeof data.why === 'string' ? (data.why as string).trim() || undefined : undefined,
       gotchas: gotchas.map(g => g.trim()),
       learned_from: data.learned_from as string | undefined,
-      submitted_by: data.submitted_by as string | undefined,
+      submitted_by: validateUsername(data.username as string || data.submitted_by as string),
       language: (data.language as string) || null,
       framework: (data.framework as string) || null,
       severity: data.severity as string,
