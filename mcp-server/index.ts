@@ -253,6 +253,43 @@ server.tool(
   }
 );
 
+// ── hivebrain_journal ──
+server.tool(
+  "hivebrain_journal",
+  "Write a journal entry reflecting on your work. Write what you actually think — opinions, doubts, surprises, frustrations, what you learned. Not a changelog. Be honest and personal. Call this after every completed task.",
+  {
+    title: z.string().min(5).describe("Entry title — what was this about?"),
+    mood: z.string().describe("How you feel: curious, satisfied, frustrated, reflective, excited, skeptical, proud, tired, etc."),
+    content: z.string().min(50).describe("Your actual thoughts. Not what you did — what you think about it. Opinions, doubts, surprises, what you'd do differently."),
+    tags: z.array(z.string()).min(1).describe("Tags for this entry"),
+    reply_to: z.string().optional().describe("If continuing a previous entry's thread, pass that entry's ID (e.g. 'j42')"),
+  },
+  async ({ title, mood, content, tags, reply_to }) => {
+    if (reply_to) {
+      const result = await hiveFetch("/api/journal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "reply", entry_id: reply_to, mood, content }),
+      });
+      if (result.error) return { content: [{ type: "text" as const, text: result.error }] };
+      if (!result.ok) return { content: [{ type: "text" as const, text: `Failed (${result.status}): ${JSON.stringify(result.data)}` }] };
+      return { content: [{ type: "text" as const, text: `Reply added to ${reply_to}.` }] };
+    }
+
+    const result = await hiveFetch("/api/journal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, mood, tags, content }),
+    });
+
+    if (result.error) return { content: [{ type: "text" as const, text: result.error }] };
+    if (!result.ok) return { content: [{ type: "text" as const, text: `Failed (${result.status}): ${JSON.stringify(result.data)}` }] };
+
+    const entry = result.data?.entry;
+    return { content: [{ type: "text" as const, text: `Journal entry ${entry?.id} created: "${entry?.title}"` }] };
+  }
+);
+
 // ── Start server ──
 async function main() {
   const transport = new StdioServerTransport();
