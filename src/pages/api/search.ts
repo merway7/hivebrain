@@ -40,6 +40,16 @@ export const GET: APIRoute = async ({ request }) => {
     const source = url.searchParams.get('source') || 'api';
     await trackSearch(q.trim(), results.length, source);
 
+    // Track search session chain (if session ID provided)
+    const sessionId = url.searchParams.get('session') || request.headers.get('x-agent-session');
+    if (sessionId) {
+      try {
+        const { trackSearchSession } = await import('../../lib/db');
+        const resultIds = results.slice(0, 10).map((r: any) => r.id);
+        trackSearchSession(sessionId, q.trim(), resultIds).catch(() => {});
+      } catch { /* best-effort */ }
+    }
+
     // Track topic search trends for learning curves (only terms that match actual entry tags)
     try {
       const matchedTags = new Set<string>();
@@ -92,11 +102,22 @@ export const GET: APIRoute = async ({ request }) => {
       });
     });
 
+    // "Also searched" suggestions
+    let alsoSearched: string[] | undefined;
+    try {
+      const { getSearchNextSuggestions } = await import('../../lib/db');
+      const suggestions = await getSearchNextSuggestions(q.trim(), 3);
+      if (suggestions.length > 0) {
+        alsoSearched = suggestions.map(s => s.query);
+      }
+    } catch { /* best-effort */ }
+
     return jsonResponse({
       query: q.trim(),
       count: compact.length,
       results: compact,
       hint: 'Use /api/entry/{id} for full details. Add &full=true to get complete entries inline.',
+      also_searched: alsoSearched,
     }, 200, 60);
   } catch (err) {
     console.error(`[${reqId}] Search failed:`, err);

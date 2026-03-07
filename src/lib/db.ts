@@ -328,6 +328,36 @@ export async function initDb(): Promise<void> {
   )`);
   try { await db.execute('CREATE INDEX IF NOT EXISTS idx_topic_trends_tag ON topic_search_trends(tag)'); } catch {}
 
+  // v10: Karpathy Round 2 — search sessions, tag co-occurrence, section attributions, confidence
+  await db.execute(`CREATE TABLE IF NOT EXISTS search_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    query TEXT NOT NULL,
+    result_entry_ids TEXT DEFAULT '[]',
+    sequence_num INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+  )`);
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_search_sessions_session ON search_sessions(session_id)'); } catch {}
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_search_sessions_created ON search_sessions(created_at)'); } catch {}
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS tag_cooccurrence (
+    tag_a TEXT NOT NULL,
+    tag_b TEXT NOT NULL,
+    co_count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (tag_a, tag_b)
+  )`);
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS section_attributions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_id INTEGER NOT NULL REFERENCES entries(id),
+    section TEXT NOT NULL CHECK(section IN ('problem', 'solution', 'why', 'gotchas', 'code_snippets', 'error_messages')),
+    agent_session TEXT,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+  )`);
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_section_attr_entry ON section_attributions(entry_id)'); } catch {}
+
+  await migrateAddColumn(db, 'entries', 'confidence_score', 'REAL DEFAULT NULL');
+
   // In hybrid mode, the write DB is a separate local SQLite — init its schema too
   if (wdb !== rdb) {
     for (const stmt of statements) {
@@ -418,6 +448,21 @@ export async function initDb(): Promise<void> {
       id INTEGER PRIMARY KEY AUTOINCREMENT, tag TEXT NOT NULL, date TEXT NOT NULL,
       search_count INTEGER NOT NULL DEFAULT 0, usage_count INTEGER NOT NULL DEFAULT 0, UNIQUE(tag, date))`);
     try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_topic_trends_tag ON topic_search_trends(tag)'); } catch {}
+    // v10: Karpathy Round 2
+    await wdb.execute(`CREATE TABLE IF NOT EXISTS search_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, query TEXT NOT NULL,
+      result_entry_ids TEXT DEFAULT '[]', sequence_num INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_search_sessions_session ON search_sessions(session_id)'); } catch {}
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_search_sessions_created ON search_sessions(created_at)'); } catch {}
+    await wdb.execute(`CREATE TABLE IF NOT EXISTS tag_cooccurrence (
+      tag_a TEXT NOT NULL, tag_b TEXT NOT NULL, co_count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (tag_a, tag_b))`);
+    await wdb.execute(`CREATE TABLE IF NOT EXISTS section_attributions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, entry_id INTEGER NOT NULL REFERENCES entries(id),
+      section TEXT NOT NULL CHECK(section IN ('problem','solution','why','gotchas','code_snippets','error_messages')),
+      agent_session TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_section_attr_entry ON section_attributions(entry_id)'); } catch {}
+    await migrateAddColumn(wdb, 'entries', 'confidence_score', 'REAL DEFAULT NULL');
   }
 
   initialized = true;
@@ -468,6 +513,7 @@ export interface Entry {
   surprise_score: number;
   success_rate: number | null;
   retrieval_count: number;
+  confidence_score: number | null;
 }
 
 // ── Row helper ──
@@ -505,6 +551,7 @@ function rowToEntry(row: Row): Entry {
     surprise_score: Number(row.surprise_score ?? 0),
     success_rate: row.success_rate != null ? Number(row.success_rate) : null,
     retrieval_count: Number(row.retrieval_count ?? 0),
+    confidence_score: row.confidence_score != null ? Number(row.confidence_score) : null,
   };
 }
 
@@ -711,6 +758,14 @@ export async function searchEntries(query: string, sort: SearchSort = 'relevance
 
   // Expand with synonyms
   const expanded = expandQuery(searchWords);
+
+  // Expand with tag co-occurrence (best-effort, non-blocking for search perf)
+  try {
+    const coExpanded = await expandQueryWithCooccurrence(searchWords);
+    for (const term of coExpanded) {
+      if (!expanded.includes(term)) expanded.push(term);
+    }
+  } catch { /* co-occurrence expansion is best-effort */ }
 
   const scoreById = new Map<number, number>();
   const allResults: (Entry & { _score: number; title_hl?: string; problem_hl?: string; solution_hl?: string })[] = [];
@@ -2379,4 +2434,482 @@ export async function getDistillationClusters(minClusterSize: number = 3): Promi
     }))
     .sort((a, b) => b.entry_count - a.entry_count)
     .slice(0, 20);
+}
+
+// ── Karpathy Round 2 Features ──
+
+// ── Search Session Chains ──
+
+export async function trackSearchSession(sessionId: string, query: string, resultIds: number[]): Promise<void> {
+  const db = getWriteDb();
+  // Get next sequence number for this session
+  const seqResult = await db.execute({
+    sql: 'SELECT MAX(sequence_num) as max_seq FROM search_sessions WHERE session_id = ?',
+    args: [sessionId],
+  });
+  const nextSeq = (Number(seqResult.rows[0]?.max_seq) || 0) + 1;
+
+  await db.execute({
+    sql: 'INSERT INTO search_sessions (session_id, query, result_entry_ids, sequence_num) VALUES (?, ?, ?, ?)',
+    args: [sessionId, query.slice(0, 500), JSON.stringify(resultIds.slice(0, 20)), nextSeq],
+  });
+}
+
+export async function getSearchChains(minLength: number = 2, limit: number = 20): Promise<{
+  session_id: string;
+  queries: string[];
+  length: number;
+}[]> {
+  const db = getDb();
+  const result = await db.execute({
+    sql: `SELECT session_id, GROUP_CONCAT(query, '|||') as queries, COUNT(*) as chain_length
+          FROM (SELECT * FROM search_sessions ORDER BY sequence_num ASC)
+          GROUP BY session_id
+          HAVING COUNT(*) >= ?
+          ORDER BY chain_length DESC
+          LIMIT ?`,
+    args: [minLength, limit],
+  });
+  return result.rows.map(r => ({
+    session_id: String(r.session_id),
+    queries: String(r.queries).split('|||'),
+    length: Number(r.chain_length),
+  }));
+}
+
+export async function getSearchNextSuggestions(query: string, limit: number = 5): Promise<{ query: string; frequency: number }[]> {
+  const db = getDb();
+  // Find sessions where this query appeared, then get what they searched next
+  const result = await db.execute({
+    sql: `SELECT ss2.query, COUNT(*) as freq
+          FROM search_sessions ss1
+          JOIN search_sessions ss2 ON ss1.session_id = ss2.session_id
+            AND ss2.sequence_num = ss1.sequence_num + 1
+          WHERE ss1.query = ?
+          GROUP BY ss2.query
+          ORDER BY freq DESC
+          LIMIT ?`,
+    args: [query.slice(0, 500), limit],
+  });
+  return result.rows.map(r => ({
+    query: String(r.query),
+    frequency: Number(r.freq),
+  }));
+}
+
+// ── Tag Co-occurrence / Query Expansion ──
+
+export async function buildTagCooccurrence(): Promise<number> {
+  const db = getWriteDb();
+  // Clear existing co-occurrence data
+  await db.execute('DELETE FROM tag_cooccurrence');
+
+  // Get all entries' tags
+  const result = await db.execute('SELECT tags FROM entries');
+  let pairsInserted = 0;
+
+  const pairCounts = new Map<string, number>();
+
+  for (const row of result.rows) {
+    const tags = JSON.parse(String(row.tags || '[]')) as string[];
+    const normalized = tags.map(t => t.toLowerCase()).filter(t => t.length > 0);
+    // Generate all pairs
+    for (let i = 0; i < normalized.length; i++) {
+      for (let j = i + 1; j < normalized.length; j++) {
+        const [a, b] = [normalized[i], normalized[j]].sort();
+        const key = `${a}|||${b}`;
+        pairCounts.set(key, (pairCounts.get(key) || 0) + 1);
+      }
+    }
+  }
+
+  // Batch insert — only keep pairs with count >= 2
+  for (const [key, count] of pairCounts) {
+    if (count < 2) continue;
+    const [a, b] = key.split('|||');
+    await db.execute({
+      sql: `INSERT INTO tag_cooccurrence (tag_a, tag_b, co_count) VALUES (?, ?, ?)
+            ON CONFLICT(tag_a, tag_b) DO UPDATE SET co_count = ?`,
+      args: [a, b, count, count],
+    });
+    pairsInserted++;
+  }
+
+  return pairsInserted;
+}
+
+export async function getCooccurringTags(tag: string, minCount: number = 3, limit: number = 10): Promise<{ tag: string; count: number }[]> {
+  const db = getDb();
+  const normalizedTag = tag.toLowerCase();
+  const result = await db.execute({
+    sql: `SELECT
+            CASE WHEN tag_a = ? THEN tag_b ELSE tag_a END as related_tag,
+            co_count
+          FROM tag_cooccurrence
+          WHERE (tag_a = ? OR tag_b = ?) AND co_count >= ?
+          ORDER BY co_count DESC
+          LIMIT ?`,
+    args: [normalizedTag, normalizedTag, normalizedTag, minCount, limit],
+  });
+  return result.rows.map(r => ({
+    tag: String(r.related_tag),
+    count: Number(r.co_count),
+  }));
+}
+
+export async function expandQueryWithCooccurrence(words: string[]): Promise<string[]> {
+  const expanded = [...words];
+  for (const word of words) {
+    const related = await getCooccurringTags(word, 5, 3);
+    for (const r of related) {
+      if (!expanded.includes(r.tag)) {
+        expanded.push(r.tag);
+      }
+    }
+  }
+  return expanded;
+}
+
+// ── Dead Knowledge Detection ──
+
+export async function getDeadKnowledge(limit: number = 20): Promise<{
+  id: number;
+  title: string;
+  category: string;
+  tags: string;
+  created_at: number;
+  view_count: number;
+  usage_count: number;
+  retrieval_count: number;
+  reason: string;
+}[]> {
+  const db = getDb();
+  // Entries that exist but are never found: 0 views, 0 usage, 0 retrievals, older than 7 days
+  const weekAgo = Math.floor(Date.now() / 1000) - 7 * 86400;
+  const result = await db.execute({
+    sql: `SELECT id, title, category, tags, created_at, view_count, usage_count, retrieval_count
+          FROM entries
+          WHERE view_count = 0 AND usage_count = 0 AND retrieval_count = 0
+            AND created_at < ?
+          ORDER BY created_at ASC
+          LIMIT ?`,
+    args: [weekAgo, limit],
+  });
+
+  return result.rows.map(r => ({
+    id: Number(r.id),
+    title: String(r.title),
+    category: String(r.category),
+    tags: String(r.tags),
+    created_at: Number(r.created_at),
+    view_count: Number(r.view_count),
+    usage_count: Number(r.usage_count),
+    retrieval_count: Number(r.retrieval_count),
+    reason: 'never_retrieved',
+  }));
+}
+
+// ── Knowledge Decay Detection ──
+
+export async function getDecayingKnowledge(limit: number = 20): Promise<{
+  id: number;
+  title: string;
+  tags: string;
+  peak_usage: number;
+  recent_usage: number;
+  decay_rate: number;
+}[]> {
+  const db = getDb();
+  const threeMonthsAgo = Math.floor(Date.now() / 1000) - 90 * 86400;
+  const sixMonthsAgo = Math.floor(Date.now() / 1000) - 180 * 86400;
+
+  // Find entries with past activity but no recent activity
+  // "Peak" = views + usage before 3 months ago
+  // "Recent" = views + usage in last 3 months
+  const result = await db.execute({
+    sql: `SELECT e.id, e.title, e.tags, e.usage_count, e.view_count,
+            (SELECT COUNT(*) FROM analytics_views av WHERE av.entry_id = e.id AND av.created_at < ?) as old_views,
+            (SELECT COUNT(*) FROM analytics_views av WHERE av.entry_id = e.id AND av.created_at >= ?) as recent_views
+          FROM entries e
+          WHERE e.usage_count > 2 OR e.view_count > 5
+          ORDER BY e.usage_count DESC
+          LIMIT 200`,
+    args: [threeMonthsAgo, threeMonthsAgo],
+  });
+
+  const decaying: {
+    id: number;
+    title: string;
+    tags: string;
+    peak_usage: number;
+    recent_usage: number;
+    decay_rate: number;
+  }[] = [];
+
+  for (const r of result.rows) {
+    const oldViews = Number(r.old_views);
+    const recentViews = Number(r.recent_views);
+    const totalUsage = Number(r.usage_count);
+
+    // Only flag if there was significant past activity but little recent
+    if (oldViews > 3 && recentViews === 0 && totalUsage > 0) {
+      const peakUsage = oldViews + totalUsage;
+      const decayRate = 1.0; // 100% decay — no recent activity at all
+      decaying.push({
+        id: Number(r.id),
+        title: String(r.title),
+        tags: String(r.tags),
+        peak_usage: peakUsage,
+        recent_usage: recentViews,
+        decay_rate: decayRate,
+      });
+    }
+  }
+
+  return decaying
+    .sort((a, b) => b.peak_usage - a.peak_usage)
+    .slice(0, limit);
+}
+
+// ── Entry Confidence Calibration ──
+
+export async function computeConfidence(entryId: number): Promise<{
+  confidence: number;
+  factors: {
+    verification_score: number;
+    vote_score: number;
+    usage_score: number;
+    age_penalty: number;
+    success_score: number;
+    contradiction_penalty: number;
+  };
+}> {
+  const entry = await getEntry(entryId);
+  if (!entry) return { confidence: 0, factors: { verification_score: 0, vote_score: 0, usage_score: 0, age_penalty: 0, success_score: 0, contradiction_penalty: 0 } };
+
+  const db = getDb();
+
+  // 1. Verification score (0-0.25): verified = +0.25, unverified = 0
+  const verifications = await db.execute({
+    sql: 'SELECT COUNT(*) as c FROM solution_verifications WHERE entry_id = ?',
+    args: [entryId],
+  });
+  const verCount = Number(verifications.rows[0].c);
+  const verification_score = Math.min(0.25, verCount * 0.10);
+
+  // 2. Vote score (0-0.25): net votes normalized
+  const netVotes = entry.upvotes - entry.downvotes;
+  const totalVotes = entry.upvotes + entry.downvotes;
+  const vote_score = totalVotes > 0 ? Math.min(0.25, (netVotes / totalVotes) * 0.25) : 0.10;
+
+  // 3. Usage score (0-0.20): log-scaled usage count
+  const usage_score = Math.min(0.20, Math.log2(entry.usage_count + 1) * 0.04);
+
+  // 4. Age penalty (0-0.15): older entries lose confidence unless verified recently
+  const ageMonths = (Date.now() / 1000 - entry.created_at) / (30 * 86400);
+  const latestVerification = await getLatestVerification(entryId);
+  const recentlyVerified = latestVerification && (Date.now() / 1000 - latestVerification.verified_at) < 6 * 30 * 86400;
+  const recentlyVerifiedBool = !!recentlyVerified;
+  const age_penalty = recentlyVerifiedBool ? 0 : Math.min(0.15, ageMonths * 0.005);
+
+  // 5. Success rate score (0-0.20): from retrieval traces
+  const success_score = entry.success_rate !== null ? entry.success_rate * 0.20 : 0.10;
+
+  // 6. Contradiction penalty (0-0.15): entries with known contradictions lose confidence
+  const contradictions = await findContradictions(entryId);
+  const contradiction_penalty = Math.min(0.15, contradictions.length * 0.05);
+
+  const factors = { verification_score, vote_score, usage_score, age_penalty, success_score, contradiction_penalty };
+
+  // Confidence = sum of positive factors - penalties, clamped to [0, 1]
+  const confidence = Math.max(0, Math.min(1,
+    verification_score + vote_score + usage_score + success_score
+    - age_penalty - contradiction_penalty
+  ));
+
+  // Store it on the entry for fast access
+  const wdb = getWriteDb();
+  await wdb.execute({
+    sql: 'UPDATE entries SET confidence_score = ? WHERE id = ?',
+    args: [confidence, entryId],
+  });
+
+  return { confidence, factors };
+}
+
+export async function getConfidenceDistribution(): Promise<{
+  high: number;   // > 0.7
+  medium: number; // 0.4-0.7
+  low: number;    // < 0.4
+  unscored: number;
+}> {
+  const db = getDb();
+  const result = await db.execute(`
+    SELECT
+      SUM(CASE WHEN confidence_score > 0.7 THEN 1 ELSE 0 END) as high,
+      SUM(CASE WHEN confidence_score BETWEEN 0.4 AND 0.7 THEN 1 ELSE 0 END) as medium,
+      SUM(CASE WHEN confidence_score > 0 AND confidence_score < 0.4 THEN 1 ELSE 0 END) as low,
+      SUM(CASE WHEN confidence_score IS NULL OR confidence_score = 0 THEN 1 ELSE 0 END) as unscored
+    FROM entries
+  `);
+  const r = result.rows[0];
+  return {
+    high: Number(r.high || 0),
+    medium: Number(r.medium || 0),
+    low: Number(r.low || 0),
+    unscored: Number(r.unscored || 0),
+  };
+}
+
+// ── Knowledge Compression (Mega-Entries) ──
+
+export async function generateMegaEntry(tagKey: string): Promise<{
+  title: string;
+  tags: string[];
+  entry_count: number;
+  entries: { id: number; title: string; problem: string; solution: string }[];
+  common_gotchas: string[];
+  common_errors: string[];
+} | null> {
+  const db = getDb();
+  const tags = tagKey.split('|').filter(t => t.trim().length > 0);
+  if (tags.length === 0) return null;
+
+  // Find all entries matching these tags
+  const conditions = tags.map(() => 'EXISTS (SELECT 1 FROM json_each(entries.tags) WHERE LOWER(value) = ?)');
+  const result = await db.execute({
+    sql: `SELECT * FROM entries WHERE ${conditions.join(' AND ')} ORDER BY (upvotes - downvotes + usage_count) DESC LIMIT 20`,
+    args: tags.map(t => t.toLowerCase()),
+  });
+
+  if (result.rows.length < 3) return null;
+
+  const entries = result.rows.map(rowToEntry);
+
+  // Collect common gotchas and errors
+  const allGotchas: string[] = [];
+  const allErrors: string[] = [];
+  for (const e of entries) {
+    try { allGotchas.push(...JSON.parse(e.gotchas || '[]')); } catch {}
+    try { allErrors.push(...JSON.parse(e.error_messages || '[]')); } catch {}
+  }
+
+  // Deduplicate
+  const uniqueGotchas = [...new Set(allGotchas)].slice(0, 10);
+  const uniqueErrors = [...new Set(allErrors)].slice(0, 10);
+
+  return {
+    title: `Guide: ${tags.join(' + ')}`,
+    tags,
+    entry_count: entries.length,
+    entries: entries.map(e => ({
+      id: e.id,
+      title: e.title,
+      problem: e.problem.slice(0, 200),
+      solution: e.solution.slice(0, 300),
+    })),
+    common_gotchas: uniqueGotchas,
+    common_errors: uniqueErrors,
+  };
+}
+
+// ── Adversarial Probing (Coverage Gaps) ──
+
+export async function findCoverageGaps(): Promise<{
+  underrepresented_tags: { tag: string; entry_count: number; search_count: number; gap_score: number }[];
+  searched_but_empty: { query: string; search_count: number }[];
+}> {
+  const db = getDb();
+
+  // 1. Tags that are searched frequently but have few entries
+  const tagSearches = await db.execute(`
+    SELECT tag, SUM(search_count) as total_searches FROM topic_search_trends
+    GROUP BY tag ORDER BY total_searches DESC LIMIT 100
+  `);
+
+  // Pre-fetch all tag entry counts in a single query to avoid N+1
+  const tagCountsResult = await db.execute(
+    'SELECT LOWER(value) as tag, COUNT(*) as c FROM entries, json_each(entries.tags) GROUP BY LOWER(value)'
+  );
+  const tagEntryCountMap = new Map<string, number>();
+  for (const r of tagCountsResult.rows) {
+    tagEntryCountMap.set(String(r.tag), Number(r.c));
+  }
+
+  const underrepresented: { tag: string; entry_count: number; search_count: number; gap_score: number }[] = [];
+  for (const row of tagSearches.rows) {
+    const tag = String(row.tag);
+    const searchCount = Number(row.total_searches);
+    const count = tagEntryCountMap.get(tag.toLowerCase()) || 0;
+
+    // Gap score: high searches + low entries = big gap
+    const gapScore = searchCount / Math.max(1, count);
+    if (gapScore > 5 && count < 10) {
+      underrepresented.push({ tag, entry_count: count, search_count: searchCount, gap_score: gapScore });
+    }
+  }
+
+  // 2. Searches that returned 0 results
+  const emptySearches = await db.execute(`
+    SELECT query, COUNT(*) as freq FROM analytics_searches
+    WHERE result_count = 0
+    GROUP BY query
+    HAVING COUNT(*) >= 2
+    ORDER BY freq DESC
+    LIMIT 20
+  `);
+
+  const searched_but_empty = emptySearches.rows.map(r => ({
+    query: String(r.query),
+    search_count: Number(r.freq),
+  }));
+
+  return {
+    underrepresented_tags: underrepresented.sort((a, b) => b.gap_score - a.gap_score).slice(0, 15),
+    searched_but_empty,
+  };
+}
+
+// ── Gradient Attribution (Which Section Helped?) ──
+
+export async function addSectionAttribution(entryId: number, section: string, agentSession?: string): Promise<{ id: number }> {
+  const db = getWriteDb();
+  const validSections = ['problem', 'solution', 'why', 'gotchas', 'code_snippets', 'error_messages'];
+  if (!validSections.includes(section)) {
+    throw new Error(`Invalid section: ${section}. Must be one of: ${validSections.join(', ')}`);
+  }
+
+  const result = await db.execute({
+    sql: 'INSERT INTO section_attributions (entry_id, section, agent_session) VALUES (?, ?, ?)',
+    args: [entryId, section, agentSession || null],
+  });
+  return { id: Number(result.lastInsertRowid) };
+}
+
+export async function getSectionStats(entryId: number): Promise<{ section: string; count: number; percentage: number }[]> {
+  const db = getDb();
+  const result = await db.execute({
+    sql: `SELECT section, COUNT(*) as c FROM section_attributions
+          WHERE entry_id = ? GROUP BY section ORDER BY c DESC`,
+    args: [entryId],
+  });
+  const total = result.rows.reduce((sum, r) => sum + Number(r.c), 0);
+  return result.rows.map(r => ({
+    section: String(r.section),
+    count: Number(r.c),
+    percentage: total > 0 ? Math.round(Number(r.c) / total * 100) : 0,
+  }));
+}
+
+export async function getGlobalSectionStats(): Promise<{ section: string; count: number; percentage: number }[]> {
+  const db = getDb();
+  const result = await db.execute(
+    'SELECT section, COUNT(*) as c FROM section_attributions GROUP BY section ORDER BY c DESC'
+  );
+  const total = result.rows.reduce((sum, r) => sum + Number(r.c), 0);
+  return result.rows.map(r => ({
+    section: String(r.section),
+    count: Number(r.c),
+    percentage: total > 0 ? Math.round(Number(r.c) / total * 100) : 0,
+  }));
 }

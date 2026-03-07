@@ -245,3 +245,35 @@ CREATE TABLE IF NOT EXISTS topic_search_trends (
   UNIQUE(tag, date)
 );
 CREATE INDEX IF NOT EXISTS idx_topic_trends_tag ON topic_search_trends(tag);
+
+-- Search session chains: track sequential searches within an agent session
+CREATE TABLE IF NOT EXISTS search_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  query TEXT NOT NULL,
+  result_entry_ids TEXT DEFAULT '[]',
+  sequence_num INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_search_sessions_session ON search_sessions(session_id);
+CREATE INDEX IF NOT EXISTS idx_search_sessions_created ON search_sessions(created_at);
+
+-- Tag co-occurrence matrix (pre-computed for query expansion)
+CREATE TABLE IF NOT EXISTS tag_cooccurrence (
+  tag_a TEXT NOT NULL,
+  tag_b TEXT NOT NULL,
+  co_count INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (tag_a, tag_b)
+);
+
+-- Section attribution: which part of an entry helped
+CREATE TABLE IF NOT EXISTS section_attributions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entry_id INTEGER NOT NULL REFERENCES entries(id),
+  section TEXT NOT NULL CHECK(section IN ('problem', 'solution', 'why', 'gotchas', 'code_snippets', 'error_messages')),
+  agent_session TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_section_attr_entry ON section_attributions(entry_id);
+
+-- Migration: ALTER TABLE entries ADD COLUMN confidence_score REAL DEFAULT NULL;

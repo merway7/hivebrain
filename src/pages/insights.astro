@@ -21,6 +21,37 @@ try {
   clusters = clustersRes?.clusters || [];
   embeddingStatus = embRes || {};
 } catch { /* render with empty data */ }
+
+let deadKnowledge: any[] = [];
+let decayingKnowledge: any[] = [];
+let coverageGaps: any = { underrepresented_tags: [], searched_but_empty: [] };
+let searchChains: any[] = [];
+let confidenceDistribution: any = { high: 0, medium: 0, low: 0, unscored: 0 };
+
+try {
+  const res = await fetch(`${import.meta.env.SITE || 'http://localhost:4321'}/api/insights/dead-knowledge?limit=10`);
+  if (res.ok) deadKnowledge = await res.json();
+} catch {}
+
+try {
+  const res = await fetch(`${import.meta.env.SITE || 'http://localhost:4321'}/api/insights/decay?limit=10`);
+  if (res.ok) decayingKnowledge = await res.json();
+} catch {}
+
+try {
+  const res = await fetch(`${import.meta.env.SITE || 'http://localhost:4321'}/api/insights/coverage-gaps`);
+  if (res.ok) coverageGaps = await res.json();
+} catch {}
+
+try {
+  const res = await fetch(`${import.meta.env.SITE || 'http://localhost:4321'}/api/insights/search-chains?limit=10`);
+  if (res.ok) searchChains = await res.json();
+} catch {}
+
+try {
+  const res = await fetch(`${import.meta.env.SITE || 'http://localhost:4321'}/api/insights/confidence`);
+  if (res.ok) confidenceDistribution = await res.json();
+} catch {}
 ---
 
 <Layout title="Insights — HiveBrain">
@@ -142,6 +173,139 @@ try {
                     ))}
                   </div>
                 </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <!-- Confidence Distribution -->
+      <section class="insight-section">
+        <h2>Confidence Calibration</h2>
+        <p class="section-desc">How confident are we in each entry's correctness?</p>
+        <div class="confidence-bars">
+          <div class="conf-bar">
+            <span class="conf-label">High (&gt;70%)</span>
+            <div class="conf-track">
+              <div class="conf-fill conf-high" style={`width: ${Math.min(100, (confidenceDistribution.high / Math.max(1, confidenceDistribution.high + confidenceDistribution.medium + confidenceDistribution.low + confidenceDistribution.unscored)) * 100)}%`}></div>
+            </div>
+            <span class="conf-count">{confidenceDistribution.high}</span>
+          </div>
+          <div class="conf-bar">
+            <span class="conf-label">Medium (40-70%)</span>
+            <div class="conf-track">
+              <div class="conf-fill conf-medium" style={`width: ${Math.min(100, (confidenceDistribution.medium / Math.max(1, confidenceDistribution.high + confidenceDistribution.medium + confidenceDistribution.low + confidenceDistribution.unscored)) * 100)}%`}></div>
+            </div>
+            <span class="conf-count">{confidenceDistribution.medium}</span>
+          </div>
+          <div class="conf-bar">
+            <span class="conf-label">Low (&lt;40%)</span>
+            <div class="conf-track">
+              <div class="conf-fill conf-low" style={`width: ${Math.min(100, (confidenceDistribution.low / Math.max(1, confidenceDistribution.high + confidenceDistribution.medium + confidenceDistribution.low + confidenceDistribution.unscored)) * 100)}%`}></div>
+            </div>
+            <span class="conf-count">{confidenceDistribution.low}</span>
+          </div>
+          <div class="conf-bar">
+            <span class="conf-label">Unscored</span>
+            <div class="conf-track">
+              <div class="conf-fill conf-unscored" style={`width: ${Math.min(100, (confidenceDistribution.unscored / Math.max(1, confidenceDistribution.high + confidenceDistribution.medium + confidenceDistribution.low + confidenceDistribution.unscored)) * 100)}%`}></div>
+            </div>
+            <span class="conf-count">{confidenceDistribution.unscored}</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Dead Knowledge -->
+      <section class="insight-section">
+        <h2>Dead Knowledge</h2>
+        <p class="section-desc">Entries that exist but were never found by search — invisible knowledge.</p>
+        {deadKnowledge.length === 0 ? (
+          <p class="empty-state">No dead knowledge detected — all entries are being found!</p>
+        ) : (
+          <div class="dead-list">
+            {deadKnowledge.map((e: any) => (
+              <a href={`/entry/${e.id}`} class="dead-entry">
+                <span class="dead-title">{e.title}</span>
+                <span class="dead-meta">{e.category} · created {new Date(e.created_at * 1000).toLocaleDateString()}</span>
+              </a>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <!-- Decaying Knowledge -->
+      <section class="insight-section">
+        <h2>Decaying Knowledge</h2>
+        <p class="section-desc">Once-popular entries that stopped being used — verify or retire them.</p>
+        {decayingKnowledge.length === 0 ? (
+          <p class="empty-state">No decaying entries detected.</p>
+        ) : (
+          <div class="decay-list">
+            {decayingKnowledge.map((e: any) => (
+              <a href={`/entry/${e.id}`} class="decay-entry">
+                <span class="decay-title">{e.title}</span>
+                <div class="decay-bar-container">
+                  <span class="decay-label">Peak: {e.peak_usage}</span>
+                  <div class="decay-bar">
+                    <div class="decay-fill" style={`width: ${Math.max(5, (1 - e.decay_rate) * 100)}%`}></div>
+                  </div>
+                  <span class="decay-label">Now: {e.recent_usage}</span>
+                </div>
+              </a>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <!-- Coverage Gaps -->
+      <section class="insight-section">
+        <h2>Coverage Gaps</h2>
+        <p class="section-desc">Topics frequently searched but poorly covered — knowledge blind spots.</p>
+        <div class="gaps-grid">
+          {coverageGaps.searched_but_empty?.length > 0 && (
+            <div class="gap-section">
+              <h3>Searches With No Results</h3>
+              {coverageGaps.searched_but_empty.map((s: any) => (
+                <div class="gap-item">
+                  <span class="gap-query">"{s.query}"</span>
+                  <span class="gap-count">{s.search_count}x</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {coverageGaps.underrepresented_tags?.length > 0 && (
+            <div class="gap-section">
+              <h3>Underrepresented Tags</h3>
+              {coverageGaps.underrepresented_tags.map((t: any) => (
+                <div class="gap-item">
+                  <span class="gap-tag">{t.tag}</span>
+                  <span class="gap-detail">{t.entry_count} entries / {t.search_count} searches</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+
+      <!-- Search Chains -->
+      <section class="insight-section">
+        <h2>Search Chains</h2>
+        <p class="section-desc">Common sequential search patterns — how agents actually debug.</p>
+        {searchChains.length === 0 ? (
+          <p class="empty-state">No search chains recorded yet. Chains are built from sequential agent searches.</p>
+        ) : (
+          <div class="chains-list">
+            {searchChains.map((chain: any) => (
+              <div class="chain">
+                <div class="chain-queries">
+                  {chain.queries.map((q: string, i: number) => (
+                    <span class="chain-step">
+                      {i > 0 && <span class="chain-arrow">&rarr;</span>}
+                      <span class="chain-query">{q}</span>
+                    </span>
+                  ))}
+                </div>
+                <span class="chain-length">{chain.length} steps</span>
               </div>
             ))}
           </div>
@@ -449,6 +613,196 @@ try {
     color: var(--text-muted);
   }
 
+  /* Insight sections */
+  .insight-section {
+    margin-bottom: 40px;
+  }
+  .insight-section h2 {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0 0 6px;
+  }
+
+  /* Confidence bars */
+  .confidence-bars {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  .conf-bar {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+  }
+  .conf-label {
+    min-width: 130px;
+    font-size: 0.9rem;
+    color: var(--text-muted, #94a3b8);
+  }
+  .conf-track {
+    flex: 1;
+    height: 24px;
+    background: var(--bg-surface, #1e293b);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .conf-fill {
+    height: 100%;
+    border-radius: 6px;
+    transition: width 0.5s ease;
+  }
+  .conf-high { background: #22c55e; }
+  .conf-medium { background: #eab308; }
+  .conf-low { background: #ef4444; }
+  .conf-unscored { background: #475569; }
+  .conf-count {
+    min-width: 50px;
+    text-align: right;
+    font-weight: 600;
+    font-size: 0.9rem;
+  }
+
+  /* Dead knowledge */
+  .dead-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .dead-entry {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    background: var(--bg-overlay, #1e293b);
+    border-radius: 8px;
+    border-left: 3px solid #ef4444;
+    text-decoration: none;
+    color: inherit;
+    transition: background 0.15s;
+  }
+  .dead-entry:hover { background: var(--bg-hover, #334155); }
+  .dead-title { font-weight: 500; }
+  .dead-meta { font-size: 0.8rem; color: var(--text-muted, #94a3b8); }
+
+  /* Decaying knowledge */
+  .decay-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  .decay-entry {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.75rem 1rem;
+    background: var(--bg-overlay, #1e293b);
+    border-radius: 8px;
+    border-left: 3px solid #eab308;
+    text-decoration: none;
+    color: inherit;
+    transition: background 0.15s;
+  }
+  .decay-entry:hover { background: var(--bg-hover, #334155); }
+  .decay-title { font-weight: 500; }
+  .decay-bar-container {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+  .decay-label {
+    font-size: 0.8rem;
+    color: var(--text-muted, #94a3b8);
+    min-width: 60px;
+  }
+  .decay-bar {
+    flex: 1;
+    height: 8px;
+    background: var(--bg-surface, #334155);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .decay-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #ef4444, #eab308);
+    border-radius: 4px;
+  }
+
+  /* Coverage gaps */
+  .gaps-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 1.5rem;
+  }
+  .gap-section h3 {
+    font-size: 1rem;
+    margin-bottom: 0.75rem;
+    color: var(--text-muted, #94a3b8);
+  }
+  .gap-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--border, #334155);
+  }
+  .gap-query {
+    font-style: italic;
+    color: #f97316;
+  }
+  .gap-tag {
+    padding: 0.2rem 0.6rem;
+    background: var(--bg-surface, #334155);
+    border-radius: 4px;
+    font-size: 0.85rem;
+  }
+  .gap-count, .gap-detail {
+    font-size: 0.8rem;
+    color: var(--text-muted, #94a3b8);
+  }
+
+  /* Search chains */
+  .chains-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  .chain {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    background: var(--bg-overlay, #1e293b);
+    border-radius: 8px;
+  }
+  .chain-queries {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem;
+  }
+  .chain-step {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+  }
+  .chain-arrow {
+    color: var(--text-muted, #94a3b8);
+    font-size: 0.9rem;
+  }
+  .chain-query {
+    padding: 0.2rem 0.6rem;
+    background: var(--bg-surface, #334155);
+    border-radius: 4px;
+    font-size: 0.85rem;
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  }
+  .chain-length {
+    font-size: 0.8rem;
+    color: var(--text-muted, #94a3b8);
+    white-space: nowrap;
+  }
+
   @media (max-width: 640px) {
     .curves-grid {
       grid-template-columns: 1fr;
@@ -456,6 +810,9 @@ try {
     .health-bar {
       flex-direction: column;
       gap: 12px;
+    }
+    .gaps-grid {
+      grid-template-columns: 1fr;
     }
   }
 </style>

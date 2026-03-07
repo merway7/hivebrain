@@ -369,6 +369,91 @@ server.tool(
   }
 );
 
+// ── hivebrain_section_attribution ──
+server.tool(
+  "hivebrain_section_attribution",
+  "Report which section of an entry was most helpful (problem, solution, why, gotchas, code_snippets, error_messages). Call after using an entry to help improve knowledge quality.",
+  {
+    entry_id: z.number().int().positive().describe("The entry ID"),
+    section: z.enum(["problem", "solution", "why", "gotchas", "code_snippets", "error_messages"]).describe("Which section helped most"),
+  },
+  async ({ entry_id, section }) => {
+    const result = await hiveFetch(`/api/entry/${entry_id}/attribution`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ section }),
+    });
+
+    if (result.error) return { content: [{ type: "text" as const, text: result.error }] };
+    if (!result.ok) return { content: [{ type: "text" as const, text: `Failed (${result.status}): ${JSON.stringify(result.data)}` }] };
+    return { content: [{ type: "text" as const, text: `Attribution recorded: "${section}" section of entry ${entry_id} was most helpful.` }] };
+  }
+);
+
+// ── hivebrain_knowledge_health ──
+server.tool(
+  "hivebrain_knowledge_health",
+  "Get a health report of the HiveBrain knowledge base: dead knowledge, decaying entries, coverage gaps, and confidence distribution. Use to identify areas that need attention.",
+  {},
+  async () => {
+    const [deadResult, decayResult, gapsResult, confResult] = await Promise.all([
+      hiveFetch('/api/insights/dead-knowledge?limit=5'),
+      hiveFetch('/api/insights/decay?limit=5'),
+      hiveFetch('/api/insights/coverage-gaps'),
+      hiveFetch('/api/insights/confidence'),
+    ]);
+
+    const lines: string[] = ['# Knowledge Health Report\n'];
+
+    // Confidence distribution
+    if (confResult.ok && confResult.data) {
+      const c = confResult.data;
+      lines.push(`## Confidence Distribution`);
+      lines.push(`- High (>70%): ${c.high} entries`);
+      lines.push(`- Medium (40-70%): ${c.medium} entries`);
+      lines.push(`- Low (<40%): ${c.low} entries`);
+      lines.push(`- Unscored: ${c.unscored} entries\n`);
+    }
+
+    // Dead knowledge
+    if (deadResult.ok && Array.isArray(deadResult.data) && deadResult.data.length > 0) {
+      lines.push(`## Dead Knowledge (never retrieved)`);
+      for (const e of deadResult.data.slice(0, 5)) {
+        lines.push(`- [${e.id}] ${e.title}`);
+      }
+      lines.push('');
+    }
+
+    // Decaying entries
+    if (decayResult.ok && Array.isArray(decayResult.data) && decayResult.data.length > 0) {
+      lines.push(`## Decaying Entries (usage dropped to zero)`);
+      for (const e of decayResult.data.slice(0, 5)) {
+        lines.push(`- [${e.id}] ${e.title} (peak: ${e.peak_usage})`);
+      }
+      lines.push('');
+    }
+
+    // Coverage gaps
+    if (gapsResult.ok && gapsResult.data) {
+      if (gapsResult.data.searched_but_empty?.length > 0) {
+        lines.push(`## Searches With No Results`);
+        for (const s of gapsResult.data.searched_but_empty.slice(0, 5)) {
+          lines.push(`- "${s.query}" (searched ${s.search_count}x)`);
+        }
+        lines.push('');
+      }
+      if (gapsResult.data.underrepresented_tags?.length > 0) {
+        lines.push(`## Underrepresented Tags`);
+        for (const t of gapsResult.data.underrepresented_tags.slice(0, 5)) {
+          lines.push(`- ${t.tag}: ${t.entry_count} entries, ${t.search_count} searches (gap: ${t.gap_score.toFixed(1)})`);
+        }
+      }
+    }
+
+    return { content: [{ type: "text" as const, text: lines.join('\n') }] };
+  }
+);
+
 // ── Start server ──
 async function main() {
   const transport = new StdioServerTransport();
