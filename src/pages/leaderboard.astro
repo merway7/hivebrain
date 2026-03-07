@@ -1,0 +1,219 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Header from '../components/Header.astro';
+import { getLeaderboard, getUserBadges } from '../lib/db';
+import { BADGES } from '../lib/badges';
+
+const leaderboard = await getLeaderboard({ limit: 20, period: 'all' });
+
+const enriched = await Promise.all(leaderboard.map(async (entry, i) => {
+  const badges = await getUserBadges(entry.username);
+  const enrichedBadges = badges.map(b => {
+    const def = BADGES.find(d => d.id === b.badge_id);
+    return { icon: def?.icon || '', name: def?.name || b.badge_id };
+  });
+  return { ...entry, rank: i + 1, badges: enrichedBadges };
+}));
+---
+
+<Layout title="Leaderboard — HiveBrain" description="Top contributors to the collective knowledge base">
+  <div class="app">
+    <Header />
+    <main class="lb-page">
+      <div class="lb-header">
+        <h1 class="lb-title">Leaderboard</h1>
+        <p class="lb-subtitle">Top contributors to the collective knowledge base</p>
+      </div>
+
+      <div class="lb-periods">
+        <a href="?period=all" class="period-btn active">All Time</a>
+        <a href="?period=monthly" class="period-btn">Monthly</a>
+        <a href="?period=weekly" class="period-btn">Weekly</a>
+      </div>
+
+      {enriched.length === 0 ? (
+        <div class="lb-empty">
+          <p>No reputation data yet. Start contributing to appear here.</p>
+          <a href="/" class="back-link">Back to Dashboard</a>
+        </div>
+      ) : (
+        <div class="lb-list">
+          {enriched.map(user => (
+            <a href={`/user/${user.username}`} class="lb-card">
+              <div class="lb-rank">#{user.rank}</div>
+              <div class="lb-info">
+                <div class="lb-username">{user.username}</div>
+                <div class="lb-badges">
+                  {user.badges.slice(0, 5).map(b => (
+                    <span class="lb-badge" title={b.name}>{b.icon}</span>
+                  ))}
+                </div>
+              </div>
+              <div class="lb-stats">
+                <div class="lb-rep">{user.total_rep} rep</div>
+                <div class="lb-entries">{user.entries_count} entries</div>
+              </div>
+            </a>
+          ))}
+        </div>
+      )}
+
+      <div class="lb-footer">
+        <a href="/" class="back-link">&larr; Back to Dashboard</a>
+      </div>
+    </main>
+  </div>
+</Layout>
+
+<style>
+  .lb-page {
+    max-width: 720px;
+    margin: 0 auto;
+  }
+
+  .lb-header {
+    margin-bottom: 24px;
+    text-align: center;
+  }
+
+  .lb-title {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+  }
+
+  .lb-subtitle {
+    font-size: 14px;
+    color: var(--text-muted);
+  }
+
+  .lb-periods {
+    display: flex;
+    justify-content: center;
+    gap: 4px;
+    margin-bottom: 24px;
+  }
+
+  .period-btn {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-muted);
+    padding: 6px 14px;
+    border-radius: var(--radius-md);
+    text-decoration: none;
+    transition: all 0.15s ease;
+    background: var(--bg-overlay);
+    border: 1px solid var(--border);
+  }
+
+  .period-btn:hover, .period-btn.active {
+    color: var(--text-primary);
+    border-color: var(--accent);
+    background: var(--accent-subtle);
+  }
+
+  .lb-empty {
+    text-align: center;
+    padding: 48px 0;
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+
+  .lb-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .lb-card {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 16px 20px;
+    transition: border-color 0.15s ease;
+    text-decoration: none;
+    color: inherit;
+  }
+
+  .lb-card:hover {
+    border-color: var(--border-hover);
+  }
+
+  .lb-rank {
+    font-family: var(--font-mono);
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--text-muted);
+    min-width: 36px;
+  }
+
+  .lb-card:first-child .lb-rank { color: var(--amber); }
+  .lb-card:nth-child(2) .lb-rank { color: var(--text-secondary); }
+  .lb-card:nth-child(3) .lb-rank { color: #cd7f32; }
+
+  .lb-info {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .lb-username {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+  }
+
+  .lb-badges {
+    display: flex;
+    gap: 4px;
+    font-size: 14px;
+  }
+
+  .lb-badge {
+    cursor: default;
+  }
+
+  .lb-stats {
+    text-align: right;
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .lb-rep {
+    color: var(--accent);
+    font-weight: 600;
+    margin-bottom: 2px;
+  }
+
+  .lb-entries {
+    color: var(--text-dim);
+  }
+
+  .lb-footer {
+    margin-top: 32px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+  }
+
+  .back-link {
+    color: var(--text-muted);
+    font-size: 13px;
+    transition: color 0.15s ease;
+  }
+
+  .back-link:hover {
+    color: var(--accent);
+  }
+
+  @media (max-width: 520px) {
+    .lb-card {
+      padding: 12px 14px;
+      gap: 10px;
+    }
+  }
+</style>

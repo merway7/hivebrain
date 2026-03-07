@@ -100,3 +100,98 @@ CREATE TABLE IF NOT EXISTS solution_verifications (
   verified_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 CREATE INDEX IF NOT EXISTS idx_verifications_entry ON solution_verifications(entry_id);
+
+-- Entry revisions
+CREATE TABLE IF NOT EXISTS entry_revisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entry_id INTEGER NOT NULL REFERENCES entries(id),
+  revision_type TEXT NOT NULL,
+  content TEXT NOT NULL,
+  submitted_by TEXT DEFAULT 'anonymous',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_revisions_entry ON entry_revisions(entry_id);
+
+-- Entry votes
+CREATE TABLE IF NOT EXISTS entry_votes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entry_id INTEGER NOT NULL REFERENCES entries(id),
+  direction TEXT NOT NULL CHECK(direction IN ('up', 'down')),
+  voter_ip TEXT,
+  voter_name TEXT DEFAULT 'anonymous',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_votes_entry ON entry_votes(entry_id);
+
+-- ── Phase 3: Reputation + Badges ──
+
+-- Event-sourced reputation events
+CREATE TABLE IF NOT EXISTS reputation_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  points INTEGER NOT NULL,
+  entry_id INTEGER,
+  source_username TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_rep_events_username ON reputation_events(username);
+CREATE INDEX IF NOT EXISTS idx_rep_events_created ON reputation_events(created_at);
+
+-- Materialized reputation totals per user
+CREATE TABLE IF NOT EXISTS reputation_cache (
+  username TEXT PRIMARY KEY,
+  total_rep INTEGER NOT NULL DEFAULT 0,
+  entries_count INTEGER NOT NULL DEFAULT 0,
+  upvotes_received INTEGER NOT NULL DEFAULT 0,
+  usages_received INTEGER NOT NULL DEFAULT 0,
+  verifications_received INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+-- Badges earned by users
+CREATE TABLE IF NOT EXISTS user_badges (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL,
+  badge_id TEXT NOT NULL,
+  earned_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  UNIQUE(username, badge_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_badges_username ON user_badges(username);
+
+-- ── Phase 4: Accounts + Notifications ──
+
+-- Simple accounts (claim username via email verification)
+CREATE TABLE IF NOT EXISTS accounts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL UNIQUE,
+  email TEXT NOT NULL UNIQUE,
+  email_verified INTEGER NOT NULL DEFAULT 0,
+  verification_token TEXT,
+  verification_expires INTEGER,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+-- In-app notifications
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL,
+  type TEXT NOT NULL,
+  entry_id INTEGER,
+  message TEXT NOT NULL,
+  read INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_username ON notifications(username);
+CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(username, read);
+
+-- Per-user notification preferences
+CREATE TABLE IF NOT EXISTS notification_preferences (
+  username TEXT PRIMARY KEY,
+  email_frequency TEXT NOT NULL DEFAULT 'daily',
+  notify_upvotes INTEGER NOT NULL DEFAULT 1,
+  notify_usages INTEGER NOT NULL DEFAULT 1,
+  notify_verifications INTEGER NOT NULL DEFAULT 1,
+  notify_revisions INTEGER NOT NULL DEFAULT 1,
+  notify_badges INTEGER NOT NULL DEFAULT 1
+);

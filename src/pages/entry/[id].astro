@@ -1,7 +1,7 @@
 ---
 import Layout from '../../layouts/Layout.astro';
 import Header from '../../components/Header.astro';
-import { getEntry, getRevisions, getUsageContexts, getVerifications, computeFreshness, getLatestVerification } from '../../lib/db';
+import { getEntry, getRevisions, getUsageContexts, getVerifications, computeFreshness, getLatestVerification, getReputation } from '../../lib/db';
 
 const { id } = Astro.params;
 const entry = await getEntry(Number(id));
@@ -17,6 +17,7 @@ const latestVerification = verifications.length > 0 ? verifications[0] : null;
 const freshness = computeFreshness(entry, latestVerification?.verified_at);
 const netScore = (entry.upvotes || 0) - (entry.downvotes || 0);
 const qualityStatus = entry.quality_status || 'unverified';
+const authorRep = entry.submitted_by && entry.submitted_by !== 'anonymous' ? await getReputation(entry.submitted_by) : null;
 
 const tags = JSON.parse(entry.tags || '[]') as string[];
 const gotchas = JSON.parse(entry.gotchas || '[]') as string[];
@@ -141,7 +142,14 @@ function mdToHtml(text: string): string {
         </div>
         <h1>{entry.title}</h1>
         <div class="meta">
-          <span>Submitted by: <strong>@{entry.submitted_by}</strong></span>
+          <span>Submitted by: {entry.submitted_by !== 'anonymous' ? (
+            <a href={`/user/${entry.submitted_by}`} class="author-link">
+              <strong>@{entry.submitted_by}</strong>
+              {authorRep && <span class="author-rep">({authorRep.total_rep} rep)</span>}
+            </a>
+          ) : (
+            <strong>@anonymous</strong>
+          )}</span>
           <span>&middot;</span>
           <time>{new Date(entry.created_at * 1000).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</time>
           <span>&middot;</span>
@@ -409,6 +417,24 @@ function mdToHtml(text: string): string {
     border-radius: var(--radius-lg);
     padding: 32px;
     margin-bottom: 48px;
+  }
+
+  .author-link {
+    color: var(--accent);
+    text-decoration: none;
+    transition: color 0.15s ease;
+  }
+
+  .author-link:hover {
+    color: var(--accent-hover);
+    text-decoration: underline;
+  }
+
+  .author-rep {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-left: 4px;
   }
 
   .entry-header {

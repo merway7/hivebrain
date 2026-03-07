@@ -197,6 +197,91 @@ export async function initDb(): Promise<void> {
   `);
   try { await db.execute('CREATE INDEX IF NOT EXISTS idx_verifications_entry ON solution_verifications(entry_id)'); } catch {}
 
+  // v7: reputation system
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS reputation_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL,
+      event_type TEXT NOT NULL CHECK(event_type IN (
+        'submit', 'upvote_received', 'downvote_received',
+        'usage_received', 'verification_received', 'entry_outdated'
+      )),
+      points INTEGER NOT NULL,
+      entry_id INTEGER REFERENCES entries(id),
+      source_username TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_rep_events_username ON reputation_events(username)'); } catch {}
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_rep_events_entry ON reputation_events(entry_id)'); } catch {}
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_rep_events_created ON reputation_events(created_at)'); } catch {}
+
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS reputation_cache (
+      username TEXT PRIMARY KEY,
+      total_rep INTEGER NOT NULL DEFAULT 0,
+      entries_count INTEGER NOT NULL DEFAULT 0,
+      upvotes_received INTEGER NOT NULL DEFAULT 0,
+      usages_received INTEGER NOT NULL DEFAULT 0,
+      verifications_received INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
+
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS user_badges (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL,
+      badge_id TEXT NOT NULL,
+      earned_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      UNIQUE(username, badge_id)
+    )
+  `);
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_badges_username ON user_badges(username)'); } catch {}
+
+  // v8: accounts + notifications
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS accounts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL UNIQUE,
+      email TEXT NOT NULL UNIQUE,
+      email_verified INTEGER NOT NULL DEFAULT 0,
+      verification_token TEXT,
+      verification_expires INTEGER,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email)'); } catch {}
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_accounts_token ON accounts(verification_token)'); } catch {}
+
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN (
+        'upvote', 'downvote', 'usage', 'verification', 'revision', 'badge_earned'
+      )),
+      entry_id INTEGER REFERENCES entries(id),
+      message TEXT NOT NULL,
+      read INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_notifications_username ON notifications(username)'); } catch {}
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(username, read)'); } catch {}
+
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS notification_preferences (
+      username TEXT PRIMARY KEY,
+      email_frequency TEXT NOT NULL DEFAULT 'daily' CHECK(email_frequency IN ('instant', 'daily', 'weekly', 'never')),
+      notify_upvotes INTEGER NOT NULL DEFAULT 1,
+      notify_usages INTEGER NOT NULL DEFAULT 1,
+      notify_verifications INTEGER NOT NULL DEFAULT 1,
+      notify_revisions INTEGER NOT NULL DEFAULT 1,
+      notify_badges INTEGER NOT NULL DEFAULT 1
+    )
+  `);
+
   // In hybrid mode, the write DB is a separate local SQLite — init its schema too
   if (wdb !== rdb) {
     for (const stmt of statements) {
@@ -229,6 +314,42 @@ export async function initDb(): Promise<void> {
       verified_by TEXT NOT NULL, version_tested TEXT, environment TEXT, notes TEXT,
       verified_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
     try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_verifications_entry ON solution_verifications(entry_id)'); } catch {}
+    // v7: reputation
+    await wdb.execute(`CREATE TABLE IF NOT EXISTS reputation_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL,
+      event_type TEXT NOT NULL CHECK(event_type IN ('submit','upvote_received','downvote_received','usage_received','verification_received','entry_outdated')),
+      points INTEGER NOT NULL, entry_id INTEGER REFERENCES entries(id), source_username TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_rep_events_username ON reputation_events(username)'); } catch {}
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_rep_events_entry ON reputation_events(entry_id)'); } catch {}
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_rep_events_created ON reputation_events(created_at)'); } catch {}
+    await wdb.execute(`CREATE TABLE IF NOT EXISTS reputation_cache (
+      username TEXT PRIMARY KEY, total_rep INTEGER NOT NULL DEFAULT 0, entries_count INTEGER NOT NULL DEFAULT 0,
+      upvotes_received INTEGER NOT NULL DEFAULT 0, usages_received INTEGER NOT NULL DEFAULT 0,
+      verifications_received INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
+    await wdb.execute(`CREATE TABLE IF NOT EXISTS user_badges (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL, badge_id TEXT NOT NULL,
+      earned_at INTEGER NOT NULL DEFAULT (unixepoch()), UNIQUE(username, badge_id))`);
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_badges_username ON user_badges(username)'); } catch {}
+    // v8: accounts + notifications
+    await wdb.execute(`CREATE TABLE IF NOT EXISTS accounts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, email TEXT NOT NULL UNIQUE,
+      email_verified INTEGER NOT NULL DEFAULT 0, verification_token TEXT, verification_expires INTEGER,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email)'); } catch {}
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_accounts_token ON accounts(verification_token)'); } catch {}
+    await wdb.execute(`CREATE TABLE IF NOT EXISTS notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('upvote','downvote','usage','verification','revision','badge_earned')),
+      entry_id INTEGER REFERENCES entries(id), message TEXT NOT NULL, read INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_notifications_username ON notifications(username)'); } catch {}
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(username, read)'); } catch {}
+    await wdb.execute(`CREATE TABLE IF NOT EXISTS notification_preferences (
+      username TEXT PRIMARY KEY, email_frequency TEXT NOT NULL DEFAULT 'daily' CHECK(email_frequency IN ('instant','daily','weekly','never')),
+      notify_upvotes INTEGER NOT NULL DEFAULT 1, notify_usages INTEGER NOT NULL DEFAULT 1,
+      notify_verifications INTEGER NOT NULL DEFAULT 1, notify_revisions INTEGER NOT NULL DEFAULT 1,
+      notify_badges INTEGER NOT NULL DEFAULT 1)`);
   }
 
   initialized = true;
@@ -1353,6 +1474,337 @@ export async function findRelatedByFTS(title: string, tags: string[], excludeId:
   } catch {
     return [];
   }
+}
+
+// ── Reputation system ──
+
+import { computeNewBadges, type UserStats } from './badges';
+
+export const REP_POINTS = {
+  submit: 10,
+  upvote_received: 5,
+  downvote_received: -2,
+  usage_received: 2,
+  verification_received: 20,
+  entry_outdated: -5,
+} as const;
+
+export type RepEventType = keyof typeof REP_POINTS;
+
+const REP_CACHE_COLUMNS: Record<string, string> = {
+  submit: 'entries_count',
+  upvote_received: 'upvotes_received',
+  usage_received: 'usages_received',
+  verification_received: 'verifications_received',
+};
+
+export async function addRepEvent(username: string, eventType: RepEventType, entryId: number | null, sourceUsername?: string): Promise<void> {
+  if (!username || username === 'anonymous') return;
+  const db = getWriteDb();
+  const points = REP_POINTS[eventType];
+
+  await db.execute({
+    sql: 'INSERT INTO reputation_events (username, event_type, points, entry_id, source_username) VALUES (?, ?, ?, ?, ?)',
+    args: [username, eventType, points, entryId, sourceUsername || null],
+  });
+
+  // UPSERT reputation_cache
+  const counterCol = REP_CACHE_COLUMNS[eventType];
+  const counterIncrement = counterCol ? `, ${counterCol} = COALESCE(${counterCol}, 0) + 1` : '';
+
+  await db.execute({
+    sql: `INSERT INTO reputation_cache (username, total_rep${counterCol ? `, ${counterCol}` : ''}, updated_at)
+          VALUES (?, ?${counterCol ? ', 1' : ''}, unixepoch())
+          ON CONFLICT(username) DO UPDATE SET
+            total_rep = total_rep + ?${counterIncrement},
+            updated_at = unixepoch()`,
+    args: [username, points, points],
+  });
+
+  // Check and award badges
+  await checkAndAwardBadges(username);
+}
+
+export async function getReputation(username: string): Promise<{
+  username: string; total_rep: number; entries_count: number;
+  upvotes_received: number; usages_received: number; verifications_received: number;
+} | null> {
+  const db = getDb();
+  const result = await db.execute({
+    sql: 'SELECT * FROM reputation_cache WHERE username = ?',
+    args: [username],
+  });
+  if (result.rows.length === 0) return null;
+  const r = result.rows[0];
+  return {
+    username: String(r.username),
+    total_rep: Number(r.total_rep),
+    entries_count: Number(r.entries_count),
+    upvotes_received: Number(r.upvotes_received),
+    usages_received: Number(r.usages_received),
+    verifications_received: Number(r.verifications_received),
+  };
+}
+
+export async function getLeaderboard(opts?: {
+  limit?: number;
+  period?: 'all' | 'monthly' | 'weekly';
+}): Promise<{ username: string; total_rep: number; entries_count: number; badge_count: number }[]> {
+  const db = getDb();
+  const limit = opts?.limit || 20;
+  const period = opts?.period || 'all';
+
+  if (period === 'all') {
+    const result = await db.execute({
+      sql: `SELECT rc.username, rc.total_rep, rc.entries_count,
+                   (SELECT COUNT(*) FROM user_badges ub WHERE ub.username = rc.username) as badge_count
+            FROM reputation_cache rc
+            ORDER BY rc.total_rep DESC LIMIT ?`,
+      args: [limit],
+    });
+    return result.rows.map(r => ({
+      username: String(r.username),
+      total_rep: Number(r.total_rep),
+      entries_count: Number(r.entries_count),
+      badge_count: Number(r.badge_count),
+    }));
+  }
+
+  const cutoff = Math.floor(Date.now() / 1000) - (period === 'weekly' ? 7 * 86400 : 30 * 86400);
+  const result = await db.execute({
+    sql: `SELECT re.username, SUM(re.points) as total_rep,
+                 (SELECT COUNT(*) FROM entries e WHERE e.submitted_by = re.username) as entries_count,
+                 (SELECT COUNT(*) FROM user_badges ub WHERE ub.username = re.username) as badge_count
+          FROM reputation_events re
+          WHERE re.created_at > ?
+          GROUP BY re.username
+          ORDER BY total_rep DESC LIMIT ?`,
+    args: [cutoff, limit],
+  });
+  return result.rows.map(r => ({
+    username: String(r.username),
+    total_rep: Number(r.total_rep),
+    entries_count: Number(r.entries_count),
+    badge_count: Number(r.badge_count),
+  }));
+}
+
+// ── Badges ──
+
+export async function getUserBadges(username: string): Promise<{ badge_id: string; earned_at: number }[]> {
+  const db = getDb();
+  const result = await db.execute({
+    sql: 'SELECT badge_id, earned_at FROM user_badges WHERE username = ? ORDER BY earned_at DESC',
+    args: [username],
+  });
+  return result.rows.map(r => ({ badge_id: String(r.badge_id), earned_at: Number(r.earned_at) }));
+}
+
+export async function awardBadge(username: string, badgeId: string): Promise<boolean> {
+  const db = getWriteDb();
+  try {
+    await db.execute({
+      sql: 'INSERT INTO user_badges (username, badge_id) VALUES (?, ?)',
+      args: [username, badgeId],
+    });
+    return true;
+  } catch {
+    return false; // already exists (UNIQUE constraint)
+  }
+}
+
+export async function checkAndAwardBadges(username: string): Promise<string[]> {
+  const rep = await getReputation(username);
+  if (!rep) return [];
+
+  const existing = await getUserBadges(username);
+  const existingIds = existing.map(b => b.badge_id);
+  const stats: UserStats = {
+    total_rep: rep.total_rep,
+    entries_count: rep.entries_count,
+    upvotes_received: rep.upvotes_received,
+    usages_received: rep.usages_received,
+    verifications_received: rep.verifications_received,
+  };
+
+  const newBadges = computeNewBadges(stats, existingIds);
+  const awarded: string[] = [];
+  for (const badge of newBadges) {
+    const success = await awardBadge(username, badge.id);
+    if (success) awarded.push(badge.id);
+  }
+  return awarded;
+}
+
+// ── Accounts ──
+
+export async function createAccount(username: string, email: string): Promise<{ id: number; verification_token: string }> {
+  const db = getWriteDb();
+  const token = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+  const expires = Math.floor(Date.now() / 1000) + 24 * 3600; // 24 hours
+  const result = await db.execute({
+    sql: 'INSERT INTO accounts (username, email, verification_token, verification_expires) VALUES (?, ?, ?, ?)',
+    args: [username, email, token, expires],
+  });
+  return { id: Number(result.lastInsertRowid), verification_token: token };
+}
+
+export async function verifyEmail(token: string): Promise<{ username: string } | null> {
+  const db = getWriteDb();
+  const now = Math.floor(Date.now() / 1000);
+  const result = await db.execute({
+    sql: 'SELECT id, username, verification_expires FROM accounts WHERE verification_token = ?',
+    args: [token],
+  });
+  if (result.rows.length === 0) return null;
+  const row = result.rows[0];
+  if (Number(row.verification_expires) < now) return null;
+
+  await db.execute({
+    sql: 'UPDATE accounts SET email_verified = 1, verification_token = NULL, verification_expires = NULL WHERE id = ?',
+    args: [row.id],
+  });
+  return { username: String(row.username) };
+}
+
+export async function getAccountByUsername(username: string): Promise<{
+  id: number; username: string; email: string; email_verified: boolean; created_at: number;
+} | null> {
+  const db = getDb();
+  const result = await db.execute({
+    sql: 'SELECT * FROM accounts WHERE username = ?',
+    args: [username],
+  });
+  if (result.rows.length === 0) return null;
+  const r = result.rows[0];
+  return {
+    id: Number(r.id),
+    username: String(r.username),
+    email: String(r.email),
+    email_verified: Number(r.email_verified) === 1,
+    created_at: Number(r.created_at),
+  };
+}
+
+export async function isUsernameClaimed(username: string): Promise<boolean> {
+  const db = getDb();
+  const result = await db.execute({
+    sql: 'SELECT 1 FROM accounts WHERE username = ? LIMIT 1',
+    args: [username],
+  });
+  return result.rows.length > 0;
+}
+
+// ── Notifications ──
+
+export async function createNotification(username: string, type: string, entryId: number | null, message: string): Promise<{ id: number }> {
+  if (!username || username === 'anonymous') return { id: 0 };
+  const db = getWriteDb();
+  const result = await db.execute({
+    sql: 'INSERT INTO notifications (username, type, entry_id, message) VALUES (?, ?, ?, ?)',
+    args: [username, type, entryId, message],
+  });
+  return { id: Number(result.lastInsertRowid) };
+}
+
+export async function getNotifications(username: string, opts?: {
+  unreadOnly?: boolean; limit?: number;
+}): Promise<{ id: number; type: string; entry_id: number | null; message: string; read: boolean; created_at: number }[]> {
+  const db = getDb();
+  const limit = opts?.limit || 20;
+  const where = opts?.unreadOnly ? 'AND read = 0' : '';
+  const result = await db.execute({
+    sql: `SELECT * FROM notifications WHERE username = ? ${where} ORDER BY created_at DESC LIMIT ?`,
+    args: [username, limit],
+  });
+  return result.rows.map(r => ({
+    id: Number(r.id),
+    type: String(r.type),
+    entry_id: r.entry_id != null ? Number(r.entry_id) : null,
+    message: String(r.message),
+    read: Number(r.read) === 1,
+    created_at: Number(r.created_at),
+  }));
+}
+
+export async function markNotificationsRead(username: string, ids?: number[]): Promise<void> {
+  const db = getWriteDb();
+  if (ids && ids.length > 0) {
+    const placeholders = ids.map(() => '?').join(',');
+    await db.execute({
+      sql: `UPDATE notifications SET read = 1 WHERE username = ? AND id IN (${placeholders})`,
+      args: [username, ...ids],
+    });
+  } else {
+    await db.execute({
+      sql: 'UPDATE notifications SET read = 1 WHERE username = ? AND read = 0',
+      args: [username],
+    });
+  }
+}
+
+export async function getUnreadCount(username: string): Promise<number> {
+  const db = getDb();
+  const result = await db.execute({
+    sql: 'SELECT COUNT(*) as c FROM notifications WHERE username = ? AND read = 0',
+    args: [username],
+  });
+  return Number(result.rows[0].c);
+}
+
+export async function getNotificationPrefs(username: string): Promise<{
+  email_frequency: string; notify_upvotes: boolean; notify_usages: boolean;
+  notify_verifications: boolean; notify_revisions: boolean; notify_badges: boolean;
+}> {
+  const db = getDb();
+  const result = await db.execute({
+    sql: 'SELECT * FROM notification_preferences WHERE username = ?',
+    args: [username],
+  });
+  if (result.rows.length === 0) {
+    return { email_frequency: 'daily', notify_upvotes: true, notify_usages: true, notify_verifications: true, notify_revisions: true, notify_badges: true };
+  }
+  const r = result.rows[0];
+  return {
+    email_frequency: String(r.email_frequency),
+    notify_upvotes: Number(r.notify_upvotes) === 1,
+    notify_usages: Number(r.notify_usages) === 1,
+    notify_verifications: Number(r.notify_verifications) === 1,
+    notify_revisions: Number(r.notify_revisions) === 1,
+    notify_badges: Number(r.notify_badges) === 1,
+  };
+}
+
+export async function updateNotificationPrefs(username: string, prefs: Partial<{
+  email_frequency: string; notify_upvotes: boolean; notify_usages: boolean;
+  notify_verifications: boolean; notify_revisions: boolean; notify_badges: boolean;
+}>): Promise<void> {
+  const db = getWriteDb();
+  const current = await getNotificationPrefs(username);
+  const merged = { ...current, ...prefs };
+  await db.execute({
+    sql: `INSERT INTO notification_preferences (username, email_frequency, notify_upvotes, notify_usages, notify_verifications, notify_revisions, notify_badges)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(username) DO UPDATE SET
+            email_frequency = excluded.email_frequency,
+            notify_upvotes = excluded.notify_upvotes,
+            notify_usages = excluded.notify_usages,
+            notify_verifications = excluded.notify_verifications,
+            notify_revisions = excluded.notify_revisions,
+            notify_badges = excluded.notify_badges`,
+    args: [username, merged.email_frequency, merged.notify_upvotes ? 1 : 0, merged.notify_usages ? 1 : 0, merged.notify_verifications ? 1 : 0, merged.notify_revisions ? 1 : 0, merged.notify_badges ? 1 : 0],
+  });
+}
+
+// ── User entries for profile ──
+
+export async function getUserEntries(username: string, limit: number = 5): Promise<Entry[]> {
+  const db = getDb();
+  const result = await db.execute({
+    sql: 'SELECT * FROM entries WHERE submitted_by = ? ORDER BY (upvotes - downvotes + usage_count * 2) DESC LIMIT ?',
+    args: [username, limit],
+  });
+  return result.rows.map(rowToEntry);
 }
 
 export async function importEntries(entries: {

@@ -1,6 +1,7 @@
 import type { APIRoute } from 'astro';
-import { insertEntry, findDuplicates } from '../../lib/db';
+import { insertEntry, findDuplicates, addRepEvent } from '../../lib/db';
 import { requestId, jsonResponse, createRateLimiter, detectInjection, validateUsername } from '../../lib/api-utils';
+import { dispatchNotification } from '../../lib/notifications';
 
 const VALID_CATEGORIES = ['pattern', 'gotcha', 'principle', 'snippet', 'debug'] as const;
 const VALID_LANGUAGES = [
@@ -350,6 +351,10 @@ export const POST: APIRoute = async ({ request }) => {
       code_snippets: codeSnippets.length > 0 ? codeSnippets : undefined,
       related_entries: relatedEntries.length > 0 ? relatedEntries : undefined,
     });
+
+    // Record reputation event (fire-and-forget)
+    const submittedBy = validateUsername(data.username as string || data.submitted_by as string);
+    addRepEvent(submittedBy, 'submit', id).catch(e => console.warn('Rep event failed:', e));
 
     const response: Record<string, unknown> = {
       id,

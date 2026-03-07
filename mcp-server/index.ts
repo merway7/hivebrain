@@ -186,6 +186,7 @@ server.tool(
     const text = [
       `# [${e.id}] ${e.title}`,
       `**Category:** ${e.category} | **Severity:** ${e.severity}${statusBadges.length ? ` | ${statusBadges.join(" | ")}` : ""}`,
+      e.submitted_by && e.submitted_by !== "anonymous" ? `**Author:** @${e.submitted_by}${e.author_rep ? ` (${e.author_rep} rep)` : ""}` : "",
       e.language ? `**Language:** ${e.language}` : "",
       e.framework ? `**Framework:** ${e.framework}` : "",
       e.tags?.length ? `**Tags:** ${e.tags.join(", ")}` : "",

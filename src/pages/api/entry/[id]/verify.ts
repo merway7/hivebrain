@@ -1,6 +1,7 @@
 import type { APIRoute } from 'astro';
-import { getEntry, addVerification, updateQualityStatus } from '../../../../lib/db';
+import { getEntry, addVerification, updateQualityStatus, addRepEvent } from '../../../../lib/db';
 import { jsonResponse, requestId, validateUsername, createRateLimiter, detectInjection } from '../../../../lib/api-utils';
+import { dispatchNotification } from '../../../../lib/notifications';
 
 const isRateLimited = createRateLimiter(20);
 
@@ -58,6 +59,10 @@ export const POST: APIRoute = async ({ params, request }) => {
     if (entry.quality_status !== 'verified') {
       await updateQualityStatus(id, 'verified');
     }
+
+    // Reputation + notification for entry author (fire-and-forget)
+    addRepEvent(entry.submitted_by, 'verification_received', id, verifiedBy).catch(e => console.warn('Rep event failed:', e));
+    dispatchNotification(entry.submitted_by, 'verification', id, { sourceUsername: verifiedBy, entryTitle: entry.title }).catch(() => {});
 
     return jsonResponse({
       id: verificationId,

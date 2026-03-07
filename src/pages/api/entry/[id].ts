@@ -1,6 +1,7 @@
 import type { APIRoute } from 'astro';
-import { getEntry, trackView, incrementUsageCount, getRevisions, addUsageContext, getLatestVerification, computeFreshness } from '../../../lib/db';
+import { getEntry, trackView, incrementUsageCount, getRevisions, addUsageContext, getLatestVerification, computeFreshness, addRepEvent, getReputation } from '../../../lib/db';
 import { jsonResponse, requestId, parseJsonField, stripEmpty, pickFields, validateUsername } from '../../../lib/api-utils';
+import { dispatchNotification } from '../../../lib/notifications';
 
 export const GET: APIRoute = async ({ params, request }) => {
   const reqId = requestId();
@@ -24,12 +25,16 @@ export const GET: APIRoute = async ({ params, request }) => {
     // Increment usage count for MCP consumers
     if (source === 'mcp') {
       await incrementUsageCount(id);
+      // Reputation for entry author on usage (fire-and-forget)
+      const requestingUser = validateUsername(url.searchParams.get('username') || undefined);
+      addRepEvent(entry.submitted_by, 'usage_received', id, requestingUser).catch(e => console.warn('Rep event failed:', e));
+      dispatchNotification(entry.submitted_by, 'usage', id, { sourceUsername: requestingUser, entryTitle: entry.title }).catch(() => {});
+
       // Accept optional usage context (max 500 chars, deduplicated within 5 min)
       const usageContext = url.searchParams.get('usage_context');
       if (usageContext && usageContext.trim().length > 0) {
         const trimmedContext = usageContext.trim().slice(0, 500);
-        const submittedBy = validateUsername(url.searchParams.get('username') || undefined);
-        await addUsageContext(id, trimmedContext, submittedBy);
+        await addUsageContext(id, trimmedContext, requestingUser);
       }
     }
 
@@ -61,6 +66,14 @@ export const GET: APIRoute = async ({ params, request }) => {
     const freshness = computeFreshness(entry, latestVerification?.verified_at);
     if (freshness !== 'fresh') {
       (parsed as any).freshness = freshness;
+    }
+
+    // Include author reputation (minimal: just the number)
+    if (entry.submitted_by && entry.submitted_by !== 'anonymous') {
+      const authorRep = await getReputation(entry.submitted_by);
+      if (authorRep && authorRep.total_rep > 0) {
+        (parsed as any).author_rep = authorRep.total_rep;
+      }
     }
 
     // Optional field filtering: ?fields=solution,gotchas,error_messages

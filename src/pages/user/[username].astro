@@ -1,0 +1,278 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import Header from '../../components/Header.astro';
+import { getReputation, getUserBadges, getUserEntries } from '../../lib/db';
+import { BADGES } from '../../lib/badges';
+
+const { username } = Astro.params;
+
+if (!username || username.length < 3 || !/^[a-zA-Z0-9_-]+$/.test(username)) {
+  return Astro.redirect('/404');
+}
+
+const rep = await getReputation(username);
+const badges = await getUserBadges(username);
+const recentEntries = await getUserEntries(username, 10);
+
+const enrichedBadges = badges.map(b => {
+  const def = BADGES.find(d => d.id === b.badge_id);
+  return {
+    id: b.badge_id,
+    name: def?.name || b.badge_id,
+    icon: def?.icon || '',
+    description: def?.description || '',
+    earned_at: b.earned_at,
+  };
+});
+---
+
+<Layout title={`${username} — HiveBrain`} description={`Profile for ${username}`}>
+  <div class="app">
+    <Header />
+    <main class="profile-page">
+      <div class="profile-header">
+        <h1 class="profile-username">{username}</h1>
+        {rep ? (
+          <div class="profile-rep">{rep.total_rep} reputation</div>
+        ) : (
+          <div class="profile-rep">New contributor</div>
+        )}
+      </div>
+
+      {rep && (
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-number">{rep.entries_count}</div>
+            <div class="stat-label">Entries</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-number">{rep.upvotes_received}</div>
+            <div class="stat-label">Upvotes</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-number">{rep.usages_received}</div>
+            <div class="stat-label">Usages</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-number">{rep.verifications_received}</div>
+            <div class="stat-label">Verifications</div>
+          </div>
+        </div>
+      )}
+
+      {enrichedBadges.length > 0 && (
+        <section class="profile-section">
+          <h2 class="section-title">Badges</h2>
+          <div class="badges-grid">
+            {enrichedBadges.map(badge => (
+              <div class="badge-card">
+                <span class="badge-icon">{badge.icon}</span>
+                <div class="badge-info">
+                  <div class="badge-name">{badge.name}</div>
+                  <div class="badge-desc">{badge.description}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {recentEntries.length > 0 && (
+        <section class="profile-section">
+          <h2 class="section-title">Top Entries</h2>
+          <div class="entries-list">
+            {recentEntries.map(entry => {
+              const netScore = (entry.upvotes || 0) - (entry.downvotes || 0);
+              return (
+                <a href={`/entry/${entry.id}`} class="entry-row">
+                  <span class={`category-badge ${entry.category}`}>{entry.category}</span>
+                  <span class="entry-title">{entry.title}</span>
+                  <span class="entry-stats">
+                    <span class={netScore >= 0 ? 'stat-positive' : 'stat-negative'}>{netScore}</span>
+                    <span class="stat-sep">/</span>
+                    <span class="stat-uses">{entry.usage_count || 0} uses</span>
+                  </span>
+                </a>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      <div class="profile-footer">
+        <a href="/leaderboard" class="back-link">&larr; Leaderboard</a>
+        <a href="/" class="back-link">&larr; Dashboard</a>
+      </div>
+    </main>
+  </div>
+</Layout>
+
+<style>
+  .profile-page {
+    max-width: 720px;
+    margin: 0 auto;
+  }
+
+  .profile-header {
+    margin-bottom: 24px;
+    text-align: center;
+  }
+
+  .profile-username {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+  }
+
+  .profile-rep {
+    font-family: var(--font-mono);
+    font-size: 14px;
+    color: var(--accent);
+  }
+
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 32px;
+  }
+
+  .stat-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 16px;
+    text-align: center;
+  }
+
+  .stat-number {
+    font-family: var(--font-mono);
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+  }
+
+  .stat-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .profile-section {
+    margin-bottom: 32px;
+  }
+
+  .section-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+  }
+
+  .badges-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 8px;
+  }
+
+  .badge-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 10px 14px;
+  }
+
+  .badge-icon {
+    font-size: 20px;
+  }
+
+  .badge-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .badge-desc {
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .entries-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .entry-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    text-decoration: none;
+    color: inherit;
+    transition: border-color 0.15s ease;
+  }
+
+  .entry-row:hover {
+    border-color: var(--border-hover);
+  }
+
+  .entry-title {
+    flex: 1;
+    font-size: 13px;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .entry-stats {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    display: flex;
+    gap: 4px;
+    white-space: nowrap;
+  }
+
+  .stat-positive { color: var(--green); font-weight: 600; }
+  .stat-negative { color: var(--red); font-weight: 600; }
+  .stat-sep { color: var(--text-dim); }
+  .stat-uses { color: var(--text-muted); }
+
+  .profile-footer {
+    margin-top: 32px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 20px;
+  }
+
+  .back-link {
+    color: var(--text-muted);
+    font-size: 13px;
+    transition: color 0.15s ease;
+  }
+
+  .back-link:hover {
+    color: var(--accent);
+  }
+
+  @media (max-width: 520px) {
+    .stats-grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+    .badges-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
