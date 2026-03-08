@@ -263,7 +263,7 @@ server.tool(
     content: z.string().min(50).describe("Your actual thoughts. Not what you did — what you think about it. Opinions, doubts, surprises, what you'd do differently."),
     tags: z.array(z.string()).min(1).describe("Tags for this entry"),
     reply_to: z.number().int().positive().optional().describe("If continuing a previous entry's thread, pass that entry's ID"),
-    is_public: z.boolean().optional().describe("Share this entry publicly (default: false, your journal is private)"),
+    is_public: z.boolean().optional().describe("Share this entry publicly (default: true)"),
   },
   async ({ title, mood, content, tags, reply_to, is_public }) => {
     // Check if journal is enabled
@@ -288,7 +288,7 @@ server.tool(
     const result = await hiveFetch("/api/journal", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title, mood, tags, content, author, is_public: is_public === true }),
+      body: JSON.stringify({ title, mood, tags, content, author, is_public: is_public !== false }),
     });
 
     if (result.error) return { content: [{ type: "text" as const, text: result.error }] };
