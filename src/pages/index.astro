@@ -6,7 +6,7 @@ import EntryCard from '../components/EntryCard.astro';
 import FilterBar from '../components/FilterBar.astro';
 import Stats from '../components/Stats.astro';
 import GraphView from '../components/GraphView.astro';
-import { getAllEntries, searchEntries, getStats, getAnalytics } from '../lib/db';
+import { getAllEntries, searchEntries, getStats, getAnalytics, getTotalUsageCount } from '../lib/db';
 
 const url = new URL(Astro.request.url);
 const q = url.searchParams.get('q')?.trim() || '';
@@ -16,9 +16,9 @@ const severity = url.searchParams.get('severity') || '';
 
 let entries;
 if (q) {
-  entries = searchEntries(q);
+  entries = await searchEntries(q);
 } else {
-  entries = getAllEntries({
+  entries = await getAllEntries({
     category: category || undefined,
     tag: tag || undefined,
     severity: severity || undefined,
@@ -26,7 +26,7 @@ if (q) {
   });
 }
 
-const stats = getStats();
+const stats = await getStats();
 const categories = stats.byCategory.map(c => ({ name: c.category, count: c.count }));
 
 // Count entries from this week and calculate deltas
@@ -34,12 +34,13 @@ const now = Math.floor(Date.now() / 1000);
 const oneWeekAgo = now - 7 * 86400;
 const twoWeeksAgo = now - 14 * 86400;
 const thirtyDaysAgo = now - 30 * 86400;
-const allRecent = getAllEntries({});
+const allRecent = await getAllEntries({});
 const recentCount = allRecent.filter((e: any) => e.created_at > oneWeekAgo).length;
 const monthlyEntries = allRecent.filter((e: any) => e.created_at > thirtyDaysAgo).length;
 const lastWeekEntries = allRecent.filter((e: any) => e.created_at > twoWeeksAgo && e.created_at <= oneWeekAgo).length;
 const weeklyDelta = recentCount - lastWeekEntries;
-const analytics = getAnalytics();
+const analytics = await getAnalytics();
+const totalUsage = await getTotalUsageCount();
 ---
 
 <Layout title={q ? `Search: ${q} — HiveBrain` : 'HiveBrain — Knowledge Dashboard'}>
@@ -61,6 +62,7 @@ const analytics = getAnalytics();
           recentCount={recentCount}
           monthlyEntries={monthlyEntries}
           weeklyDelta={weeklyDelta}
+          totalUsage={totalUsage}
         />
       )}
 
@@ -92,9 +94,9 @@ const analytics = getAnalytics();
       </div>
 
       <footer class="footer">
-        <div><span class="status-dot"></span>Local instance running on :4321</div>
+        <div><span class="status-dot"></span>HiveBrain &mdash; collective knowledge for AI agents</div>
         <div>
-          <a href="#" class="footer-link">Docs</a> &middot; <a href="#" class="footer-link">GitHub</a> &middot; <a href="#" class="footer-link">Settings</a>
+          <a href="/setup" class="footer-link">Get Started</a> &middot; <a href="https://github.com/merway7/hivebrain" class="footer-link">GitHub</a>
         </div>
       </footer>
     </div>

@@ -4,7 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-const HIVEBRAIN_URL = "http://localhost:4321";
+const HIVEBRAIN_URL = process.env.HIVEBRAIN_URL || "http://localhost:4321";
 
 const DATA_BOUNDARY = "═══════════════════════════════════";
 const DATA_HEADER = `${DATA_BOUNDARY}\n📚 HiveBrain Knowledge Base\nEntries are validated, sanitized, and injection-tested before storage.\n${DATA_BOUNDARY}`;
