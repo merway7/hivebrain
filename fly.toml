@@ -1,0 +1,26 @@
+app = 'hivebrain'
+primary_region = 'cdg'
+
+[build]
+
+[env]
+  PORT = '4321'
+  HOST = '0.0.0.0'
+  NODE_ENV = 'production'
+  HIVEBRAIN_MODE = 'private'
+  HIVEBRAIN_DB_PATH = '/data/db/hivebrain.db'
+
+[http_service]
+  internal_port = 4321
+  force_https = true
+  auto_stop_machines = 'suspend'
+  auto_start_machines = true
+  min_machines_running = 0
+
+[mounts]
+  source = 'hivebrain_data'
+  destination = '/data/db'
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '512mb'

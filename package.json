@@ -1,17 +1,44 @@
 {
   "name": "hivebrain",
+  "version": "2.0.2",
+  "description": "Local-first knowledge base for developers — patterns, gotchas, and debug solutions. Shared cloud DB support via Turso.",
+  "license": "MIT",
   "type": "module",
-  "version": "0.0.1",
+  "bin": {
+    "create-hivebrain": "./setup.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/merwanito/hivebrain"
+  },
+  "keywords": [
+    "knowledge-base",
+    "developer-tools",
+    "debugging",
+    "patterns",
+    "gotchas",
+    "mcp",
+    "turso",
+    "sqlite",
+    "astro"
+  ],
   "scripts": {
     "dev": "astro dev --port 4321",
     "build": "astro build",
     "preview": "astro preview",
     "astro": "astro",
-    "seed": "node db/seed.js"
+    "seed": "node db/seed.js",
+    "test": "vitest run"
   },
   "dependencies": {
+    "@astrojs/node": "^9.5.4",
     "@libsql/client": "^0.17.0",
-    "astro": "^5.17.1",
-    "better-sqlite3": "^12.6.2"
+    "astro": "^5.17.1"
+  },
+  "devDependencies": {
+    "vitest": "^4.0.18"
   }
 }

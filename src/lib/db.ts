@@ -27,7 +27,7 @@ function createTursoClient(): Client {
 }
 
 function createLocalClient(): Client {
-  const dbPath = join(process.cwd(), 'db', 'hivebrain.db');
+  const dbPath = process.env.HIVEBRAIN_DB_PATH || join(process.cwd(), 'db', 'hivebrain.db');
   return createClient({ url: `file:${dbPath}` });
 }
 

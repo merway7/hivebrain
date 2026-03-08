@@ -1,9 +1,11 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
+import node from '@astrojs/node';
 
 // https://astro.build/config
 export default defineConfig({
   output: 'server',
-  server: { port: 4321, host: 'localhost' },
+  adapter: node({ mode: 'standalone' }),
+  server: { port: 4321, host: '0.0.0.0' },
   vite: { server: { strictPort: true } },
 });
