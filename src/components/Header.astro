@@ -19,14 +19,6 @@
   </nav>
   <div class="header-actions">
     <a href="/setup" class="header-btn primary get-started-btn">Get Started</a>
-    <button class="header-btn" type="button">Export</button>
-    <button class="header-btn primary" type="button">+ New Entry</button>
-    <button class="header-btn" id="view-toggle" type="button">
-      <svg class="toggle-icon graph-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><circle cx="4" cy="6" r="2"/><circle cx="20" cy="6" r="2"/><circle cx="4" cy="18" r="2"/><circle cx="20" cy="18" r="2"/><path d="M6.5 7.5L9.5 10.5"/><path d="M14.5 10.5L17.5 7.5"/><path d="M6.5 16.5L9.5 13.5"/><path d="M14.5 13.5L17.5 16.5"/></svg>
-      <svg class="toggle-icon dash-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
-      <span class="toggle-label-graph">Cool View</span>
-      <span class="toggle-label-dash">Dashboard</span>
-    </button>
   </div>
 </header>
 
@@ -148,35 +140,6 @@
 
   a.header-btn {
     text-decoration: none;
-  }
-
-  /* Toggle icon/label visibility */
-  .dash-icon, .toggle-label-dash {
-    display: none;
-  }
-
-  :global(body.graph-active) .graph-icon,
-  :global(body.graph-active) .toggle-label-graph {
-    display: none;
-  }
-
-  :global(body.graph-active) .dash-icon,
-  :global(body.graph-active) .toggle-label-dash {
-    display: inline;
-  }
-
-  :global(body.graph-active) .header {
-    background: rgba(10,10,11,0.85);
-    border-bottom: 1px solid rgba(39,39,42,0.5);
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    z-index: 100;
-    backdrop-filter: blur(8px);
-    padding: 0 40px;
-    height: 56px;
-    margin-bottom: 0;
   }
 
   @media (max-width: 720px) {

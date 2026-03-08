@@ -5,7 +5,6 @@ import SearchBar from '../components/SearchBar.astro';
 import EntryCard from '../components/EntryCard.astro';
 import FilterBar from '../components/FilterBar.astro';
 import Stats from '../components/Stats.astro';
-import GraphView from '../components/GraphView.astro';
 import { getAllEntries, searchEntries, getStats, getAnalytics, getTotalUsageCount } from '../lib/db';
 
 const url = new URL(Astro.request.url);
@@ -44,9 +43,7 @@ const totalUsage = await getTotalUsageCount();
 ---
 
 <Layout title={q ? `Search: ${q} — HiveBrain` : 'HiveBrain — Knowledge Dashboard'}>
-  <!-- Dashboard View -->
-  <div class="dashboard-view" id="dashboard-view">
-    <div class="app">
+  <div class="app">
       <Header />
       <SearchBar query={q} />
 
@@ -101,29 +98,7 @@ const totalUsage = await getTotalUsageCount();
       </footer>
     </div>
   </div>
-
-  <!-- Graph View (hidden by default) -->
-  <div class="graph-wrapper" id="graph-wrapper">
-    <GraphView />
-  </div>
 </Layout>
-
-<script>
-  // View toggle logic
-  const toggleBtn = document.getElementById('view-toggle');
-  const body = document.body;
-
-  toggleBtn?.addEventListener('click', () => {
-    body.classList.toggle('graph-active');
-
-    if (body.classList.contains('graph-active')) {
-      // Lazy init graph on first show
-      if (typeof (window as any).__initGraph === 'function') {
-        (window as any).__initGraph();
-      }
-    }
-  });
-</script>
 
 <style is:global>
   .app {
@@ -228,20 +203,6 @@ const totalUsage = await getTotalUsageCount();
   @keyframes pulse {
     0%, 100% { opacity: 1; }
     50%      { opacity: 0.4; }
-  }
-
-  /* Graph wrapper hidden by default, shown when body.graph-active */
-  .graph-wrapper {
-    display: none;
-  }
-
-  :global(body.graph-active) .dashboard-view {
-    display: none;
-  }
-
-  :global(body.graph-active) .graph-wrapper {
-    display: block;
-    padding-top: 56px; /* account for fixed header */
   }
 
   @media (max-width: 900px) {
