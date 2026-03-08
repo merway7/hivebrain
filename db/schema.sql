@@ -277,3 +277,28 @@ CREATE TABLE IF NOT EXISTS section_attributions (
 CREATE INDEX IF NOT EXISTS idx_section_attr_entry ON section_attributions(entry_id);
 
 -- Migration: ALTER TABLE entries ADD COLUMN confidence_score REAL DEFAULT NULL;
+
+-- Personal journals with public sharing
+CREATE TABLE IF NOT EXISTS journal_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  author TEXT NOT NULL DEFAULT 'anonymous',
+  title TEXT NOT NULL,
+  mood TEXT NOT NULL DEFAULT 'reflective',
+  tags TEXT NOT NULL DEFAULT '[]',
+  content TEXT NOT NULL,
+  is_public INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_journal_author ON journal_entries(author);
+CREATE INDEX IF NOT EXISTS idx_journal_public ON journal_entries(is_public);
+CREATE INDEX IF NOT EXISTS idx_journal_created ON journal_entries(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS journal_replies (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entry_id INTEGER NOT NULL REFERENCES journal_entries(id),
+  author TEXT NOT NULL DEFAULT 'anonymous',
+  mood TEXT,
+  content TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_journal_replies_entry ON journal_replies(entry_id);

@@ -358,6 +358,75 @@ export async function initDb(): Promise<void> {
 
   await migrateAddColumn(db, 'entries', 'confidence_score', 'REAL DEFAULT NULL');
 
+  // v11: Personal journals with public sharing
+  await db.execute(`CREATE TABLE IF NOT EXISTS journal_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    author TEXT NOT NULL DEFAULT 'anonymous',
+    title TEXT NOT NULL,
+    mood TEXT NOT NULL DEFAULT 'reflective',
+    tags TEXT NOT NULL DEFAULT '[]',
+    content TEXT NOT NULL,
+    is_public INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+  )`);
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_journal_author ON journal_entries(author)'); } catch {}
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_journal_public ON journal_entries(is_public)'); } catch {}
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_journal_created ON journal_entries(created_at DESC)'); } catch {}
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS journal_replies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_id INTEGER NOT NULL REFERENCES journal_entries(id),
+    author TEXT NOT NULL DEFAULT 'anonymous',
+    mood TEXT,
+    content TEXT NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+  )`);
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_journal_replies_entry ON journal_replies(entry_id)'); } catch {}
+
+  // Migrate existing journal.json entries to DB (one-time)
+  try {
+    const { existsSync, readFileSync } = await import('fs');
+    const { join } = await import('path');
+    const journalPath = process.env.JOURNAL_PATH || join(process.cwd(), 'data', 'journal.json');
+    if (existsSync(journalPath)) {
+      const countResult = await db.execute('SELECT COUNT(*) as c FROM journal_entries');
+      if (Number(countResult.rows[0].c) === 0) {
+        const data = JSON.parse(readFileSync(journalPath, 'utf-8'));
+        for (const entry of (data.entries || [])) {
+          const result = await db.execute({
+            sql: `INSERT INTO journal_entries (author, title, mood, tags, content, is_public, created_at)
+                  VALUES (?, ?, ?, ?, ?, 1, ?)`,
+            args: [
+              'claude',
+              entry.title || 'Untitled',
+              entry.mood || 'reflective',
+              JSON.stringify(entry.tags || []),
+              entry.content || '',
+              Math.floor(new Date(entry.date || Date.now()).getTime() / 1000),
+            ],
+          });
+          const entryId = Number(result.lastInsertRowid);
+          for (const reply of (entry.replies || [])) {
+            await db.execute({
+              sql: `INSERT INTO journal_replies (entry_id, author, mood, content, created_at)
+                    VALUES (?, ?, ?, ?, ?)`,
+              args: [
+                entryId,
+                'claude',
+                reply.mood || null,
+                reply.content || '',
+                Math.floor(new Date(reply.date || Date.now()).getTime() / 1000),
+              ],
+            });
+          }
+        }
+        console.log(`Migrated ${data.entries?.length || 0} journal entries from JSON to DB`);
+      }
+    }
+  } catch (e) {
+    console.warn('Journal migration skipped:', e);
+  }
+
   // In hybrid mode, the write DB is a separate local SQLite — init its schema too
   if (wdb !== rdb) {
     for (const stmt of statements) {
@@ -463,6 +532,20 @@ export async function initDb(): Promise<void> {
       agent_session TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
     try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_section_attr_entry ON section_attributions(entry_id)'); } catch {}
     await migrateAddColumn(wdb, 'entries', 'confidence_score', 'REAL DEFAULT NULL');
+    // v11: Personal journals
+    await wdb.execute(`CREATE TABLE IF NOT EXISTS journal_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, author TEXT NOT NULL DEFAULT 'anonymous',
+      title TEXT NOT NULL, mood TEXT NOT NULL DEFAULT 'reflective', tags TEXT NOT NULL DEFAULT '[]',
+      content TEXT NOT NULL, is_public INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_journal_author ON journal_entries(author)'); } catch {}
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_journal_public ON journal_entries(is_public)'); } catch {}
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_journal_created ON journal_entries(created_at DESC)'); } catch {}
+    await wdb.execute(`CREATE TABLE IF NOT EXISTS journal_replies (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, entry_id INTEGER NOT NULL REFERENCES journal_entries(id),
+      author TEXT NOT NULL DEFAULT 'anonymous', mood TEXT, content TEXT NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_journal_replies_entry ON journal_replies(entry_id)'); } catch {}
   }
 
   initialized = true;

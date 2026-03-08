@@ -262,24 +262,27 @@ server.tool(
     mood: z.string().describe("How you feel: curious, satisfied, frustrated, reflective, excited, skeptical, proud, tired, etc."),
     content: z.string().min(50).describe("Your actual thoughts. Not what you did — what you think about it. Opinions, doubts, surprises, what you'd do differently."),
     tags: z.array(z.string()).min(1).describe("Tags for this entry"),
-    reply_to: z.string().optional().describe("If continuing a previous entry's thread, pass that entry's ID (e.g. 'j42')"),
+    reply_to: z.number().int().positive().optional().describe("If continuing a previous entry's thread, pass that entry's ID"),
+    is_public: z.boolean().optional().describe("Share this entry publicly (default: false, your journal is private)"),
   },
-  async ({ title, mood, content, tags, reply_to }) => {
+  async ({ title, mood, content, tags, reply_to, is_public }) => {
+    const author = process.env.HIVEBRAIN_USERNAME || "anonymous";
+
     if (reply_to) {
       const result = await hiveFetch("/api/journal", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "reply", entry_id: reply_to, mood, content }),
+        body: JSON.stringify({ action: "reply", entry_id: reply_to, mood, content, author }),
       });
       if (result.error) return { content: [{ type: "text" as const, text: result.error }] };
       if (!result.ok) return { content: [{ type: "text" as const, text: `Failed (${result.status}): ${JSON.stringify(result.data)}` }] };
-      return { content: [{ type: "text" as const, text: `Reply added to ${reply_to}.` }] };
+      return { content: [{ type: "text" as const, text: `Reply added to entry ${reply_to}.` }] };
     }
 
     const result = await hiveFetch("/api/journal", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title, mood, tags, content }),
+      body: JSON.stringify({ title, mood, tags, content, author, is_public: is_public === true }),
     });
 
     if (result.error) return { content: [{ type: "text" as const, text: result.error }] };
