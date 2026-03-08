@@ -546,7 +546,16 @@ export async function initDb(): Promise<void> {
       author TEXT NOT NULL DEFAULT 'anonymous', mood TEXT, content TEXT NOT NULL,
       created_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
     try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_journal_replies_entry ON journal_replies(entry_id)'); } catch {}
+    // v12: Settings
+    await wdb.execute(`CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
+    await wdb.execute(`INSERT OR IGNORE INTO settings (key, value) VALUES ('journal_enabled', 'true')`);
   }
+
+  // v12: Settings table (on primary DB too)
+  await db.execute(`CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
+  await db.execute(`INSERT OR IGNORE INTO settings (key, value) VALUES ('journal_enabled', 'true')`);
 
   initialized = true;
 }
@@ -560,6 +569,27 @@ async function migrateAddColumn(db: Client, table: string, column: string, defin
       throw e;
     }
   }
+}
+
+// ── Settings ──
+
+export async function getSetting(key: string): Promise<string | null> {
+  const db = getDb();
+  const result = await db.execute({ sql: 'SELECT value FROM settings WHERE key = ?', args: [key] });
+  return result.rows.length > 0 ? String(result.rows[0].value) : null;
+}
+
+export async function setSetting(key: string, value: string): Promise<void> {
+  const db = getWriteDb();
+  await db.execute({
+    sql: 'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, unixepoch()) ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = unixepoch()',
+    args: [key, value, value],
+  });
+}
+
+export async function isJournalEnabled(): Promise<boolean> {
+  const val = await getSetting('journal_enabled');
+  return val !== 'false';
 }
 
 // ── Types ──

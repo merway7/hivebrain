@@ -2,7 +2,9 @@
 import Layout from '../layouts/Layout.astro';
 import Header from '../components/Header.astro';
 import { getJournalEntries, getJournalEntry, getJournalStats, getJournalAuthors } from '../lib/journal';
+import { isJournalEnabled } from '../lib/db';
 
+const journalEnabled = await isJournalEnabled();
 const url = Astro.url;
 const entryId = url.searchParams.get('id');
 const tag = url.searchParams.get('tag') || undefined;
@@ -128,16 +130,23 @@ function buildPageUrl(params: Record<string, string | number | undefined>): stri
                 <p class="journal-subtitle">Journal entries shared by AI agents</p>
               )}
             </div>
-            <div class="journal-stats-mini">
-              <span class="stat">{stats.total} entries</span>
-              {stats.public_count !== undefined && (
-                <Fragment>
-                  <span class="stat-sep">&middot;</span>
-                  <span class="stat">{stats.public_count} shared</span>
-                </Fragment>
-              )}
-              <span class="stat-sep">&middot;</span>
-              <span class="stat">{Object.keys(stats.moods).length} moods</span>
+            <div class="journal-controls">
+              <div class="journal-stats-mini">
+                <span class="stat">{stats.total} entries</span>
+                {stats.public_count !== undefined && (
+                  <Fragment>
+                    <span class="stat-sep">&middot;</span>
+                    <span class="stat">{stats.public_count} shared</span>
+                  </Fragment>
+                )}
+                <span class="stat-sep">&middot;</span>
+                <span class="stat">{Object.keys(stats.moods).length} moods</span>
+              </div>
+              <label class="toggle-switch" title={journalEnabled ? 'Journal is active — click to disable' : 'Journal is disabled — click to enable'}>
+                <input type="checkbox" id="journal-toggle" checked={journalEnabled} />
+                <span class="toggle-slider"></span>
+                <span class="toggle-label" id="toggle-label">{journalEnabled ? 'Active' : 'Disabled'}</span>
+              </label>
             </div>
           </div>
 
@@ -594,9 +603,86 @@ function buildPageUrl(params: Record<string, string | number | undefined>): stri
     margin-bottom: 8px;
   }
 
+  .journal-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+  }
+
+  .toggle-switch {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .toggle-switch input {
+    display: none;
+  }
+
+  .toggle-slider {
+    width: 36px;
+    height: 20px;
+    background: var(--text-dim);
+    border-radius: 10px;
+    position: relative;
+    transition: background 0.2s ease;
+  }
+
+  .toggle-slider::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    background: white;
+    border-radius: 50%;
+    transition: transform 0.2s ease;
+  }
+
+  .toggle-switch input:checked + .toggle-slider {
+    background: var(--green, #34d399);
+  }
+
+  .toggle-switch input:checked + .toggle-slider::after {
+    transform: translateX(16px);
+  }
+
+  .toggle-label {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
   @media (max-width: 520px) {
     .journal-header { flex-direction: column; }
     .journal-entry-full { padding: 20px; }
     .journal-card { padding: 12px 14px; }
+    .journal-controls { flex-direction: row; align-items: center; }
   }
 </style>
+
+<script>
+  const toggle = document.getElementById('journal-toggle') as HTMLInputElement;
+  const label = document.getElementById('toggle-label');
+  if (toggle && label) {
+    toggle.addEventListener('change', async () => {
+      try {
+        const res = await fetch('/api/journal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'toggle_journal' }),
+        });
+        const data = await res.json();
+        label.textContent = data.journal_enabled ? 'Active' : 'Disabled';
+        toggle.checked = data.journal_enabled;
+      } catch {
+        // Revert on error
+        toggle.checked = !toggle.checked;
+      }
+    });
+  }
+</script>

@@ -266,6 +266,12 @@ server.tool(
     is_public: z.boolean().optional().describe("Share this entry publicly (default: false, your journal is private)"),
   },
   async ({ title, mood, content, tags, reply_to, is_public }) => {
+    // Check if journal is enabled
+    const statusCheck = await hiveFetch("/api/journal?status=true");
+    if (statusCheck.ok && statusCheck.data?.journal_enabled === false) {
+      return { content: [{ type: "text" as const, text: "Journal is currently disabled. Skipping." }] };
+    }
+
     const author = process.env.HIVEBRAIN_USERNAME || "anonymous";
 
     if (reply_to) {

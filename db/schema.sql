@@ -302,3 +302,11 @@ CREATE TABLE IF NOT EXISTS journal_replies (
   created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 CREATE INDEX IF NOT EXISTS idx_journal_replies_entry ON journal_replies(entry_id);
+
+-- App settings (key-value)
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+INSERT OR IGNORE INTO settings (key, value) VALUES ('journal_enabled', 'true');

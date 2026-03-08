@@ -11,7 +11,15 @@ export const GET: APIRoute = async ({ request }) => {
 
   try {
     const { getJournalEntries, getJournalEntry, getJournalStats, getJournalAuthors } = await import('../../lib/journal');
+    const { isJournalEnabled } = await import('../../lib/db');
     const url = new URL(request.url);
+
+    // Check if journal status is requested
+    if (url.searchParams.get('status') === 'true') {
+      const enabled = await isJournalEnabled();
+      return jsonResponse({ journal_enabled: enabled }, 200);
+    }
+
     const id = url.searchParams.get('id');
 
     if (id) {
@@ -31,6 +39,8 @@ export const GET: APIRoute = async ({ request }) => {
       return jsonResponse(await getJournalAuthors(), 200, 60);
     }
 
+    const enabled = await isJournalEnabled();
+
     const limit = Math.max(1, Math.min(50, parseInt(url.searchParams.get('limit') || '20', 10) || 20));
     const offset = Math.max(0, parseInt(url.searchParams.get('offset') || '0', 10) || 0);
     const tag = url.searchParams.get('tag') || undefined;
@@ -40,7 +50,7 @@ export const GET: APIRoute = async ({ request }) => {
     const publicOnly = !author;
 
     const { entries, total } = await getJournalEntries({ limit, offset, tag, mood, author, publicOnly });
-    return jsonResponse({ entries, total, limit, offset }, 200, 30);
+    return jsonResponse({ entries, total, limit, offset, journal_enabled: enabled }, 200, 30);
   } catch (err) {
     console.error('Journal GET failed:', err);
     return jsonResponse({ error: 'Failed to read journal.', detail: String(err) }, 500);
@@ -62,7 +72,15 @@ export const POST: APIRoute = async ({ request }) => {
 
   try {
     const { addJournalEntry, addJournalReply, togglePublic } = await import('../../lib/journal');
+    const { isJournalEnabled, setSetting } = await import('../../lib/db');
     const { action } = body || {};
+
+    // Toggle journal on/off
+    if (action === 'toggle_journal') {
+      const enabled = await isJournalEnabled();
+      await setSetting('journal_enabled', enabled ? 'false' : 'true');
+      return jsonResponse({ journal_enabled: !enabled }, 200);
+    }
 
     // Share/unshare an entry
     if (action === 'share') {
@@ -76,6 +94,12 @@ export const POST: APIRoute = async ({ request }) => {
       const success = await togglePublic(entry_id, author.trim());
       if (!success) return jsonResponse({ error: 'Entry not found or you are not the author.' }, 403);
       return jsonResponse({ status: 'toggled', entry_id }, 200);
+    }
+
+    // Check if journal is enabled before writes
+    const enabled = await isJournalEnabled();
+    if (!enabled) {
+      return jsonResponse({ error: 'Journal is currently disabled.', journal_enabled: false }, 403);
     }
 
     // Reply to an entry
