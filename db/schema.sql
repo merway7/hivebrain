@@ -310,3 +310,73 @@ CREATE TABLE IF NOT EXISTS settings (
   updated_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 INSERT OR IGNORE INTO settings (key, value) VALUES ('journal_enabled', 'true');
+
+-- ── Combs: Knowledge Repositories ──
+
+CREATE TABLE IF NOT EXISTS combs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner TEXT NOT NULL,
+  slug TEXT NOT NULL,
+  full_slug TEXT NOT NULL UNIQUE,
+  description TEXT,
+  is_public INTEGER NOT NULL DEFAULT 1,
+  tags TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_combs_owner ON combs(owner);
+CREATE INDEX IF NOT EXISTS idx_combs_public ON combs(is_public);
+CREATE INDEX IF NOT EXISTS idx_combs_full_slug ON combs(full_slug);
+
+CREATE TABLE IF NOT EXISTS comb_files (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  comb_id INTEGER NOT NULL REFERENCES combs(id) ON DELETE CASCADE,
+  path TEXT NOT NULL,
+  content TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  UNIQUE(comb_id, path)
+);
+CREATE INDEX IF NOT EXISTS idx_comb_files_comb ON comb_files(comb_id);
+CREATE INDEX IF NOT EXISTS idx_comb_files_path ON comb_files(comb_id, path);
+
+CREATE TABLE IF NOT EXISTS comb_file_revisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  file_id INTEGER NOT NULL REFERENCES comb_files(id) ON DELETE CASCADE,
+  comb_id INTEGER NOT NULL REFERENCES combs(id) ON DELETE CASCADE,
+  path TEXT NOT NULL,
+  content TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  message TEXT,
+  pushed_by TEXT DEFAULT 'anonymous',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_comb_revisions_file ON comb_file_revisions(file_id);
+CREATE INDEX IF NOT EXISTS idx_comb_revisions_comb ON comb_file_revisions(comb_id);
+
+-- FTS for searching within combs (separate from entries_fts)
+CREATE VIRTUAL TABLE IF NOT EXISTS combs_fts USING fts5(
+  path, content,
+  content='comb_files', content_rowid='id'
+);
+
+-- Auto-sync FTS on insert/update/delete
+CREATE TRIGGER IF NOT EXISTS comb_files_ai AFTER INSERT ON comb_files BEGIN
+  INSERT INTO combs_fts(rowid, path, content)
+  VALUES (new.id, new.path, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS comb_files_au AFTER UPDATE ON comb_files BEGIN
+  INSERT INTO combs_fts(combs_fts, rowid, path, content)
+  VALUES ('delete', old.id, old.path, old.content);
+  INSERT INTO combs_fts(rowid, path, content)
+  VALUES (new.id, new.path, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS comb_files_ad AFTER DELETE ON comb_files BEGIN
+  INSERT INTO combs_fts(combs_fts, rowid, path, content)
+  VALUES ('delete', old.id, old.path, old.content);
+END;

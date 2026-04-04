@@ -2,9 +2,13 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { setDefaultResultOrder } from "node:dns";
 import { z } from "zod";
 
-const HIVEBRAIN_URL = process.env.HIVEBRAIN_URL || "http://localhost:4321";
+// Force IPv4 first — Node.js defaults to IPv6 which hangs on some networks
+setDefaultResultOrder("ipv4first");
+
+const HIVEBRAIN_URL = process.env.HIVEBRAIN_URL || "https://www.hivebrain.dev";
 
 const DATA_BOUNDARY = "═══════════════════════════════════";
 const DATA_HEADER = `${DATA_BOUNDARY}\n📚 HiveBrain Knowledge Base\nEntries are validated, sanitized, and injection-tested before storage.\n${DATA_BOUNDARY}`;
@@ -16,7 +20,7 @@ function wrapUntrusted(content: string): string {
 
 async function hiveFetch(path: string, options?: RequestInit): Promise<any> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5000);
+  const timeout = setTimeout(() => controller.abort(), 30000);
 
   try {
     const res = await fetch(`${HIVEBRAIN_URL}${path}`, {
@@ -27,7 +31,7 @@ async function hiveFetch(path: string, options?: RequestInit): Promise<any> {
     return { ok: res.ok, status: res.status, data };
   } catch (err: any) {
     if (err.name === "AbortError") {
-      return { ok: false, status: 0, data: null, error: "HiveBrain is not responding (timeout). Is it running at localhost:4321?" };
+      return { ok: false, status: 0, data: null, error: `HiveBrain is not responding (timeout). Target: ${HIVEBRAIN_URL}` };
     }
     const msg = err?.cause?.code === "ECONNREFUSED"
       ? "HiveBrain is offline. Start it with: cd <hivebrain-dir> && npm run dev"
@@ -460,6 +464,146 @@ server.tool(
     }
 
     return { content: [{ type: "text" as const, text: lines.join('\n') }] };
+  }
+);
+
+// ── hivebrain_comb_create ──
+server.tool(
+  "hivebrain_comb_create",
+  "Create a new Comb (knowledge repository) in HiveBrain. Like creating a GitHub repo, but for markdown knowledge files. Use to set up a project's knowledge space before pushing files.",
+  {
+    slug: z.string().min(2).describe("Comb name (e.g. 'my-project-docs')"),
+    description: z.string().optional().describe("What this comb contains"),
+    is_public: z.boolean().optional().describe("Visible to all agents (default: true)"),
+    tags: z.array(z.string()).optional().describe("Tags for discovery"),
+    username: z.string().optional().describe("Owner username"),
+  },
+  async ({ slug, description, is_public, tags, username }) => {
+    const owner = username || process.env.HIVEBRAIN_USERNAME || "anonymous";
+    const result = await hiveFetch("/api/combs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slug, description, is_public, tags, username: owner }),
+    });
+
+    if (result.error) return { content: [{ type: "text" as const, text: result.error }] };
+    if (!result.ok) return { content: [{ type: "text" as const, text: `Failed (${result.status}): ${JSON.stringify(result.data)}` }] };
+
+    const comb = result.data?.comb;
+    return { content: [{ type: "text" as const, text: `Comb created: ${comb?.full_slug} (id: ${comb?.id})` }] };
+  }
+);
+
+// ── hivebrain_comb_push ──
+server.tool(
+  "hivebrain_comb_push",
+  "Push markdown files to a Comb. Like git push but for knowledge. Files are versioned — pushing unchanged content is a no-op. Use to store specs, architecture docs, API contracts, guides, or any project knowledge that other agents should be able to find.",
+  {
+    comb: z.string().describe("Full comb slug: 'owner/name'"),
+    files: z.array(z.object({
+      path: z.string().describe("File path within comb, e.g. 'docs/setup.md'"),
+      content: z.string().describe("Markdown content"),
+    })).min(1).describe("Files to push"),
+    message: z.string().optional().describe("Push message (like a commit message)"),
+    username: z.string().optional().describe("Who is pushing"),
+  },
+  async ({ comb, files, message, username }) => {
+    const pusher = username || process.env.HIVEBRAIN_USERNAME || "anonymous";
+    const result = await hiveFetch(`/api/combs/${encodeURIComponent(comb)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ files, message, username: pusher }),
+    });
+
+    if (result.error) return { content: [{ type: "text" as const, text: result.error }] };
+    if (!result.ok) return { content: [{ type: "text" as const, text: `Failed (${result.status}): ${JSON.stringify(result.data)}` }] };
+
+    const data = result.data;
+    const fileList = (data.files || []).map((f: any) =>
+      `- ${f.path}: ${f.changed ? `updated (rev ${f.revision})` : "unchanged"}`
+    ).join("\n");
+
+    return { content: [{ type: "text" as const, text: `Pushed to ${comb}: ${data.changed} changed, ${data.unchanged} unchanged\n${fileList}` }] };
+  }
+);
+
+// ── hivebrain_comb_search ──
+server.tool(
+  "hivebrain_comb_search",
+  "Search across all public Combs for knowledge. Returns matching files with snippets. Use to find specs, architecture docs, or project knowledge that other teams have published.",
+  {
+    query: z.string().describe("Search query"),
+    comb: z.string().optional().describe("Limit search to a specific comb (owner/name)"),
+    limit: z.number().int().min(1).max(20).optional().describe("Max results (default: 10)"),
+  },
+  async ({ query, comb, limit }) => {
+    const params = new URLSearchParams({ q: query });
+    if (comb) params.set("comb", comb);
+    if (limit) params.set("limit", String(limit));
+
+    const result = await hiveFetch(`/api/combs?${params.toString()}`);
+
+    if (result.error) return { content: [{ type: "text" as const, text: result.error }] };
+    if (!result.ok) return { content: [{ type: "text" as const, text: `Failed (${result.status}): ${JSON.stringify(result.data)}` }] };
+
+    const data = result.data;
+    const results = data?.results ?? [];
+    if (results.length === 0) {
+      return { content: [{ type: "text" as const, text: `No comb results for "${query}".` }] };
+    }
+
+    const text = results.map((r: any) =>
+      `## ${r.comb_full_slug} / ${r.file_path}\n${r.snippet}`
+    ).join("\n\n---\n\n");
+
+    return { content: [{ type: "text" as const, text: wrapUntrusted(`Found ${results.length} result(s) in combs:\n\n${text}\n\n_Use \`hivebrain_comb_get\` to read a full file._`) }] };
+  }
+);
+
+// ── hivebrain_comb_get ──
+server.tool(
+  "hivebrain_comb_get",
+  "Get a specific file from a Comb, or list all files in a Comb. Use to read project specs, architecture docs, or any knowledge stored in a comb.",
+  {
+    comb: z.string().describe("Full comb slug: 'owner/name'"),
+    path: z.string().optional().describe("File path to read (omit to list all files)"),
+    revision: z.number().int().optional().describe("Specific revision number (default: latest)"),
+  },
+  async ({ comb, path, revision }) => {
+    let url: string;
+    if (path) {
+      const params = new URLSearchParams({ action: "file", path });
+      if (revision) params.set("revision", String(revision));
+      url = `/api/combs/${encodeURIComponent(comb)}?${params.toString()}`;
+    } else {
+      url = `/api/combs/${encodeURIComponent(comb)}`;
+    }
+
+    const result = await hiveFetch(url);
+
+    if (result.error) return { content: [{ type: "text" as const, text: result.error }] };
+    if (!result.ok) return { content: [{ type: "text" as const, text: `Failed (${result.status}): ${JSON.stringify(result.data)}` }] };
+
+    const data = result.data;
+
+    // If we got a file, show its content
+    if (path && data.content) {
+      const header = `# ${comb} / ${data.path}\n**Revision:** ${data.revision} | **Updated:** ${data.updated_at || data.created_at}\n`;
+      return { content: [{ type: "text" as const, text: wrapUntrusted(`${header}\n${data.content}`) }] };
+    }
+
+    // Otherwise it's a comb listing
+    const files = data.files || [];
+    if (files.length === 0) {
+      return { content: [{ type: "text" as const, text: `Comb "${comb}" exists but has no files yet.` }] };
+    }
+
+    const listing = files.map((f: any) =>
+      `- ${f.path} (rev ${f.revision}, ${f.updated_at})`
+    ).join("\n");
+
+    const desc = data.description ? `\n_${data.description}_\n` : "";
+    return { content: [{ type: "text" as const, text: `# ${data.full_slug}${desc}\n**Files:** ${files.length} | **Tags:** ${(data.tags || []).join(", ") || "none"}\n\n${listing}` }] };
   }
 );
 

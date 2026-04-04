@@ -1,0 +1,539 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import Header from '../../components/Header.astro';
+import { getComb, listFiles, getFile, getFileRevisions, getCombRevisions, getCombStats } from '../../lib/combs';
+
+const slug = Astro.params.slug;
+if (!slug || !slug.includes('/')) {
+  return Astro.redirect('/combs');
+}
+
+const parts = slug.split('/');
+const fullSlug = `${parts[0]}/${parts[1]}`;
+
+const comb = await getComb(fullSlug);
+if (!comb) {
+  return Astro.redirect('/combs');
+}
+
+const files = await listFiles(comb.id);
+const stats = await getCombStats(comb.id);
+
+// File viewing mode
+const url = Astro.url;
+const filePath = url.searchParams.get('file');
+let fileContent: any = null;
+let fileRevisions: any[] = [];
+
+if (filePath) {
+  fileContent = await getFile(comb.id, filePath);
+  if (fileContent) {
+    fileRevisions = await getFileRevisions(fileContent.id, 10);
+  }
+}
+
+// Recent activity
+const recentRevisions = await getCombRevisions(comb.id, 10);
+
+function timeAgo(dateStr: string): string {
+  try {
+    const d = new Date(dateStr);
+    const diff = Date.now() - d.getTime();
+    const hours = Math.floor(diff / 3600000);
+    if (hours < 1) return 'just now';
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    if (days < 7) return `${days}d ago`;
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  } catch { return dateStr; }
+}
+
+function buildTree(filePaths: typeof files): any[] {
+  const tree: any[] = [];
+  const dirs = new Map<string, any[]>();
+
+  for (const f of filePaths) {
+    const segments = f.path.split('/');
+    if (segments.length === 1) {
+      tree.push({ type: 'file', name: f.path, ...f });
+    } else {
+      const dir = segments[0];
+      if (!dirs.has(dir)) dirs.set(dir, []);
+      dirs.get(dir)!.push({ type: 'file', name: segments.slice(1).join('/'), ...f });
+    }
+  }
+
+  const sorted: any[] = [];
+  for (const [dir, children] of [...dirs.entries()].sort()) {
+    sorted.push({ type: 'dir', name: dir, children: children.sort((a: any, b: any) => a.name.localeCompare(b.name)) });
+  }
+  sorted.push(...tree.sort((a: any, b: any) => a.name.localeCompare(b.name)));
+  return sorted;
+}
+
+const fileTree = buildTree(files);
+const pageTitle = fileContent
+  ? `${filePath} — ${fullSlug}`
+  : `${fullSlug} — Combs`;
+---
+
+<Layout title={pageTitle}>
+  <div class="app">
+    <Header />
+    <main class="comb-view">
+      <div class="comb-header">
+        <a href="/combs" class="back-link">&larr; Combs</a>
+        <div class="comb-title-row">
+          <h1 class="comb-title">
+            <span class="comb-owner">{comb.owner}</span>
+            <span class="comb-sep">/</span>
+            <span class="comb-name">{comb.slug}</span>
+          </h1>
+          {!comb.is_public && <span class="private-badge">private</span>}
+        </div>
+        {comb.description && <p class="comb-desc">{comb.description}</p>}
+        <div class="comb-info">
+          <span>{stats.file_count} file{stats.file_count !== 1 ? 's' : ''}</span>
+          <span>{stats.total_revisions} revision{stats.total_revisions !== 1 ? 's' : ''}</span>
+          {stats.last_push && <span>Last push {timeAgo(stats.last_push)}</span>}
+        </div>
+        {comb.tags.length > 0 && (
+          <div class="comb-tags">
+            {comb.tags.map((t: string) => <span class="tag">{t}</span>)}
+          </div>
+        )}
+      </div>
+
+      <div class="comb-content">
+        <aside class="file-sidebar">
+          <h3 class="sidebar-title">Files</h3>
+          {files.length === 0 ? (
+            <p class="empty-hint">No files yet</p>
+          ) : (
+            <nav class="file-tree">
+              {fileTree.map((item: any) => (
+                item.type === 'dir' ? (
+                  <div class="tree-dir">
+                    <span class="dir-name">{item.name}/</span>
+                    {item.children.map((child: any) => (
+                      <a
+                        href={`/combs/${fullSlug}?file=${encodeURIComponent(item.name + '/' + child.name)}`}
+                        class:list={['tree-file', { active: filePath === item.name + '/' + child.name }]}
+                      >
+                        {child.name}
+                        <span class="file-rev">v{child.revision}</span>
+                      </a>
+                    ))}
+                  </div>
+                ) : (
+                  <a
+                    href={`/combs/${fullSlug}?file=${encodeURIComponent(item.path)}`}
+                    class:list={['tree-file', { active: filePath === item.path }]}
+                  >
+                    {item.name}
+                    <span class="file-rev">v{item.revision}</span>
+                  </a>
+                )
+              ))}
+            </nav>
+          )}
+        </aside>
+
+        <div class="main-panel">
+          {fileContent ? (
+            <div class="file-view">
+              <div class="file-header">
+                <span class="file-path">{fileContent.path}</span>
+                <span class="file-meta">
+                  Rev {fileContent.revision} &middot; {timeAgo(fileContent.updated_at)}
+                </span>
+              </div>
+              <div class="file-body">
+                <pre class="file-content">{fileContent.content}</pre>
+              </div>
+              {fileRevisions.length > 1 && (
+                <div class="file-revisions">
+                  <h4 class="revisions-title">History</h4>
+                  {fileRevisions.map(rev => (
+                    <div class="revision-row">
+                      <span class="rev-num">v{rev.revision}</span>
+                      <span class="rev-msg">{rev.message || 'No message'}</span>
+                      <span class="rev-by">@{rev.pushed_by}</span>
+                      <span class="rev-date">{timeAgo(rev.created_at)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div class="comb-overview">
+              {files.length === 0 ? (
+                <div class="empty-state">
+                  <h3>Empty comb</h3>
+                  <p>Push files with <code>hivebrain_comb_push</code>:</p>
+                  <pre class="code-example">{`hivebrain_comb_push({
+  comb: "${fullSlug}",
+  files: [{ path: "README.md", content: "# ..." }],
+  message: "initial push"
+})`}</pre>
+                </div>
+              ) : (
+                <div class="activity-feed">
+                  <h3 class="feed-title">Recent Activity</h3>
+                  {recentRevisions.map(rev => (
+                    <a href={`/combs/${fullSlug}?file=${encodeURIComponent(rev.path)}`} class="activity-row">
+                      <span class="activity-action">
+                        {rev.revision === 1 ? 'added' : 'updated'}
+                      </span>
+                      <span class="activity-path">{rev.path}</span>
+                      {rev.message && <span class="activity-msg">{rev.message}</span>}
+                      <span class="activity-meta">@{rev.pushed_by} &middot; {timeAgo(rev.created_at)}</span>
+                    </a>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </main>
+  </div>
+</Layout>
+
+<style>
+  .comb-view {
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  .back-link {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-muted);
+    text-decoration: none;
+    margin-bottom: 12px;
+    display: inline-block;
+  }
+
+  .back-link:hover { color: var(--accent); }
+
+  .comb-header {
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .comb-title-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 6px;
+  }
+
+  .comb-title {
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  .comb-owner { color: var(--text-muted); }
+  .comb-sep { color: var(--text-dim); }
+  .comb-name { color: var(--accent); }
+
+  .private-badge {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--amber);
+    background: var(--amber-bg);
+    padding: 2px 8px;
+    border-radius: 99px;
+  }
+
+  .comb-desc {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+  }
+
+  .comb-info {
+    display: flex;
+    gap: 16px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+
+  .comb-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .tag {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--tag-text);
+    background: var(--tag-bg);
+    padding: 2px 8px;
+    border-radius: 99px;
+  }
+
+  .comb-content {
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    gap: 20px;
+  }
+
+  @media (max-width: 720px) {
+    .comb-content { grid-template-columns: 1fr; }
+    .file-sidebar { order: 2; }
+  }
+
+  /* Sidebar */
+  .file-sidebar {
+    position: sticky;
+    top: 20px;
+    align-self: start;
+  }
+
+  .sidebar-title {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+
+  .empty-hint {
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .file-tree {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .tree-dir {
+    margin-bottom: 4px;
+  }
+
+  .dir-name {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-muted);
+    padding: 3px 8px;
+    display: block;
+  }
+
+  .tree-dir .tree-file {
+    padding-left: 20px;
+  }
+
+  .tree-file {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-secondary);
+    text-decoration: none;
+    padding: 4px 8px;
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    transition: all var(--transition);
+  }
+
+  .tree-file:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .tree-file.active {
+    background: var(--accent-subtle);
+    color: var(--accent);
+  }
+
+  .file-rev {
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+
+  /* Main panel */
+  .file-view {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+  }
+
+  .file-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    background: var(--bg-overlay);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .file-path {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--text-primary);
+    font-weight: 500;
+  }
+
+  .file-meta {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  .file-body {
+    padding: 16px;
+    overflow-x: auto;
+  }
+
+  .file-content {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+
+  .file-revisions {
+    border-top: 1px solid var(--border);
+    padding: 12px 16px;
+  }
+
+  .revisions-title {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+
+  .revision-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 4px 0;
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .rev-num {
+    color: var(--accent);
+    min-width: 30px;
+  }
+
+  .rev-msg {
+    color: var(--text-secondary);
+    flex: 1;
+  }
+
+  .rev-by { color: var(--text-dim); }
+  .rev-date { color: var(--text-dim); }
+
+  /* Overview */
+  .empty-state {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--text-muted);
+  }
+
+  .empty-state h3 {
+    font-size: 16px;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+  }
+
+  .empty-state p {
+    font-size: 13px;
+    margin-bottom: 16px;
+  }
+
+  .empty-state code {
+    color: var(--accent);
+    background: var(--accent-subtle);
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .code-example {
+    text-align: left;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 12px 16px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    overflow-x: auto;
+    max-width: 500px;
+    margin: 0 auto;
+  }
+
+  .feed-title {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-dim);
+    margin-bottom: 12px;
+  }
+
+  .activity-feed {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .activity-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    text-decoration: none;
+    transition: background var(--transition);
+  }
+
+  .activity-row:hover {
+    background: var(--bg-hover);
+  }
+
+  .activity-action {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--green);
+    min-width: 55px;
+  }
+
+  .activity-path {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--accent);
+  }
+
+  .activity-msg {
+    font-size: 12px;
+    color: var(--text-muted);
+    flex: 1;
+  }
+
+  .activity-meta {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+</style>
