@@ -1,6 +1,8 @@
-import { createClient, type Client, type Row } from '@libsql/client';
+import type { Client, Row } from '@libsql/client';
+import { createClient as createHttpClient } from '@libsql/client/http';
 import { readFileSync } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
 let readClient: Client | null = null;
 let writeClient: Client | null = null;
@@ -20,13 +22,16 @@ export function getMode(): HiveBrainMode {
 }
 
 function createTursoClient(): Client {
-  return createClient({
+  // Use HTTP-only client for Turso (avoids native binary dependency on serverless)
+  return createHttpClient({
     url: process.env.TURSO_URL!,
     authToken: process.env.TURSO_AUTH_TOKEN,
   });
 }
 
 function createLocalClient(): Client {
+  // Dynamic require to avoid bundling native sqlite binary in serverless environments
+  const { createClient } = require('@libsql/client');
   const dbPath = process.env.HIVEBRAIN_DB_PATH || join(process.cwd(), 'db', 'hivebrain.db');
   return createClient({ url: `file:${dbPath}` });
 }
@@ -92,7 +97,13 @@ export async function initDb(): Promise<void> {
   const db = rdb;
 
   // Run schema
-  const schema = readFileSync(join(process.cwd(), 'db', 'schema.sql'), 'utf-8');
+  // Try multiple paths for schema.sql (cwd for local dev, __dirname-relative for Vercel)
+  let schemaPath = join(process.cwd(), 'db', 'schema.sql');
+  try { readFileSync(schemaPath); } catch {
+    const dir = dirname(fileURLToPath(import.meta.url));
+    schemaPath = join(dir, '..', '..', 'db', 'schema.sql');
+  }
+  const schema = readFileSync(schemaPath, 'utf-8');
   // libsql client.execute() can only run one statement at a time.
   // Split schema into individual statements, respecting BEGIN...END blocks (triggers).
   const stmts: string[] = [];
