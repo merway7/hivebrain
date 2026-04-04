@@ -1,0 +1,13 @@
+node_modules
+db/*.db
+db/*.db-*
+db/*.backup*
+.git
+.github
+*.log
+cloudflare-proxy
+systemd
+vscode-extension
+tests
+docs
+scripts
