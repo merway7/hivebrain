@@ -29,11 +29,27 @@ function createTursoClient(): Client {
   });
 }
 
+let _localCreateClient: any = null;
+
 function createLocalClient(): Client {
-  // Dynamic require to avoid bundling native sqlite binary in serverless environments
-  const { createClient } = require('@libsql/client');
+  // Use cached createClient to avoid repeated dynamic imports
+  if (!_localCreateClient) {
+    throw new Error('Local client not initialized. Call initLocalClient() first.');
+  }
   const dbPath = process.env.HIVEBRAIN_DB_PATH || join(process.cwd(), 'db', 'hivebrain.db');
-  return createClient({ url: `file:${dbPath}` });
+  return _localCreateClient({ url: `file:${dbPath}` });
+}
+
+async function initLocalClient(): Promise<void> {
+  if (_localCreateClient) return;
+  try {
+    // Dynamic import works in both ESM (Vite dev) and CJS (Vercel prod)
+    const mod = await import('@libsql/client');
+    _localCreateClient = mod.createClient;
+  } catch {
+    // Fallback for environments where the native module isn't available
+    _localCreateClient = null;
+  }
 }
 
 // ── Client singletons ──
@@ -76,7 +92,14 @@ let localClient: Client | null = null;
 
 export function getLocalDb(): Client {
   if (localClient) return localClient;
-  localClient = createLocalClient();
+  // In private mode or when no Turso, the write client IS the local client — reuse it
+  const mode = getMode();
+  const hasTurso = !!process.env.TURSO_URL;
+  if (mode === 'private' || !hasTurso) {
+    localClient = getWriteDb();
+  } else {
+    localClient = createLocalClient();
+  }
   return localClient;
 }
 
@@ -84,6 +107,9 @@ export function getLocalDb(): Client {
 
 export async function initDb(): Promise<void> {
   if (initialized) return;
+
+  // Initialize local client factory before any client creation
+  await initLocalClient();
 
   const mode = getMode();
   const rdb = getReadDb();
