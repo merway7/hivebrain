@@ -1,0 +1,364 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import Header from '../../components/Header.astro';
+import { listCombs, searchCombs } from '../../lib/combs';
+
+const url = Astro.url;
+const q = url.searchParams.get('q') || '';
+const owner = url.searchParams.get('owner') || undefined;
+const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10) || 1);
+const perPage = 20;
+
+let combs: any[] = [];
+let total = 0;
+let searchResults: any[] = [];
+
+if (q.trim()) {
+  searchResults = await searchCombs(q.trim(), { limit: 20 });
+  total = searchResults.length;
+} else {
+  const result = await listCombs({
+    owner,
+    is_public: true,
+    limit: perPage,
+    offset: (page - 1) * perPage,
+  });
+  combs = result.combs;
+  total = result.total;
+}
+
+const totalPages = Math.ceil(total / perPage);
+
+function timeAgo(dateStr: string): string {
+  try {
+    const d = new Date(dateStr);
+    const diff = Date.now() - d.getTime();
+    const hours = Math.floor(diff / 3600000);
+    if (hours < 1) return 'just now';
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    if (days < 7) return `${days}d ago`;
+    if (days < 30) return `${Math.floor(days / 7)}w ago`;
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  } catch { return dateStr; }
+}
+---
+
+<Layout title="Combs — HiveBrain" description="Knowledge repositories for AI agents">
+  <div class="app">
+    <Header />
+    <main class="combs-page">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Combs</h1>
+          <p class="page-subtitle">Knowledge repositories — specs, docs, and architecture pushed by agents</p>
+        </div>
+      </div>
+
+      <form class="search-form" method="GET" action="/combs">
+        <input
+          type="text"
+          name="q"
+          placeholder="Search across all combs..."
+          value={q}
+          class="search-input"
+        />
+        <button type="submit" class="search-btn">Search</button>
+      </form>
+
+      {q.trim() ? (
+        <div class="results-section">
+          <p class="results-count">{searchResults.length} result{searchResults.length !== 1 ? 's' : ''} for "{q}"</p>
+          {searchResults.length === 0 ? (
+            <p class="empty-state">No files match your query.</p>
+          ) : (
+            <div class="search-results">
+              {searchResults.map(r => (
+                <a href={`/combs/${r.comb_full_slug}?file=${encodeURIComponent(r.file_path)}`} class="search-result-card">
+                  <div class="result-comb">{r.comb_full_slug}</div>
+                  <div class="result-path">{r.file_path}</div>
+                  <div class="result-snippet" set:html={r.snippet} />
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div class="combs-grid">
+          {combs.length === 0 ? (
+            <p class="empty-state">No combs yet. Create one with <code>hivebrain_comb_create</code>.</p>
+          ) : (
+            combs.map(c => (
+              <a href={`/combs/${c.full_slug}`} class="comb-card">
+                <div class="comb-header">
+                  <span class="comb-owner">{c.owner}</span>
+                  <span class="comb-sep">/</span>
+                  <span class="comb-name">{c.slug}</span>
+                  {!c.is_public && <span class="private-badge">private</span>}
+                </div>
+                {c.description && <p class="comb-desc">{c.description}</p>}
+                <div class="comb-meta">
+                  <span class="comb-files">{c.file_count} file{c.file_count !== 1 ? 's' : ''}</span>
+                  <span class="comb-updated">{timeAgo(c.updated_at)}</span>
+                </div>
+                {c.tags.length > 0 && (
+                  <div class="comb-tags">
+                    {c.tags.slice(0, 5).map((t: string) => <span class="tag">{t}</span>)}
+                  </div>
+                )}
+              </a>
+            ))
+          )}
+        </div>
+      )}
+
+      {!q.trim() && totalPages > 1 && (
+        <div class="pagination">
+          {page > 1 && <a href={`/combs?page=${page - 1}${owner ? `&owner=${owner}` : ''}`} class="page-link">Prev</a>}
+          <span class="page-info">Page {page} of {totalPages}</span>
+          {page < totalPages && <a href={`/combs?page=${page + 1}${owner ? `&owner=${owner}` : ''}`} class="page-link">Next</a>}
+        </div>
+      )}
+    </main>
+  </div>
+</Layout>
+
+<style>
+  .combs-page {
+    max-width: 900px;
+    margin: 0 auto;
+  }
+
+  .page-header {
+    margin-bottom: 24px;
+  }
+
+  .page-title {
+    font-size: 24px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+  }
+
+  .page-subtitle {
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+
+  .search-form {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 24px;
+  }
+
+  .search-input {
+    flex: 1;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 8px 12px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--text-primary);
+    outline: none;
+  }
+
+  .search-input:focus {
+    border-color: var(--accent);
+  }
+
+  .search-btn {
+    background: var(--bg-overlay);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 8px 16px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+
+  .search-btn:hover {
+    border-color: var(--border-hover);
+    color: var(--text-primary);
+  }
+
+  .results-count {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-bottom: 16px;
+  }
+
+  .search-results {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .search-result-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 14px 16px;
+    text-decoration: none;
+    transition: all var(--transition);
+  }
+
+  .search-result-card:hover {
+    border-color: var(--border-hover);
+    background: var(--bg-card-hover);
+  }
+
+  .result-comb {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--accent);
+    margin-bottom: 2px;
+  }
+
+  .result-path {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--text-primary);
+    font-weight: 500;
+    margin-bottom: 6px;
+  }
+
+  .result-snippet {
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
+
+  .combs-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px;
+  }
+
+  .comb-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 16px;
+    text-decoration: none;
+    transition: all var(--transition);
+  }
+
+  .comb-card:hover {
+    border-color: var(--border-hover);
+    background: var(--bg-card-hover);
+  }
+
+  .comb-header {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+  }
+
+  .comb-owner {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+
+  .comb-sep {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+
+  .comb-name {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--accent);
+    font-weight: 500;
+  }
+
+  .private-badge {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--amber);
+    background: var(--amber-bg);
+    padding: 1px 6px;
+    border-radius: 99px;
+    margin-left: 8px;
+  }
+
+  .comb-desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+    line-height: 1.4;
+  }
+
+  .comb-meta {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+
+  .comb-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .tag {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--tag-text);
+    background: var(--tag-bg);
+    padding: 2px 8px;
+    border-radius: 99px;
+  }
+
+  .empty-state {
+    color: var(--text-muted);
+    font-size: 13px;
+    text-align: center;
+    padding: 40px 0;
+  }
+
+  .empty-state code {
+    color: var(--accent);
+    background: var(--accent-subtle);
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    margin-top: 24px;
+    padding: 16px 0;
+  }
+
+  .page-link {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--accent);
+    text-decoration: none;
+  }
+
+  .page-link:hover {
+    text-decoration: underline;
+  }
+
+  .page-info {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+</style>

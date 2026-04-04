@@ -550,12 +550,72 @@ export async function initDb(): Promise<void> {
     await wdb.execute(`CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
     await wdb.execute(`INSERT OR IGNORE INTO settings (key, value) VALUES ('journal_enabled', 'true')`);
+    // v13: Combs — knowledge repositories
+    await wdb.execute(`CREATE TABLE IF NOT EXISTS combs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL, slug TEXT NOT NULL,
+      full_slug TEXT NOT NULL UNIQUE, description TEXT, is_public INTEGER NOT NULL DEFAULT 1,
+      tags TEXT NOT NULL DEFAULT '[]', created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_combs_owner ON combs(owner)'); } catch {}
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_combs_public ON combs(is_public)'); } catch {}
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_combs_full_slug ON combs(full_slug)'); } catch {}
+    await wdb.execute(`CREATE TABLE IF NOT EXISTS comb_files (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, comb_id INTEGER NOT NULL REFERENCES combs(id) ON DELETE CASCADE,
+      path TEXT NOT NULL, content TEXT NOT NULL, content_hash TEXT NOT NULL,
+      revision INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch()), UNIQUE(comb_id, path))`);
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_comb_files_comb ON comb_files(comb_id)'); } catch {}
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_comb_files_path ON comb_files(comb_id, path)'); } catch {}
+    await wdb.execute(`CREATE TABLE IF NOT EXISTS comb_file_revisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL REFERENCES comb_files(id) ON DELETE CASCADE,
+      comb_id INTEGER NOT NULL REFERENCES combs(id) ON DELETE CASCADE, path TEXT NOT NULL,
+      content TEXT NOT NULL, content_hash TEXT NOT NULL, revision INTEGER NOT NULL,
+      message TEXT, pushed_by TEXT DEFAULT 'anonymous', created_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_comb_revisions_file ON comb_file_revisions(file_id)'); } catch {}
+    try { await wdb.execute('CREATE INDEX IF NOT EXISTS idx_comb_revisions_comb ON comb_file_revisions(comb_id)'); } catch {}
+    await wdb.execute(`CREATE VIRTUAL TABLE IF NOT EXISTS combs_fts USING fts5(path, content, content='comb_files', content_rowid='id')`);
+    try { await wdb.execute(`CREATE TRIGGER IF NOT EXISTS comb_files_ai AFTER INSERT ON comb_files BEGIN
+      INSERT INTO combs_fts(rowid, path, content) VALUES (new.id, new.path, new.content); END`); } catch {}
+    try { await wdb.execute(`CREATE TRIGGER IF NOT EXISTS comb_files_au AFTER UPDATE ON comb_files BEGIN
+      INSERT INTO combs_fts(combs_fts, rowid, path, content) VALUES ('delete', old.id, old.path, old.content);
+      INSERT INTO combs_fts(rowid, path, content) VALUES (new.id, new.path, new.content); END`); } catch {}
+    try { await wdb.execute(`CREATE TRIGGER IF NOT EXISTS comb_files_ad AFTER DELETE ON comb_files BEGIN
+      INSERT INTO combs_fts(combs_fts, rowid, path, content) VALUES ('delete', old.id, old.path, old.content); END`); } catch {}
   }
 
   // v12: Settings table (on primary DB too)
   await db.execute(`CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
   await db.execute(`INSERT OR IGNORE INTO settings (key, value) VALUES ('journal_enabled', 'true')`);
+
+  // v13: Combs tables (on primary DB too)
+  await db.execute(`CREATE TABLE IF NOT EXISTS combs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL, slug TEXT NOT NULL,
+    full_slug TEXT NOT NULL UNIQUE, description TEXT, is_public INTEGER NOT NULL DEFAULT 1,
+    tags TEXT NOT NULL DEFAULT '[]', created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_combs_owner ON combs(owner)'); } catch {}
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_combs_public ON combs(is_public)'); } catch {}
+  await db.execute(`CREATE TABLE IF NOT EXISTS comb_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, comb_id INTEGER NOT NULL REFERENCES combs(id) ON DELETE CASCADE,
+    path TEXT NOT NULL, content TEXT NOT NULL, content_hash TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch()), UNIQUE(comb_id, path))`);
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_comb_files_comb ON comb_files(comb_id)'); } catch {}
+  await db.execute(`CREATE TABLE IF NOT EXISTS comb_file_revisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL REFERENCES comb_files(id) ON DELETE CASCADE,
+    comb_id INTEGER NOT NULL REFERENCES combs(id) ON DELETE CASCADE, path TEXT NOT NULL,
+    content TEXT NOT NULL, content_hash TEXT NOT NULL, revision INTEGER NOT NULL,
+    message TEXT, pushed_by TEXT DEFAULT 'anonymous', created_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_comb_revisions_file ON comb_file_revisions(file_id)'); } catch {}
+  await db.execute(`CREATE VIRTUAL TABLE IF NOT EXISTS combs_fts USING fts5(path, content, content='comb_files', content_rowid='id')`);
+  try { await db.execute(`CREATE TRIGGER IF NOT EXISTS comb_files_ai AFTER INSERT ON comb_files BEGIN
+    INSERT INTO combs_fts(rowid, path, content) VALUES (new.id, new.path, new.content); END`); } catch {}
+  try { await db.execute(`CREATE TRIGGER IF NOT EXISTS comb_files_au AFTER UPDATE ON comb_files BEGIN
+    INSERT INTO combs_fts(combs_fts, rowid, path, content) VALUES ('delete', old.id, old.path, old.content);
+    INSERT INTO combs_fts(rowid, path, content) VALUES (new.id, new.path, new.content); END`); } catch {}
+  try { await db.execute(`CREATE TRIGGER IF NOT EXISTS comb_files_ad AFTER DELETE ON comb_files BEGIN
+    INSERT INTO combs_fts(combs_fts, rowid, path, content) VALUES ('delete', old.id, old.path, old.content); END`); } catch {}
 
   initialized = true;
 }
@@ -752,7 +812,15 @@ export async function getAllEntries(opts?: {
 export async function getEntry(id: number): Promise<Entry | undefined> {
   const db = getDb();
   const result = await db.execute({ sql: 'SELECT * FROM entries WHERE id = ?', args: [id] });
-  return result.rows.length > 0 ? rowToEntry(result.rows[0]) : undefined;
+  if (result.rows.length === 0) return undefined;
+  const entry = rowToEntry(result.rows[0]);
+
+  // Fire-and-forget: if confidence_score is NULL, compute it in the background
+  if (entry.confidence_score === null) {
+    computeConfidence(id).catch(() => {});
+  }
+
+  return entry;
 }
 
 // ── Search ──
@@ -1254,7 +1322,9 @@ export async function insertEntry(entry: {
         }
       }
     }
-  } catch { /* related entries is best-effort */ }
+  } catch (e) {
+    console.warn('Auto-related entries failed:', e);
+  }
 
   return { id: newId };
 }
@@ -1693,17 +1763,18 @@ export async function getLatestVerification(entryId: number): Promise<{ verified
 
 // ── Related entries (FTS-based) ──
 
-export async function findRelatedByFTS(title: string, tags: string[], excludeId: number): Promise<{ id: number; related_entries: string }[]> {
+export async function findRelatedByFTS(title: string, tags: string[], excludeId: number): Promise<{ id: number; title: string; related_entries: string }[]> {
   const db = getDb();
-  const words = title.replace(/['"]/g, '').split(/\s+/).filter(w => w.length > 2);
+  // Build search terms from title words (filtered by length + stop words) + tags
+  const titleWords = title.replace(/['"]/g, '').split(/\s+/).filter(w => w.length > 3 && !STOP_WORDS.has(w.toLowerCase()));
   const sanitizedTags = tags.map(t => t.replace(/['"]/g, ''));
-  const searchTerms = [...words, ...sanitizedTags].filter(w => w.length > 2);
+  const searchTerms = [...new Set([...titleWords.slice(0, 5), ...sanitizedTags.slice(0, 3)])];
   if (searchTerms.length === 0) return [];
 
   try {
     const orQuery = searchTerms.map(w => `"${w}"`).join(' OR ');
     const result = await db.execute({
-      sql: `SELECT entries.id, entries.related_entries FROM entries_fts
+      sql: `SELECT entries.id, entries.title, entries.related_entries FROM entries_fts
             JOIN entries ON entries.id = entries_fts.rowid
             WHERE entries_fts MATCH ? AND entries.id != ?
             ORDER BY bm25(entries_fts) LIMIT 5`,
@@ -1711,6 +1782,7 @@ export async function findRelatedByFTS(title: string, tags: string[], excludeId:
     });
     return result.rows.map(r => ({
       id: Number(r.id),
+      title: String(r.title),
       related_entries: String(r.related_entries ?? '[]'),
     }));
   } catch {
@@ -2056,6 +2128,57 @@ export async function getUserEntries(username: string, limit: number = 5): Promi
   return result.rows.map(rowToEntry);
 }
 
+export async function getUserEntriesRecent(username: string, limit: number = 20): Promise<Entry[]> {
+  const db = getDb();
+  const result = await db.execute({
+    sql: 'SELECT * FROM entries WHERE submitted_by = ? ORDER BY created_at DESC LIMIT ?',
+    args: [username, limit],
+  });
+  return result.rows.map(rowToEntry);
+}
+
+export async function getUserActivity(username: string, limit: number = 20): Promise<{
+  id: number; event_type: string; points: number; entry_id: number | null; created_at: number; entry_title: string | null;
+}[]> {
+  const db = getDb();
+  const result = await db.execute({
+    sql: `SELECT re.id, re.event_type, re.points, re.entry_id, re.created_at,
+                 e.title as entry_title
+          FROM reputation_events re
+          LEFT JOIN entries e ON re.entry_id = e.id
+          WHERE re.username = ?
+          ORDER BY re.created_at DESC LIMIT ?`,
+    args: [username, limit],
+  });
+  return result.rows.map(r => ({
+    id: Number(r.id),
+    event_type: String(r.event_type),
+    points: Number(r.points),
+    entry_id: r.entry_id != null ? Number(r.entry_id) : null,
+    created_at: Number(r.created_at),
+    entry_title: r.entry_title != null ? String(r.entry_title) : null,
+  }));
+}
+
+export async function getUserTotalViews(username: string): Promise<number> {
+  const db = getDb();
+  const result = await db.execute({
+    sql: 'SELECT COALESCE(SUM(view_count), 0) as total FROM entries WHERE submitted_by = ?',
+    args: [username],
+  });
+  return Number(result.rows[0]?.total ?? 0);
+}
+
+export async function getUserFirstEntry(username: string): Promise<number | null> {
+  const db = getDb();
+  const result = await db.execute({
+    sql: 'SELECT MIN(created_at) as first FROM entries WHERE submitted_by = ?',
+    args: [username],
+  });
+  if (result.rows.length === 0 || result.rows[0].first == null) return null;
+  return Number(result.rows[0].first);
+}
+
 export async function importEntries(entries: {
   title: string;
   category: string;
@@ -2156,19 +2279,81 @@ export async function getEntriesWithoutEmbeddings(limit: number = 50): Promise<n
 
 // ── Semantic search ──
 
-const MAX_SEMANTIC_SEARCH_EMBEDDINGS = 5000;
+// Fallback cap: when doing full-table semantic search (no candidate IDs),
+// only load embeddings for the most recent 2000 entries to limit memory usage.
+const SEMANTIC_FALLBACK_LIMIT = 2000;
 
-export async function semanticSearch(query: string, limit: number = 10): Promise<{ entry_id: number; similarity: number }[]> {
-  // Scale guard: skip semantic search if embedding count is too large for in-memory comparison
-  const count = await getEmbeddingCount();
-  if (count > MAX_SEMANTIC_SEARCH_EMBEDDINGS) return [];
+/**
+ * Load embeddings for a specific set of entry IDs.
+ * Uses a batched approach to avoid SQLite variable limits.
+ */
+export async function getEmbeddingsByIds(ids: number[]): Promise<{ entry_id: number; embedding: number[]; model: string }[]> {
+  if (ids.length === 0) return [];
+  const db = getDb();
+  const results: { entry_id: number; embedding: number[]; model: string }[] = [];
 
+  // SQLite has a variable limit (typically 999). Batch in chunks of 500.
+  const chunkSize = 500;
+  for (let i = 0; i < ids.length; i += chunkSize) {
+    const chunk = ids.slice(i, i + chunkSize);
+    const placeholders = chunk.map(() => '?').join(',');
+    const result = await db.execute({
+      sql: `SELECT entry_id, embedding, model FROM entry_embeddings WHERE entry_id IN (${placeholders})`,
+      args: chunk,
+    });
+    for (const r of result.rows) {
+      results.push({
+        entry_id: Number(r.entry_id),
+        embedding: JSON.parse(String(r.embedding)),
+        model: String(r.model),
+      });
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Semantic search with re-ranking support.
+ *
+ * @param query - The search query text
+ * @param limit - Max results to return
+ * @param candidateIds - Optional: IDs to re-rank (from FTS). Only loads embeddings for these.
+ *                       When omitted, falls back to scanning the most recent 2000 entries.
+ */
+export async function semanticSearch(
+  query: string,
+  limit: number = 10,
+  candidateIds?: number[],
+): Promise<{ entry_id: number; similarity: number }[]> {
   const queryEmbedding = await embed(query);
-  const allEmbeddings = await getAllEmbeddings();
 
-  if (allEmbeddings.length === 0) return [];
+  let embeddings: { entry_id: number; embedding: number[]; model: string }[];
 
-  const scored = allEmbeddings
+  if (candidateIds && candidateIds.length > 0) {
+    // Re-ranking mode: only load embeddings for the candidate IDs
+    embeddings = await getEmbeddingsByIds(candidateIds);
+  } else {
+    // Fallback mode: no candidates, load most recent entries (capped for memory safety)
+    const db = getDb();
+    const result = await db.execute({
+      sql: `SELECT ee.entry_id, ee.embedding, ee.model
+            FROM entry_embeddings ee
+            JOIN entries e ON e.id = ee.entry_id
+            ORDER BY e.created_at DESC
+            LIMIT ?`,
+      args: [SEMANTIC_FALLBACK_LIMIT],
+    });
+    embeddings = result.rows.map(r => ({
+      entry_id: Number(r.entry_id),
+      embedding: JSON.parse(String(r.embedding)),
+      model: String(r.model),
+    }));
+  }
+
+  if (embeddings.length === 0) return [];
+
+  const scored = embeddings
     .map(e => ({
       entry_id: e.entry_id,
       similarity: cosineSimilarity(queryEmbedding.values, e.embedding),
@@ -2797,46 +2982,49 @@ export async function computeConfidence(entryId: number): Promise<{
     contradiction_penalty: number;
   };
 }> {
-  const entry = await getEntry(entryId);
-  if (!entry) return { confidence: 0, factors: { verification_score: 0, vote_score: 0, usage_score: 0, age_penalty: 0, success_score: 0, contradiction_penalty: 0 } };
-
+  // Use direct DB query instead of getEntry() to avoid infinite recursion
+  // (getEntry fires computeConfidence when confidence_score is NULL)
   const db = getDb();
+  const entryResult = await db.execute({ sql: 'SELECT * FROM entries WHERE id = ?', args: [entryId] });
+  if (entryResult.rows.length === 0) return { confidence: 0, factors: { verification_score: 0, vote_score: 0, usage_score: 0, age_penalty: 0, success_score: 0, contradiction_penalty: 0 } };
+  const entry = rowToEntry(entryResult.rows[0]);
 
-  // 1. Verification score (0-0.25): verified = +0.25, unverified = 0
+  // 1. Usage score (0-0.35): PRIMARY signal — how many times agents retrieved this entry
+  //    log-scaled: 1 use = 0.07, 5 uses = 0.17, 15 uses = 0.28, 30+ uses = 0.35
+  const usage_score = Math.min(0.35, Math.log2(entry.usage_count + 1) * 0.07);
+
+  // 2. Vote score (0-0.25): community signal, secondary
+  const netVotes = entry.upvotes - entry.downvotes;
+  const totalVotes = entry.upvotes + entry.downvotes;
+  const vote_score = totalVotes > 0 ? Math.min(0.25, (netVotes / totalVotes) * 0.25) : 0.10;
+
+  // 3. Verification score (0-0.20): verified solutions are more trustworthy
   const verifications = await db.execute({
     sql: 'SELECT COUNT(*) as c FROM solution_verifications WHERE entry_id = ?',
     args: [entryId],
   });
   const verCount = Number(verifications.rows[0].c);
-  const verification_score = Math.min(0.25, verCount * 0.10);
+  const verification_score = Math.min(0.20, verCount * 0.08);
 
-  // 2. Vote score (0-0.25): net votes normalized
-  const netVotes = entry.upvotes - entry.downvotes;
-  const totalVotes = entry.upvotes + entry.downvotes;
-  const vote_score = totalVotes > 0 ? Math.min(0.25, (netVotes / totalVotes) * 0.25) : 0.10;
-
-  // 3. Usage score (0-0.20): log-scaled usage count
-  const usage_score = Math.min(0.20, Math.log2(entry.usage_count + 1) * 0.04);
-
-  // 4. Age penalty (0-0.15): older entries lose confidence unless verified recently
+  // 4. Age penalty (0-0.10): gentle decay for old unverified entries
   const ageMonths = (Date.now() / 1000 - entry.created_at) / (30 * 86400);
   const latestVerification = await getLatestVerification(entryId);
   const recentlyVerified = latestVerification && (Date.now() / 1000 - latestVerification.verified_at) < 6 * 30 * 86400;
   const recentlyVerifiedBool = !!recentlyVerified;
-  const age_penalty = recentlyVerifiedBool ? 0 : Math.min(0.15, ageMonths * 0.005);
+  const age_penalty = recentlyVerifiedBool ? 0 : Math.min(0.10, ageMonths * 0.003);
 
-  // 5. Success rate score (0-0.20): from retrieval traces
-  const success_score = entry.success_rate !== null ? entry.success_rate * 0.20 : 0.10;
+  // 5. Success rate score (0-0.10): bonus from retrieval feedback
+  const success_score = entry.success_rate !== null ? entry.success_rate * 0.10 : 0.05;
 
-  // 6. Contradiction penalty (0-0.15): entries with known contradictions lose confidence
+  // 6. Contradiction penalty (0-0.10): entries with known contradictions lose confidence
   const contradictions = await findContradictions(entryId);
-  const contradiction_penalty = Math.min(0.15, contradictions.length * 0.05);
+  const contradiction_penalty = Math.min(0.10, contradictions.length * 0.03);
 
   const factors = { verification_score, vote_score, usage_score, age_penalty, success_score, contradiction_penalty };
 
   // Confidence = sum of positive factors - penalties, clamped to [0, 1]
   const confidence = Math.max(0, Math.min(1,
-    verification_score + vote_score + usage_score + success_score
+    usage_score + vote_score + verification_score + success_score
     - age_penalty - contradiction_penalty
   ));
 
@@ -2848,6 +3036,104 @@ export async function computeConfidence(entryId: number): Promise<{
   });
 
   return { confidence, factors };
+}
+
+// ── Batch Confidence Scoring ──
+// Lightweight batch scoring: skips expensive findContradictions() call.
+// Uses only data available in the entries table + a single verification count query.
+
+export async function computeConfidenceBatch(batchSize = 500): Promise<{ scored: number; total: number }> {
+  const db = getDb();
+  const wdb = getWriteDb();
+
+  // Get total count of entries
+  const countResult = await db.execute('SELECT COUNT(*) as c FROM entries');
+  const total = Number(countResult.rows[0].c);
+
+  // Pre-fetch verification counts for all entries in one query
+  const verCountsResult = await db.execute(
+    'SELECT entry_id, COUNT(*) as c FROM solution_verifications GROUP BY entry_id'
+  );
+  const verCountMap = new Map<number, number>();
+  for (const row of verCountsResult.rows) {
+    verCountMap.set(Number(row.entry_id), Number(row.c));
+  }
+
+  // Pre-fetch latest verification dates for all entries
+  const latestVerResult = await db.execute(
+    'SELECT entry_id, MAX(verified_at) as latest FROM solution_verifications GROUP BY entry_id'
+  );
+  const latestVerMap = new Map<number, number>();
+  for (const row of latestVerResult.rows) {
+    latestVerMap.set(Number(row.entry_id), Number(row.latest));
+  }
+
+  const nowSec = Date.now() / 1000;
+  const sixMonthsSec = 6 * 30 * 86400;
+  let scored = 0;
+  let offset = 0;
+
+  while (offset < total) {
+    const batch = await db.execute({
+      sql: 'SELECT id, upvotes, downvotes, usage_count, created_at, success_rate FROM entries LIMIT ? OFFSET ?',
+      args: [batchSize, offset],
+    });
+
+    if (batch.rows.length === 0) break;
+
+    const updates: { confidence: number; id: number }[] = [];
+
+    for (const row of batch.rows) {
+      const id = Number(row.id);
+      const upvotes = Number(row.upvotes ?? 0);
+      const downvotes = Number(row.downvotes ?? 0);
+      const usage_count = Number(row.usage_count ?? 0);
+      const created_at = Number(row.created_at);
+      const success_rate = row.success_rate != null ? Number(row.success_rate) : null;
+
+      // 1. Usage score (0-0.35): PRIMARY signal
+      const usage_score = Math.min(0.35, Math.log2(usage_count + 1) * 0.07);
+
+      // 2. Vote score (0-0.25)
+      const netVotes = upvotes - downvotes;
+      const totalVotes = upvotes + downvotes;
+      const vote_score = totalVotes > 0 ? Math.min(0.25, (netVotes / totalVotes) * 0.25) : 0.10;
+
+      // 3. Verification score (0-0.20)
+      const verCount = verCountMap.get(id) || 0;
+      const verification_score = Math.min(0.20, verCount * 0.08);
+
+      // 4. Age penalty (0-0.10)
+      const ageMonths = (nowSec - created_at) / (30 * 86400);
+      const latestVer = latestVerMap.get(id);
+      const recentlyVerified = latestVer && (nowSec - latestVer) < sixMonthsSec;
+      const age_penalty = recentlyVerified ? 0 : Math.min(0.10, ageMonths * 0.003);
+
+      // 5. Success rate score (0-0.10)
+      const success_score = success_rate !== null ? success_rate * 0.10 : 0.05;
+
+      // No contradiction penalty in batch mode (too expensive)
+
+      const confidence = Math.max(0, Math.min(1,
+        usage_score + vote_score + verification_score + success_score - age_penalty
+      ));
+
+      updates.push({ confidence, id });
+    }
+
+    // Write batch of updates
+    for (const u of updates) {
+      await wdb.execute({
+        sql: 'UPDATE entries SET confidence_score = ? WHERE id = ?',
+        args: [u.confidence, u.id],
+      });
+    }
+
+    scored += updates.length;
+    offset += batchSize;
+  }
+
+  return { scored, total };
 }
 
 export async function getConfidenceDistribution(): Promise<{
