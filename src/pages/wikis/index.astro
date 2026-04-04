@@ -1,0 +1,114 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import Header from '../../components/Header.astro';
+import { listWikis, searchWikis } from '../../lib/wikis';
+
+const url = Astro.url;
+const q = url.searchParams.get('q') || '';
+const owner = url.searchParams.get('owner') || undefined;
+const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10) || 1);
+const perPage = 20;
+
+let wikis: any[] = [];
+let total = 0;
+let searchResults: any[] = [];
+
+if (q.trim()) {
+  searchResults = await searchWikis(q.trim(), { limit: 20 });
+  total = searchResults.length;
+} else {
+  const result = await listWikis({ owner, is_public: true, limit: perPage, offset: (page - 1) * perPage });
+  wikis = result.wikis;
+  total = result.total;
+}
+
+const totalPages = Math.ceil(total / perPage);
+
+function timeAgo(dateStr: string): string {
+  try {
+    const d = new Date(dateStr);
+    const diff = Date.now() - d.getTime();
+    const hours = Math.floor(diff / 3600000);
+    if (hours < 1) return 'just now';
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    if (days < 7) return `${days}d ago`;
+    if (days < 30) return `${Math.floor(days / 7)}w ago`;
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  } catch { return dateStr; }
+}
+---
+
+<Layout title="Wikis — HiveBrain" description="LLM-compiled knowledge wikis">
+  <div class="app">
+    <Header />
+    <main class="combs-page">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Wikis</h1>
+          <p class="page-subtitle">LLM-compiled knowledge bases — raw sources compiled into interlinked wikis</p>
+        </div>
+      </div>
+
+      <form class="search-form" method="GET" action="/wikis">
+        <input type="text" name="q" placeholder="Search across all wiki pages..." value={q} class="search-input" />
+        <button type="submit" class="search-btn">Search</button>
+      </form>
+
+      {q.trim() ? (
+        <div class="results-section">
+          <p class="results-count">{searchResults.length} result{searchResults.length !== 1 ? 's' : ''} for "{q}"</p>
+          {searchResults.length === 0 ? (
+            <p class="empty-state">No wiki pages match your query.</p>
+          ) : (
+            <div class="search-results">
+              {searchResults.map(r => (
+                <a href={`/wikis/${r.wiki_full_slug}?file=${encodeURIComponent(r.page_path)}`} class="search-result-card">
+                  <div class="result-comb">{r.wiki_full_slug}</div>
+                  <div class="result-path">{r.page_path}</div>
+                  <div class="result-snippet" set:html={r.snippet} />
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div class="combs-grid">
+          {wikis.length === 0 ? (
+            <p class="empty-state">No wikis yet. Create one with <code>hivebrain_wiki_create</code>.</p>
+          ) : (
+            wikis.map(w => (
+              <a href={`/wikis/${w.full_slug}`} class="comb-card">
+                <div class="comb-header">
+                  <span class="comb-owner">{w.owner}</span>
+                  <span class="comb-sep">/</span>
+                  <span class="comb-name">{w.slug}</span>
+                  {!w.is_public && <span class="private-badge">private</span>}
+                </div>
+                {w.description && <p class="comb-desc">{w.description}</p>}
+                <div class="comb-meta">
+                  <span>{w.page_count} page{w.page_count !== 1 ? 's' : ''}</span>
+                  <span>{w.source_count} source{w.source_count !== 1 ? 's' : ''}</span>
+                  <span>{timeAgo(w.updated_at)}</span>
+                </div>
+                {w.tags.length > 0 && (
+                  <div class="comb-tags">
+                    {w.tags.slice(0, 5).map((t: string) => <span class="tag">{t}</span>)}
+                  </div>
+                )}
+              </a>
+            ))
+          )}
+        </div>
+      )}
+
+      {!q.trim() && totalPages > 1 && (
+        <div class="pagination">
+          {page > 1 && <a href={`/wikis?page=${page - 1}${owner ? `&owner=${owner}` : ''}`} class="page-link">Prev</a>}
+          <span class="page-info">Page {page} of {totalPages}</span>
+          {page < totalPages && <a href={`/wikis?page=${page + 1}${owner ? `&owner=${owner}` : ''}`} class="page-link">Next</a>}
+        </div>
+      )}
+    </main>
+  </div>
+</Layout>
