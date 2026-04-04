@@ -70,6 +70,16 @@ export function getDb(): Client {
   return getReadDb();
 }
 
+// ── Local-only client (for wikis — always local, never cloud) ──
+
+let localClient: Client | null = null;
+
+export function getLocalDb(): Client {
+  if (localClient) return localClient;
+  localClient = createLocalClient();
+  return localClient;
+}
+
 // ── Initialization (call once via middleware) ──
 
 export async function initDb(): Promise<void> {
