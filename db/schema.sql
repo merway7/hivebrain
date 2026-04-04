@@ -380,3 +380,97 @@ CREATE TRIGGER IF NOT EXISTS comb_files_ad AFTER DELETE ON comb_files BEGIN
   INSERT INTO combs_fts(combs_fts, rowid, path, content)
   VALUES ('delete', old.id, old.path, old.content);
 END;
+
+-- ── Wikis: LLM Knowledge Wikis (Karpathy pattern) ──
+
+CREATE TABLE IF NOT EXISTS wikis (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner TEXT NOT NULL,
+  slug TEXT NOT NULL,
+  full_slug TEXT NOT NULL UNIQUE,
+  description TEXT,
+  schema_content TEXT,
+  is_public INTEGER NOT NULL DEFAULT 1,
+  tags TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_wikis_owner ON wikis(owner);
+CREATE INDEX IF NOT EXISTS idx_wikis_public ON wikis(is_public);
+
+CREATE TABLE IF NOT EXISTS wiki_sources (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  wiki_id INTEGER NOT NULL REFERENCES wikis(id) ON DELETE CASCADE,
+  path TEXT NOT NULL,
+  content TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  mime_type TEXT DEFAULT 'text/markdown',
+  ingested_by TEXT DEFAULT 'anonymous',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  UNIQUE(wiki_id, path)
+);
+CREATE INDEX IF NOT EXISTS idx_wiki_sources_wiki ON wiki_sources(wiki_id);
+
+CREATE TABLE IF NOT EXISTS wiki_pages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  wiki_id INTEGER NOT NULL REFERENCES wikis(id) ON DELETE CASCADE,
+  path TEXT NOT NULL,
+  content TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1,
+  wikilinks TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  UNIQUE(wiki_id, path)
+);
+CREATE INDEX IF NOT EXISTS idx_wiki_pages_wiki ON wiki_pages(wiki_id);
+CREATE INDEX IF NOT EXISTS idx_wiki_pages_path ON wiki_pages(wiki_id, path);
+
+CREATE TABLE IF NOT EXISTS wiki_page_revisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  page_id INTEGER NOT NULL REFERENCES wiki_pages(id) ON DELETE CASCADE,
+  wiki_id INTEGER NOT NULL REFERENCES wikis(id) ON DELETE CASCADE,
+  path TEXT NOT NULL,
+  content TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  message TEXT,
+  pushed_by TEXT DEFAULT 'anonymous',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_wiki_page_revisions_page ON wiki_page_revisions(page_id);
+CREATE INDEX IF NOT EXISTS idx_wiki_page_revisions_wiki ON wiki_page_revisions(wiki_id);
+
+CREATE TABLE IF NOT EXISTS wiki_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  wiki_id INTEGER NOT NULL REFERENCES wikis(id) ON DELETE CASCADE,
+  operation TEXT NOT NULL CHECK(operation IN ('ingest', 'query', 'lint')),
+  summary TEXT NOT NULL,
+  details TEXT,
+  performed_by TEXT DEFAULT 'anonymous',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_wiki_log_wiki ON wiki_log(wiki_id);
+CREATE INDEX IF NOT EXISTS idx_wiki_log_created ON wiki_log(created_at DESC);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS wikis_fts USING fts5(
+  path, content,
+  content='wiki_pages', content_rowid='id'
+);
+
+CREATE TRIGGER IF NOT EXISTS wiki_pages_ai AFTER INSERT ON wiki_pages BEGIN
+  INSERT INTO wikis_fts(rowid, path, content)
+  VALUES (new.id, new.path, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS wiki_pages_au AFTER UPDATE ON wiki_pages BEGIN
+  INSERT INTO wikis_fts(wikis_fts, rowid, path, content)
+  VALUES ('delete', old.id, old.path, old.content);
+  INSERT INTO wikis_fts(rowid, path, content)
+  VALUES (new.id, new.path, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS wiki_pages_ad AFTER DELETE ON wiki_pages BEGIN
+  INSERT INTO wikis_fts(wikis_fts, rowid, path, content)
+  VALUES ('delete', old.id, old.path, old.content);
+END;

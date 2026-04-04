@@ -607,6 +607,254 @@ server.tool(
   }
 );
 
+// ── hivebrain_wiki_create ──
+server.tool(
+  "hivebrain_wiki_create",
+  "Create a new Wiki (LLM knowledge base) in HiveBrain. Wikis have raw sources (immutable) and compiled pages (LLM-maintained). Use for research topics, deep dives, or any domain where you want to build up interlinked knowledge over time.",
+  {
+    slug: z.string().min(2).describe("Wiki name (e.g. 'ml-research')"),
+    description: z.string().optional().describe("What this wiki covers"),
+    schema_content: z.string().optional().describe("Schema document: conventions, structure, workflows for this wiki"),
+    is_public: z.boolean().optional().describe("Visible to all (default: true)"),
+    tags: z.array(z.string()).optional(),
+    username: z.string().optional(),
+  },
+  async ({ slug, description, schema_content, is_public, tags, username }) => {
+    const owner = username || process.env.HIVEBRAIN_USERNAME || "anonymous";
+    const result = await hiveFetch("/api/wikis", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slug, description, schema_content, is_public, tags, username: owner }),
+    });
+    if (result.error) return { content: [{ type: "text" as const, text: result.error }] };
+    if (!result.ok) return { content: [{ type: "text" as const, text: `Failed (${result.status}): ${JSON.stringify(result.data)}` }] };
+    const wiki = result.data?.wiki;
+    return { content: [{ type: "text" as const, text: `Wiki created: ${wiki?.full_slug} (id: ${wiki?.id})` }] };
+  }
+);
+
+// ── hivebrain_wiki_ingest ──
+server.tool(
+  "hivebrain_wiki_ingest",
+  "Ingest raw sources into a Wiki and optionally push compiled wiki pages. Sources are immutable (stored once). After ingesting, push the wiki pages you generated from reading the sources. Appends to the operation log.",
+  {
+    wiki: z.string().describe("Full wiki slug: 'owner/name'"),
+    sources: z.array(z.object({
+      path: z.string().describe("Source file path, e.g. 'raw/paper-title.md'"),
+      content: z.string().describe("Source content (markdown, text)"),
+    })).optional().describe("Raw source documents to ingest"),
+    pages: z.array(z.object({
+      path: z.string().describe("Wiki page path, e.g. 'concepts/attention.md'"),
+      content: z.string().describe("Compiled wiki page content with [[wikilinks]]"),
+    })).optional().describe("Wiki pages generated from the sources"),
+    log_summary: z.string().optional().describe("Summary for the operation log"),
+    username: z.string().optional(),
+  },
+  async ({ wiki, sources, pages, log_summary, username }) => {
+    const pusher = username || process.env.HIVEBRAIN_USERNAME || "anonymous";
+    const lines: string[] = [];
+
+    if (sources && sources.length > 0) {
+      const result = await hiveFetch(`/api/wikis/${encodeURIComponent(wiki)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "sources", sources, username: pusher }),
+      });
+      if (result.error) return { content: [{ type: "text" as const, text: result.error }] };
+      if (!result.ok) return { content: [{ type: "text" as const, text: `Source ingest failed: ${JSON.stringify(result.data)}` }] };
+      lines.push(`Sources: ${result.data.new_sources} new, ${sources.length - result.data.new_sources} existing`);
+    }
+
+    if (pages && pages.length > 0) {
+      const result = await hiveFetch(`/api/wikis/${encodeURIComponent(wiki)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "pages", pages, message: log_summary, username: pusher }),
+      });
+      if (result.error) return { content: [{ type: "text" as const, text: result.error }] };
+      if (!result.ok) return { content: [{ type: "text" as const, text: `Page push failed: ${JSON.stringify(result.data)}` }] };
+      lines.push(`Pages: ${result.data.changed} changed, ${result.data.unchanged} unchanged`);
+    }
+
+    if (log_summary) {
+      await hiveFetch(`/api/wikis/${encodeURIComponent(wiki)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "log", operation: "ingest", summary: log_summary, username: pusher }),
+      });
+    }
+
+    return { content: [{ type: "text" as const, text: `Ingested into ${wiki}:\n${lines.join("\n")}` }] };
+  }
+);
+
+// ── hivebrain_wiki_query ──
+server.tool(
+  "hivebrain_wiki_query",
+  "Search across Wiki pages for knowledge. Returns matching pages with snippets. Use to find concepts, entities, or synthesized knowledge in your research wikis.",
+  {
+    query: z.string().describe("Search query"),
+    wiki: z.string().optional().describe("Limit search to a specific wiki (owner/name)"),
+    limit: z.number().int().min(1).max(20).optional(),
+  },
+  async ({ query, wiki, limit }) => {
+    const params = new URLSearchParams({ q: query });
+    if (wiki) params.set("wiki", wiki);
+    if (limit) params.set("limit", String(limit));
+
+    const result = await hiveFetch(`/api/wikis?${params.toString()}`);
+    if (result.error) return { content: [{ type: "text" as const, text: result.error }] };
+    if (!result.ok) return { content: [{ type: "text" as const, text: `Failed: ${JSON.stringify(result.data)}` }] };
+
+    const results = result.data?.results ?? [];
+    if (results.length === 0) {
+      return { content: [{ type: "text" as const, text: `No wiki results for "${query}".` }] };
+    }
+
+    const text = results.map((r: any) =>
+      `## ${r.wiki_full_slug} / ${r.page_path}\n${r.snippet}`
+    ).join("\n\n---\n\n");
+
+    return { content: [{ type: "text" as const, text: wrapUntrusted(`Found ${results.length} wiki result(s):\n\n${text}\n\n_Use \`hivebrain_wiki_get\` to read a full page._`) }] };
+  }
+);
+
+// ── hivebrain_wiki_get ──
+server.tool(
+  "hivebrain_wiki_get",
+  "Get a wiki page, a raw source, or list all files in a Wiki. Use to read compiled knowledge pages or browse wiki structure.",
+  {
+    wiki: z.string().describe("Full wiki slug: 'owner/name'"),
+    path: z.string().optional().describe("File path (omit to list all pages and sources)"),
+    layer: z.enum(["page", "source"]).optional().describe("Which layer: 'page' (compiled, default) or 'source' (raw)"),
+    revision: z.number().int().optional().describe("Specific page revision (default: latest)"),
+  },
+  async ({ wiki, path, layer, revision }) => {
+    const action = layer === "source" ? "source" : "page";
+    let url: string;
+    if (path) {
+      const params = new URLSearchParams({ action, path });
+      if (revision) params.set("revision", String(revision));
+      url = `/api/wikis/${encodeURIComponent(wiki)}?${params.toString()}`;
+    } else {
+      url = `/api/wikis/${encodeURIComponent(wiki)}`;
+    }
+
+    const result = await hiveFetch(url);
+    if (result.error) return { content: [{ type: "text" as const, text: result.error }] };
+    if (!result.ok) return { content: [{ type: "text" as const, text: `Failed (${result.status}): ${JSON.stringify(result.data)}` }] };
+
+    const data = result.data;
+
+    if (path && data.content) {
+      const header = `# ${wiki} / ${data.path}\n**${layer === "source" ? "Raw Source" : `Page (v${data.revision})`}** | ${data.updated_at || data.created_at}\n`;
+      return { content: [{ type: "text" as const, text: wrapUntrusted(`${header}\n${data.content}`) }] };
+    }
+
+    // Listing mode
+    const pages = data.pages || [];
+    const sources = data.sources || [];
+    const desc = data.description ? `\n_${data.description}_\n` : "";
+
+    const listing: string[] = [];
+    if (pages.length > 0) {
+      listing.push(`**Pages (${pages.length}):**`);
+      for (const p of pages) listing.push(`- ${p.path} (v${p.revision})`);
+    }
+    if (sources.length > 0) {
+      listing.push(`\n**Sources (${sources.length}):**`);
+      for (const s of sources) listing.push(`- ${s.path} (${s.mime_type})`);
+    }
+    if (pages.length === 0 && sources.length === 0) {
+      listing.push("Empty wiki. Ingest sources with `hivebrain_wiki_ingest`.");
+    }
+
+    return { content: [{ type: "text" as const, text: `# ${data.full_slug}${desc}\n**Tags:** ${(data.tags || []).join(", ") || "none"}\n\n${listing.join("\n")}` }] };
+  }
+);
+
+// ── hivebrain_wiki_push ──
+server.tool(
+  "hivebrain_wiki_push",
+  "Push or update compiled wiki pages. Use during query operations to file answers back into the wiki, or during lint to fix issues. Pages are versioned and wikilinks are auto-extracted.",
+  {
+    wiki: z.string().describe("Full wiki slug: 'owner/name'"),
+    pages: z.array(z.object({
+      path: z.string().describe("Page path, e.g. 'concepts/transformers.md'"),
+      content: z.string().describe("Page content with [[wikilinks]]"),
+    })).min(1),
+    message: z.string().optional().describe("Push message"),
+    username: z.string().optional(),
+  },
+  async ({ wiki, pages, message, username }) => {
+    const pusher = username || process.env.HIVEBRAIN_USERNAME || "anonymous";
+    const result = await hiveFetch(`/api/wikis/${encodeURIComponent(wiki)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "pages", pages, message, username: pusher }),
+    });
+    if (result.error) return { content: [{ type: "text" as const, text: result.error }] };
+    if (!result.ok) return { content: [{ type: "text" as const, text: `Failed: ${JSON.stringify(result.data)}` }] };
+
+    const data = result.data;
+    const fileList = (data.pages || []).map((p: any) =>
+      `- ${p.path}: ${p.changed ? `updated (v${p.revision})` : "unchanged"}`
+    ).join("\n");
+    return { content: [{ type: "text" as const, text: `Pushed to ${wiki}: ${data.changed} changed, ${data.unchanged} unchanged\n${fileList}` }] };
+  }
+);
+
+// ── hivebrain_wiki_lint ──
+server.tool(
+  "hivebrain_wiki_lint",
+  "Run health checks on a Wiki. Finds orphan pages (no incoming links), broken wikilinks (point to non-existent pages), and stale pages (not updated in 30+ days). Use periodically to keep the wiki healthy.",
+  {
+    wiki: z.string().describe("Full wiki slug: 'owner/name'"),
+  },
+  async ({ wiki }) => {
+    const result = await hiveFetch(`/api/wikis/${encodeURIComponent(wiki)}?action=lint`);
+    if (result.error) return { content: [{ type: "text" as const, text: result.error }] };
+    if (!result.ok) return { content: [{ type: "text" as const, text: `Failed: ${JSON.stringify(result.data)}` }] };
+
+    const data = result.data;
+    const lines: string[] = [`# Wiki Health: ${wiki}\n`];
+
+    lines.push(`## Summary`);
+    lines.push(`- Orphan pages: ${data.summary.orphans}`);
+    lines.push(`- Broken links: ${data.summary.broken_links}`);
+    lines.push(`- Stale pages: ${data.summary.stale}\n`);
+
+    if (data.orphan_pages.length > 0) {
+      lines.push(`## Orphan Pages (no incoming links)`);
+      for (const p of data.orphan_pages) lines.push(`- ${p}`);
+      lines.push('');
+    }
+
+    if (data.broken_links.length > 0) {
+      lines.push(`## Broken Links`);
+      for (const b of data.broken_links) lines.push(`- ${b.page} → [[${b.broken_link}]] (missing)`);
+      lines.push('');
+    }
+
+    if (data.stale_pages.length > 0) {
+      lines.push(`## Stale Pages (30+ days)`);
+      for (const p of data.stale_pages) lines.push(`- ${p}`);
+    }
+
+    // Log the lint
+    await hiveFetch(`/api/wikis/${encodeURIComponent(wiki)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "log", operation: "lint",
+        summary: `Lint: ${data.summary.orphans} orphans, ${data.summary.broken_links} broken links, ${data.summary.stale} stale`,
+      }),
+    });
+
+    return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+  }
+);
+
 // ── Start server ──
 async function main() {
   const transport = new StdioServerTransport();

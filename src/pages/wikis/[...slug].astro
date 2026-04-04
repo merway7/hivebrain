@@ -1,0 +1,215 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import Header from '../../components/Header.astro';
+import { getWiki, listPages, listSources, getPage, getSource, getPageRevisions, getLog, getWikiStats } from '../../lib/wikis';
+
+const slug = Astro.params.slug;
+if (!slug || !slug.includes('/')) {
+  return Astro.redirect('/wikis');
+}
+
+const parts = slug.split('/');
+const fullSlug = `${parts[0]}/${parts[1]}`;
+
+const wiki = await getWiki(fullSlug);
+if (!wiki) {
+  return Astro.redirect('/wikis');
+}
+
+const pages = await listPages(wiki.id);
+const sources = await listSources(wiki.id);
+const stats = await getWikiStats(wiki.id);
+const recentLog = await getLog(wiki.id, 10);
+
+// File viewing mode
+const url = Astro.url;
+const filePath = url.searchParams.get('file');
+const fileLayer = url.searchParams.get('layer') || 'page';
+let fileContent: any = null;
+let fileRevisions: any[] = [];
+
+if (filePath) {
+  if (fileLayer === 'source') {
+    fileContent = await getSource(wiki.id, filePath);
+  } else {
+    fileContent = await getPage(wiki.id, filePath);
+    if (fileContent) {
+      fileRevisions = await getPageRevisions(fileContent.id, 10);
+    }
+  }
+}
+
+function timeAgo(dateStr: string): string {
+  try {
+    const d = new Date(dateStr);
+    const diff = Date.now() - d.getTime();
+    const hours = Math.floor(diff / 3600000);
+    if (hours < 1) return 'just now';
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    if (days < 7) return `${days}d ago`;
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  } catch { return dateStr; }
+}
+
+function renderWikilinks(content: string): string {
+  return content.replace(/\[\[(.+?)\]\]/g, (match, inner) => {
+    const [target, display] = inner.split('|');
+    const label = (display || target).trim();
+    const href = `/wikis/${fullSlug}?file=${encodeURIComponent(target.trim().endsWith('.md') ? target.trim() : target.trim() + '.md')}`;
+    return `<a href="${href}" class="wikilink">${label}</a>`;
+  });
+}
+
+const pageTitle = fileContent
+  ? `${filePath} — ${fullSlug}`
+  : `${fullSlug} — Wikis`;
+---
+
+<Layout title={pageTitle}>
+  <div class="app">
+    <Header />
+    <main class="comb-view">
+      <div class="comb-header">
+        <a href="/wikis" class="back-link">&larr; Wikis</a>
+        <div class="comb-title-row">
+          <h1 class="comb-title">
+            <span class="comb-owner">{wiki.owner}</span>
+            <span class="comb-sep">/</span>
+            <span class="comb-name">{wiki.slug}</span>
+          </h1>
+          {!wiki.is_public && <span class="private-badge">private</span>}
+        </div>
+        {wiki.description && <p class="comb-desc">{wiki.description}</p>}
+        <div class="comb-info">
+          <span>{stats.page_count} page{stats.page_count !== 1 ? 's' : ''}</span>
+          <span>{stats.source_count} source{stats.source_count !== 1 ? 's' : ''}</span>
+          <span>{stats.log_count} operation{stats.log_count !== 1 ? 's' : ''}</span>
+        </div>
+        {wiki.tags.length > 0 && (
+          <div class="comb-tags">
+            {wiki.tags.map((t: string) => <span class="tag">{t}</span>)}
+          </div>
+        )}
+      </div>
+
+      <div class="comb-content">
+        <aside class="file-sidebar">
+          {pages.length > 0 && (
+            <div>
+              <h3 class="sidebar-title">Pages</h3>
+              <nav class="file-tree">
+                {pages.map(p => (
+                  <a
+                    href={`/wikis/${fullSlug}?file=${encodeURIComponent(p.path)}`}
+                    class:list={['tree-file', { active: filePath === p.path && fileLayer !== 'source' }]}
+                  >
+                    {p.path}
+                    <span class="file-rev">v{p.revision}</span>
+                  </a>
+                ))}
+              </nav>
+            </div>
+          )}
+          {sources.length > 0 && (
+            <div style="margin-top: 16px;">
+              <h3 class="sidebar-title">Sources</h3>
+              <nav class="file-tree">
+                {sources.map(s => (
+                  <a
+                    href={`/wikis/${fullSlug}?file=${encodeURIComponent(s.path)}&layer=source`}
+                    class:list={['tree-file source-file', { active: filePath === s.path && fileLayer === 'source' }]}
+                  >
+                    {s.path}
+                  </a>
+                ))}
+              </nav>
+            </div>
+          )}
+          {pages.length === 0 && sources.length === 0 && (
+            <p class="empty-hint">No files yet</p>
+          )}
+        </aside>
+
+        <div class="main-panel">
+          {fileContent ? (
+            <div class="file-view">
+              <div class="file-header">
+                <span class="file-path">{fileContent.path}</span>
+                <span class="file-meta">
+                  {fileLayer === 'source' ? 'Raw Source' : `Page v${fileContent.revision}`}
+                  &middot; {timeAgo(fileContent.updated_at || fileContent.created_at)}
+                </span>
+              </div>
+              <div class="file-body">
+                {fileLayer === 'source' ? (
+                  <pre class="file-content">{fileContent.content}</pre>
+                ) : (
+                  <pre class="file-content" set:html={renderWikilinks(fileContent.content)} />
+                )}
+              </div>
+              {fileRevisions.length > 1 && (
+                <div class="file-revisions">
+                  <h4 class="revisions-title">History</h4>
+                  {fileRevisions.map(rev => (
+                    <div class="revision-row">
+                      <span class="rev-num">v{rev.revision}</span>
+                      <span class="rev-msg">{rev.message || 'No message'}</span>
+                      <span class="rev-by">@{rev.pushed_by}</span>
+                      <span class="rev-date">{timeAgo(rev.created_at)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div class="comb-overview">
+              {recentLog.length > 0 ? (
+                <div class="activity-feed">
+                  <h3 class="feed-title">Operation Log</h3>
+                  {recentLog.map(entry => (
+                    <div class="activity-row">
+                      <span class="activity-action" style={`color: var(--${entry.operation === 'ingest' ? 'green' : entry.operation === 'lint' ? 'amber' : 'blue'})`}>
+                        {entry.operation}
+                      </span>
+                      <span class="activity-path">{entry.summary}</span>
+                      <span class="activity-meta">@{entry.performed_by} &middot; {timeAgo(entry.created_at)}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div class="empty-state">
+                  <h3>Empty wiki</h3>
+                  <p>Ingest sources with <code>hivebrain_wiki_ingest</code>:</p>
+                  <pre class="code-example">{`hivebrain_wiki_ingest({
+  wiki: "${fullSlug}",
+  sources: [{ path: "raw/article.md", content: "..." }],
+  pages: [{ path: "concepts/topic.md", content: "# Topic\\n..." }],
+  log_summary: "ingested article about topic"
+})`}</pre>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </main>
+  </div>
+</Layout>
+
+<style>
+  .source-file {
+    opacity: 0.7;
+    font-style: italic;
+  }
+  .wikilink {
+    color: var(--accent);
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-underline-offset: 2px;
+  }
+  .wikilink:hover {
+    text-decoration-style: solid;
+    color: var(--accent-hover);
+  }
+</style>
