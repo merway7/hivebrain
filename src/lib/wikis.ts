@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { getDb, getWriteDb } from './db';
+import { getLocalDb } from './db';
 
 // ── Types ──
 
@@ -198,7 +198,7 @@ export async function createWiki(opts: {
   is_public?: boolean;
   tags?: string[];
 }): Promise<Wiki> {
-  const db = getWriteDb();
+  const db = getLocalDb();
   const slug = opts.slug.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
   const full_slug = `${opts.owner}/${slug}`;
 
@@ -214,7 +214,7 @@ export async function createWiki(opts: {
 }
 
 export async function getWiki(fullSlug: string): Promise<Wiki | null> {
-  const db = getDb();
+  const db = getLocalDb();
   const result = await db.execute({
     sql: `SELECT w.*,
             (SELECT COUNT(*) FROM wiki_pages WHERE wiki_id = w.id) as page_count,
@@ -227,7 +227,7 @@ export async function getWiki(fullSlug: string): Promise<Wiki | null> {
 }
 
 export async function getWikiById(id: number): Promise<Wiki | null> {
-  const db = getDb();
+  const db = getLocalDb();
   const result = await db.execute({
     sql: `SELECT w.*,
             (SELECT COUNT(*) FROM wiki_pages WHERE wiki_id = w.id) as page_count,
@@ -245,7 +245,7 @@ export async function listWikis(opts?: {
   limit?: number;
   offset?: number;
 }): Promise<{ wikis: Wiki[]; total: number }> {
-  const db = getDb();
+  const db = getLocalDb();
   const conditions: string[] = [];
   const args: any[] = [];
 
@@ -275,7 +275,7 @@ export async function updateWiki(id: number, updates: {
   is_public?: boolean;
   tags?: string[];
 }): Promise<Wiki | null> {
-  const db = getWriteDb();
+  const db = getLocalDb();
   const sets: string[] = ['updated_at = unixepoch()'];
   const args: any[] = [];
 
@@ -290,7 +290,7 @@ export async function updateWiki(id: number, updates: {
 }
 
 export async function deleteWiki(id: number): Promise<boolean> {
-  const db = getWriteDb();
+  const db = getLocalDb();
   // Manual cascade: log → revisions → FTS cleanup → pages → sources → wiki
   await db.execute({ sql: 'DELETE FROM wiki_log WHERE wiki_id = ?', args: [id] });
   await db.execute({ sql: 'DELETE FROM wiki_page_revisions WHERE wiki_id = ?', args: [id] });
@@ -318,7 +318,7 @@ export async function pushSource(opts: {
   mime_type?: string;
   ingested_by?: string;
 }): Promise<{ source_id: number; path: string; already_existed: boolean }> {
-  const db = getWriteDb();
+  const db = getLocalDb();
   const hash = hashContent(opts.content);
 
   // Check if source already exists
@@ -343,7 +343,7 @@ export async function pushSource(opts: {
 }
 
 export async function getSource(wikiId: number, path: string): Promise<WikiSource | null> {
-  const db = getDb();
+  const db = getLocalDb();
   const result = await db.execute({
     sql: 'SELECT * FROM wiki_sources WHERE wiki_id = ? AND path = ?',
     args: [wikiId, path],
@@ -353,7 +353,7 @@ export async function getSource(wikiId: number, path: string): Promise<WikiSourc
 }
 
 export async function listSources(wikiId: number): Promise<WikiSourceListing[]> {
-  const db = getDb();
+  const db = getLocalDb();
   const result = await db.execute({
     sql: 'SELECT id, path, content_hash, mime_type, ingested_by, created_at FROM wiki_sources WHERE wiki_id = ? ORDER BY path ASC',
     args: [wikiId],
@@ -369,7 +369,7 @@ export async function listSources(wikiId: number): Promise<WikiSourceListing[]> 
 }
 
 export async function deleteSource(wikiId: number, path: string): Promise<boolean> {
-  const db = getWriteDb();
+  const db = getLocalDb();
   const result = await db.execute({
     sql: 'DELETE FROM wiki_sources WHERE wiki_id = ? AND path = ?',
     args: [wikiId, path],
@@ -386,7 +386,7 @@ export async function pushPage(opts: {
   message?: string;
   pushed_by?: string;
 }): Promise<PushPageResult> {
-  const db = getWriteDb();
+  const db = getLocalDb();
   const hash = hashContent(opts.content);
   const pushedBy = opts.pushed_by || 'anonymous';
   const wikilinks = JSON.stringify(extractWikilinks(opts.content));
@@ -455,7 +455,7 @@ export async function pushPages(opts: {
 }
 
 export async function getPage(wikiId: number, path: string): Promise<WikiPage | null> {
-  const db = getDb();
+  const db = getLocalDb();
   const result = await db.execute({
     sql: 'SELECT * FROM wiki_pages WHERE wiki_id = ? AND path = ?',
     args: [wikiId, path],
@@ -465,7 +465,7 @@ export async function getPage(wikiId: number, path: string): Promise<WikiPage | 
 }
 
 export async function listPages(wikiId: number): Promise<WikiPageListing[]> {
-  const db = getDb();
+  const db = getLocalDb();
   const result = await db.execute({
     sql: 'SELECT id, path, revision, content_hash, wikilinks, updated_at FROM wiki_pages WHERE wiki_id = ? ORDER BY path ASC',
     args: [wikiId],
@@ -481,7 +481,7 @@ export async function listPages(wikiId: number): Promise<WikiPageListing[]> {
 }
 
 export async function deletePage(wikiId: number, path: string): Promise<boolean> {
-  const db = getWriteDb();
+  const db = getLocalDb();
   await db.execute({
     sql: 'DELETE FROM wiki_page_revisions WHERE wiki_id = ? AND path = ?',
     args: [wikiId, path],
@@ -496,7 +496,7 @@ export async function deletePage(wikiId: number, path: string): Promise<boolean>
 // ── Revisions ──
 
 export async function getPageRevisions(pageId: number, limit = 20, offset = 0): Promise<WikiPageRevision[]> {
-  const db = getDb();
+  const db = getLocalDb();
   const result = await db.execute({
     sql: 'SELECT * FROM wiki_page_revisions WHERE page_id = ? ORDER BY revision DESC LIMIT ? OFFSET ?',
     args: [pageId, limit, offset],
@@ -505,7 +505,7 @@ export async function getPageRevisions(pageId: number, limit = 20, offset = 0): 
 }
 
 export async function getPageAtRevision(pageId: number, revision: number): Promise<WikiPageRevision | null> {
-  const db = getDb();
+  const db = getLocalDb();
   const result = await db.execute({
     sql: 'SELECT * FROM wiki_page_revisions WHERE page_id = ? AND revision = ?',
     args: [pageId, revision],
@@ -515,7 +515,7 @@ export async function getPageAtRevision(pageId: number, revision: number): Promi
 }
 
 export async function getWikiRevisions(wikiId: number, limit = 50, offset = 0): Promise<WikiPageRevision[]> {
-  const db = getDb();
+  const db = getLocalDb();
   const result = await db.execute({
     sql: 'SELECT * FROM wiki_page_revisions WHERE wiki_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
     args: [wikiId, limit, offset],
@@ -532,7 +532,7 @@ export async function appendLog(opts: {
   details?: string;
   performed_by?: string;
 }): Promise<WikiLogEntry> {
-  const db = getWriteDb();
+  const db = getLocalDb();
   const result = await db.execute({
     sql: `INSERT INTO wiki_log (wiki_id, operation, summary, details, performed_by)
           VALUES (?, ?, ?, ?, ?)`,
@@ -551,7 +551,7 @@ export async function appendLog(opts: {
 }
 
 export async function getLog(wikiId: number, limit = 50, offset = 0): Promise<WikiLogEntry[]> {
-  const db = getDb();
+  const db = getLocalDb();
   const result = await db.execute({
     sql: 'SELECT * FROM wiki_log WHERE wiki_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
     args: [wikiId, limit, offset],
@@ -563,7 +563,7 @@ export async function getLog(wikiId: number, limit = 50, offset = 0): Promise<Wi
 
 export async function generateIndex(wikiId: number): Promise<string> {
   const pages = await listPages(wikiId);
-  const db = getDb();
+  const db = getLocalDb();
 
   if (pages.length === 0) return '# Index\n\nNo pages yet.';
 
@@ -620,7 +620,7 @@ export async function searchWikis(query: string, opts?: {
   wiki?: string;
   limit?: number;
 }): Promise<WikiSearchResult[]> {
-  const db = getDb();
+  const db = getLocalDb();
   const limit = opts?.limit || 10;
 
   const terms = query.trim().split(/\s+/).filter(Boolean);
@@ -700,7 +700,7 @@ export async function findBrokenLinks(wikiId: number): Promise<{ page: string; b
 }
 
 export async function findStalePages(wikiId: number, daysSinceUpdate = 30): Promise<string[]> {
-  const db = getDb();
+  const db = getLocalDb();
   const cutoff = Math.floor(Date.now() / 1000) - (daysSinceUpdate * 86400);
   const result = await db.execute({
     sql: 'SELECT path FROM wiki_pages WHERE wiki_id = ? AND updated_at < ? ORDER BY updated_at ASC',
@@ -717,7 +717,7 @@ export async function getWikiStats(wikiId: number): Promise<{
   log_count: number;
   last_activity: string | null;
 }> {
-  const db = getDb();
+  const db = getLocalDb();
   const pageResult = await db.execute({ sql: 'SELECT COUNT(*) as c FROM wiki_pages WHERE wiki_id = ?', args: [wikiId] });
   const sourceResult = await db.execute({ sql: 'SELECT COUNT(*) as c FROM wiki_sources WHERE wiki_id = ?', args: [wikiId] });
   const logResult = await db.execute({
