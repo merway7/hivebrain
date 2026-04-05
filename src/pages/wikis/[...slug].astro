@@ -310,7 +310,7 @@ function renderContent(content: string): string {
       const rawText = headingMatch[2];
       const text = processInline(rawText);
       const anchorId = rawText.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-      html += `<h${level + 1} id="${anchorId}" class="wiki-heading wiki-h${level}"><a href="#${anchorId}" class="wiki-heading-anchor">#</a>${text}</h${level + 1}>`;
+      html += `<h${level + 1} id="${anchorId}" class="wiki-heading wiki-h${level}">${text}</h${level + 1}>`;
       continue;
     }
 
