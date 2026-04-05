@@ -279,7 +279,9 @@ function renderContent(content: string): string {
     }
 
     // Key-value detection: **Key:** Value or **Key**: Value
-    const kvMatch = line.match(/^\s*\*\*(.+?)\*\*\s*[:：]\s*(.+)$/);
+    const kvMatch = line.match(/^\s*\*\*(.+?):\*\*\s*(.+)$/)
+      || line.match(/^\s*\*\*(.+?)\*\*:\s*(.+)$/)
+      || line.match(/^\s*\*\*(.+?)\*\*\s*[—–]\s*(.+)$/);
     if (kvMatch) {
       if (inList) { html += listType === 'ul' ? '</ul>' : '</ol>'; inList = false; }
       inKvBlock = true;
@@ -319,8 +321,10 @@ function renderContent(content: string): string {
     if (ulMatch) {
       const listContent = ulMatch[1];
       // Check if this is a key-value pair:
-      // **Key:** Value, **Key** — Value, or plain Key: Value (where key is short)
-      const listKvMatch = listContent.match(/^\*\*(.+?)\*\*\s*[:：—–-]\s*(.+)$/)
+      // **Key:** Value, **Key**: Value, **Key** — Value, or plain Key: Value
+      const listKvMatch = listContent.match(/^\*\*(.+?):\*\*\s*(.+)$/)
+        || listContent.match(/^\*\*(.+?)\*\*:\s*(.+)$/)
+        || listContent.match(/^\*\*(.+?)\*\*\s*[—–]\s*(.+)$/)
         || listContent.match(/^([A-Z][A-Za-z0-9 \/\-\(\)]{1,40}):\s+(.+)$/);
       if (listKvMatch) {
         // Close any open regular list
@@ -2718,20 +2722,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
   /* Key-Value grid */
   .page-content .wiki-kv-grid {
-    display: grid;
-    grid-template-columns: 1fr;
-    margin: 12px 0;
+    margin: 8px 0 16px;
     border: 1px solid var(--border);
     border-radius: 8px;
     overflow: hidden;
+    background: var(--bg-card);
   }
 
   .page-content .wiki-kv-item {
-    display: flex;
+    display: grid;
+    grid-template-columns: 160px 1fr;
     align-items: baseline;
-    gap: 12px;
-    padding: 8px 14px;
-    border-bottom: 1px solid rgba(255,255,255,0.03);
+    padding: 6px 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
   }
 
   .page-content .wiki-kv-item:last-child {
@@ -2739,19 +2742,24 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   .page-content .wiki-kv-key {
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
     color: var(--text-dim);
     text-transform: uppercase;
-    letter-spacing: 0.03em;
-    min-width: 120px;
-    flex-shrink: 0;
+    letter-spacing: 0.04em;
   }
 
   .page-content .wiki-kv-value {
-    font-size: 14px;
-    color: var(--text-secondary);
+    font-size: 13px;
+    color: var(--text-primary);
     font-weight: 500;
+  }
+
+  @media (max-width: 640px) {
+    .page-content .wiki-kv-item {
+      grid-template-columns: 1fr;
+      gap: 2px;
+    }
   }
 
   .page-content .kv-badge-green {
