@@ -143,8 +143,9 @@ function escapeHtml(str: string): string {
  * wikilinks, code blocks, lists, bold/italic, horizontal rules.
  */
 function renderContent(content: string): string {
-  const escaped = escapeHtml(content);
-  const lines = escaped.split('\n');
+  // Do NOT escape upfront — markdown syntax uses #, *, >, | which would break parsing
+  // Escaping happens in processInline() on text content only
+  const lines = content.split('\n');
   let html = '';
   let inCodeBlock = false;
   let inList = false;
@@ -266,7 +267,7 @@ function renderContent(content: string): string {
     }
 
     // Blockquotes: > text
-    const bqMatch = line.match(/^&gt;\s*(.*)$/);
+    const bqMatch = line.match(/^>\s*(.*)$/);
     if (bqMatch) {
       if (inKvBlock) flushKv();
       if (inList) { html += listType === 'ul' ? '</ul>' : '</ol>'; inList = false; }
@@ -364,6 +365,13 @@ function renderContent(content: string): string {
 }
 
 function processInline(text: string): string {
+  // Extract wikilinks and inline code first (protect from escaping)
+  const placeholders: string[] = [];
+  function placeholder(html: string): string {
+    placeholders.push(html);
+    return `\x00PH${placeholders.length - 1}\x00`;
+  }
+
   // Wikilinks
   text = text.replace(/\[\[(.+?)\]\]/g, (match, inner) => {
     const [target, display] = inner.split('|');
@@ -372,15 +380,24 @@ function processInline(text: string): string {
     const href = `/wikis/${fullSlug}?file=${encodeURIComponent(normalizedTarget)}`;
     const exists = allPagePaths.has(normalizedTarget) || allPageNames.has(target.trim());
     const cls = exists ? 'wikilink' : 'wikilink wikilink-broken';
-    return `<a href="${escapeHtml(href)}" class="${cls}">${escapeHtml(label)}</a>`;
+    return placeholder(`<a href="${escapeHtml(href)}" class="${cls}">${escapeHtml(label)}</a>`);
   });
+
+  // Inline code (protect from escaping)
+  text = text.replace(/`(.+?)`/g, (_, code) => {
+    return placeholder(`<code class="wiki-inline-code">${escapeHtml(code)}</code>`);
+  });
+
+  // Now escape the remaining text for XSS safety
+  text = escapeHtml(text);
 
   // Bold
   text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   // Italic
   text = text.replace(/\*(.+?)\*/g, '<em>$1</em>');
-  // Inline code
-  text = text.replace(/`(.+?)`/g, '<code class="wiki-inline-code">$1</code>');
+
+  // Restore placeholders
+  text = text.replace(/\x00PH(\d+)\x00/g, (_, idx) => placeholders[parseInt(idx)]);
 
   return text;
 }
