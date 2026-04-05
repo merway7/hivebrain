@@ -81,7 +81,7 @@ for (const p of pages) {
 // Recently updated pages (sorted by updated_at descending)
 const recentPages = [...pages]
   .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
-  .slice(0, 6);
+  .slice(0, 8);
 
 // Most connected pages (by combined inbound + outbound links)
 const mostConnected = [...pages]
@@ -90,7 +90,7 @@ const mostConnected = [...pages]
     connectionCount: (p.wikilinks?.length || 0) + (backlinksMap.get(p.path)?.length || 0),
   }))
   .sort((a, b) => b.connectionCount - a.connectionCount)
-  .slice(0, 5);
+  .slice(0, 8);
 
 // File viewing mode
 const url = Astro.url;
@@ -117,16 +117,6 @@ if (filePath) {
 const allPagePaths = new Set(pages.map(p => p.path));
 const allPageNames = new Set(pages.map(p => p.path.replace(/\.md$/, '')));
 
-// Greeting based on time of day
-function getGreeting(): string {
-  const hour = new Date().getHours();
-  if (hour < 6) return 'Burning the midnight oil';
-  if (hour < 12) return 'Good morning';
-  if (hour < 17) return 'Good afternoon';
-  if (hour < 21) return 'Good evening';
-  return 'Late night session';
-}
-
 function timeAgo(dateStr: string): string {
   try {
     const d = new Date(dateStr);
@@ -148,8 +138,9 @@ function escapeHtml(str: string): string {
 }
 
 /**
- * Renders markdown-ish content into styled HTML.
- * Handles: wikilinks, headings, bold, italic, lists, horizontal rules, code blocks.
+ * Enhanced markdown renderer -- parses content into structured, scannable HTML.
+ * Handles: tables, key-value pairs, blockquote callouts, headings with anchors,
+ * wikilinks, code blocks, lists, bold/italic, horizontal rules.
  */
 function renderContent(content: string): string {
   const escaped = escapeHtml(content);
@@ -158,18 +149,90 @@ function renderContent(content: string): string {
   let inCodeBlock = false;
   let inList = false;
   let listType: 'ul' | 'ol' = 'ul';
+  let inTable = false;
+  let tableRows: string[][] = [];
+  let inBlockquote = false;
+  let blockquoteLines: string[] = [];
+  let inKvBlock = false;
+  let kvPairs: { key: string; value: string }[] = [];
+
+  function flushTable() {
+    if (tableRows.length === 0) return;
+    html += '<div class="wiki-table-wrap"><table class="wiki-table">';
+    tableRows.forEach((cols, rowIdx) => {
+      const tag = rowIdx === 0 ? 'th' : 'td';
+      html += '<tr>';
+      cols.forEach(col => {
+        html += `<${tag}>${processInline(col.trim())}</${tag}>`;
+      });
+      html += '</tr>';
+    });
+    html += '</table></div>';
+    tableRows = [];
+    inTable = false;
+  }
+
+  function flushBlockquote() {
+    if (blockquoteLines.length === 0) return;
+    const text = blockquoteLines.join(' ');
+    // Detect callout type from content
+    const lowerText = text.toLowerCase();
+    let calloutType = 'info';
+    if (lowerText.includes('warning') || lowerText.includes('caution') || lowerText.includes('attention') || lowerText.includes('deadline') || lowerText.includes('expir')) {
+      calloutType = 'warning';
+    } else if (lowerText.includes('important') || lowerText.includes('urgent') || lowerText.includes('critical') || lowerText.includes('action required')) {
+      calloutType = 'danger';
+    } else if (lowerText.includes('note') || lowerText.includes('tip') || lowerText.includes('remember')) {
+      calloutType = 'info';
+    } else if (lowerText.includes('success') || lowerText.includes('approved') || lowerText.includes('completed') || lowerText.includes('done')) {
+      calloutType = 'success';
+    }
+    const icons: Record<string, string> = {
+      info: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>',
+      warning: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>',
+      danger: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6"/><path d="M9 9l6 6"/></svg>',
+      success: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
+    };
+    html += `<div class="wiki-callout callout-${calloutType}"><span class="callout-icon">${icons[calloutType]}</span><div class="callout-text">${processInline(text)}</div></div>`;
+    blockquoteLines = [];
+    inBlockquote = false;
+  }
+
+  function flushKv() {
+    if (kvPairs.length === 0) return;
+    html += '<div class="wiki-kv-grid">';
+    kvPairs.forEach(({ key, value }) => {
+      // Detect status-like values for badge coloring
+      const lowerVal = value.toLowerCase();
+      let badgeClass = '';
+      if (/\b(active|current|approved|valid|yes|complete|done)\b/.test(lowerVal)) badgeClass = 'kv-badge-green';
+      else if (/\b(pending|upcoming|attention|expires?|renew|soon|conditional)\b/.test(lowerVal)) badgeClass = 'kv-badge-amber';
+      else if (/\b(expired|urgent|overdue|denied|no|failed|critical)\b/.test(lowerVal)) badgeClass = 'kv-badge-red';
+
+      html += `<div class="wiki-kv-item"><span class="wiki-kv-key">${processInline(key)}</span><span class="wiki-kv-value${badgeClass ? ` ${badgeClass}` : ''}">${processInline(value)}</span></div>`;
+    });
+    html += '</div>';
+    kvPairs = [];
+    inKvBlock = false;
+  }
 
   for (let i = 0; i < lines.length; i++) {
     let line = lines[i];
 
     // Code blocks
     if (line.startsWith('```')) {
+      // Flush any open structures
+      if (inBlockquote) flushBlockquote();
+      if (inKvBlock) flushKv();
+      if (inTable) flushTable();
+      if (inList) { html += listType === 'ul' ? '</ul>' : '</ol>'; inList = false; }
+
       if (inCodeBlock) {
         html += '</code></pre>';
         inCodeBlock = false;
       } else {
         const lang = line.slice(3).trim();
-        html += `<pre class="rendered-code"><code${lang ? ` data-lang="${lang}"` : ''}>`;
+        html += `<pre class="wiki-code-block"><code${lang ? ` data-lang="${lang}"` : ''}>`;
         inCodeBlock = true;
       }
       continue;
@@ -177,6 +240,54 @@ function renderContent(content: string): string {
     if (inCodeBlock) {
       html += line + '\n';
       continue;
+    }
+
+    // Table rows: | col | col | col |
+    const tableMatch = line.match(/^\|(.+)\|$/);
+    if (tableMatch) {
+      // Flush other structures
+      if (inBlockquote) flushBlockquote();
+      if (inKvBlock) flushKv();
+      if (inList) { html += listType === 'ul' ? '</ul>' : '</ol>'; inList = false; }
+
+      const cells = tableMatch[1].split('|');
+      // Skip separator rows like |---|---|
+      if (cells.every(c => /^\s*-+\s*$/.test(c) || /^\s*:?-+:?\s*$/.test(c))) {
+        if (!inTable && tableRows.length > 0) {
+          inTable = true;
+        }
+        continue;
+      }
+      tableRows.push(cells);
+      inTable = true;
+      continue;
+    } else if (inTable) {
+      flushTable();
+    }
+
+    // Blockquotes: > text
+    const bqMatch = line.match(/^&gt;\s*(.*)$/);
+    if (bqMatch) {
+      if (inKvBlock) flushKv();
+      if (inList) { html += listType === 'ul' ? '</ul>' : '</ol>'; inList = false; }
+      inBlockquote = true;
+      if (bqMatch[1].trim()) blockquoteLines.push(bqMatch[1].trim());
+      continue;
+    } else if (inBlockquote) {
+      flushBlockquote();
+    }
+
+    // Key-value detection: **Key:** Value or **Key**: Value
+    const kvMatch = line.match(/^\s*\*\*(.+?)\*\*\s*[:：]\s*(.+)$/);
+    if (kvMatch) {
+      if (inList) { html += listType === 'ul' ? '</ul>' : '</ol>'; inList = false; }
+      inKvBlock = true;
+      kvPairs.push({ key: kvMatch[1], value: kvMatch[2] });
+      continue;
+    } else if (inKvBlock) {
+      // Also catch continuation of kv-like patterns with just bold labels
+      // But if we hit a non-kv line, flush
+      flushKv();
     }
 
     // Close list if this line isn't a list item
@@ -187,16 +298,18 @@ function renderContent(content: string): string {
 
     // Horizontal rule
     if (line.match(/^---+$/)) {
-      html += '<hr class="rendered-hr" />';
+      html += '<hr class="wiki-hr" />';
       continue;
     }
 
-    // Headings
+    // Headings -- with anchor IDs for TOC
     const headingMatch = line.match(/^(#{1,4})\s+(.+)$/);
     if (headingMatch) {
       const level = headingMatch[1].length;
-      const text = processInline(headingMatch[2]);
-      html += `<h${level + 1} class="rendered-h${level}">${text}</h${level + 1}>`;
+      const rawText = headingMatch[2];
+      const text = processInline(rawText);
+      const anchorId = rawText.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      html += `<h${level + 1} id="${anchorId}" class="wiki-heading wiki-h${level}"><a href="#${anchorId}" class="wiki-heading-anchor">#</a>${text}</h${level + 1}>`;
       continue;
     }
 
@@ -205,7 +318,7 @@ function renderContent(content: string): string {
     if (ulMatch) {
       if (!inList || listType !== 'ul') {
         if (inList) html += listType === 'ul' ? '</ul>' : '</ol>';
-        html += '<ul class="rendered-list">';
+        html += '<ul class="wiki-list">';
         inList = true;
         listType = 'ul';
       }
@@ -218,7 +331,7 @@ function renderContent(content: string): string {
     if (olMatch) {
       if (!inList || listType !== 'ol') {
         if (inList) html += listType === 'ul' ? '</ul>' : '</ol>';
-        html += '<ol class="rendered-list">';
+        html += '<ol class="wiki-list">';
         inList = true;
         listType = 'ol';
       }
@@ -232,16 +345,20 @@ function renderContent(content: string): string {
         html += listType === 'ul' ? '</ul>' : '</ol>';
         inList = false;
       }
-      html += '<div class="rendered-spacer"></div>';
+      html += '<div class="wiki-spacer"></div>';
       continue;
     }
 
     // Regular paragraph
-    html += `<p class="rendered-p">${processInline(line)}</p>`;
+    html += `<p class="wiki-p">${processInline(line)}</p>`;
   }
 
+  // Close any remaining open structures
   if (inCodeBlock) html += '</code></pre>';
   if (inList) html += listType === 'ul' ? '</ul>' : '</ol>';
+  if (inBlockquote) flushBlockquote();
+  if (inTable) flushTable();
+  if (inKvBlock) flushKv();
 
   return html;
 }
@@ -263,7 +380,7 @@ function processInline(text: string): string {
   // Italic
   text = text.replace(/\*(.+?)\*/g, '<em>$1</em>');
   // Inline code
-  text = text.replace(/`(.+?)`/g, '<code class="rendered-inline-code">$1</code>');
+  text = text.replace(/`(.+?)`/g, '<code class="wiki-inline-code">$1</code>');
 
   return text;
 }
@@ -280,28 +397,81 @@ function getCategoryFromPath(path: string): string {
 
 function getCategoryIcon(category: string): string {
   const icons: Record<string, string> = {
-    identity: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
-    finances: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M12 8v8"/><path d="M8 12h8"/></svg>',
-    investing: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>',
-    business: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg>',
-    personal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>',
-    family: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
-    people: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
-    projects: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="M12 15l-3-3"/><path d="M22 2L13.34 10.66"/><path d="M16.5 2.5a2.12 2.12 0 0 1 3 3l-7 7H9v-3.5l7-7z"/></svg>',
-    work: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>',
+    identity: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+    finances: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M12 8v8"/><path d="M8 12h8"/></svg>',
+    investing: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>',
+    business: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg>',
+    personal: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>',
+    family: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+    people: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+    projects: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="M12 15l-3-3"/><path d="M22 2L13.34 10.66"/><path d="M16.5 2.5a2.12 2.12 0 0 1 3 3l-7 7H9v-3.5l7-7z"/></svg>',
+    work: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>',
   };
-  return icons[category] || '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>';
+  return icons[category] || '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>';
 }
 
-// Extract first meaningful line from a page's content (for card summaries)
-function getPageSummary(content: string, maxLen = 80): string {
+/**
+ * Extract structured quick-facts from a page's content.
+ * Looks for **Key:** Value patterns in the first ~30 lines.
+ */
+function extractQuickFacts(content: string): { key: string; value: string }[] {
+  const facts: { key: string; value: string }[] = [];
+  const lines = content.split('\n').slice(0, 40);
+  for (const line of lines) {
+    const match = line.match(/^\s*\*\*(.+?)\*\*\s*[:：]\s*(.+)/);
+    if (match) {
+      facts.push({ key: match[1].trim(), value: match[2].trim() });
+    }
+  }
+  return facts.slice(0, 10);
+}
+
+/**
+ * Extract section headings from markdown content for the TOC.
+ */
+function extractHeadings(content: string): { level: number; text: string; id: string }[] {
+  const headings: { level: number; text: string; id: string }[] = [];
+  for (const line of content.split('\n')) {
+    const match = line.match(/^(#{1,3})\s+(.+)$/);
+    if (match) {
+      const text = match[2].replace(/\*\*/g, '').replace(/\[\[(.+?\|)?(.+?)\]\]/g, '$2');
+      const id = text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      headings.push({ level: match[1].length, text, id });
+    }
+  }
+  return headings;
+}
+
+/**
+ * Get first paragraph of content (skip headings, blank lines, kv pairs)
+ */
+function getPageSummary(content: string, maxLen = 120): string {
   const lines = content.split('\n');
   for (const line of lines) {
     const trimmed = line.trim();
-    if (trimmed && !trimmed.startsWith('#') && !trimmed.startsWith('---') && !trimmed.startsWith('```')) {
+    if (
+      trimmed &&
+      !trimmed.startsWith('#') &&
+      !trimmed.startsWith('---') &&
+      !trimmed.startsWith('```') &&
+      !trimmed.startsWith('>') &&
+      !trimmed.startsWith('|') &&
+      !trimmed.match(/^\*\*.*\*\*\s*[:：]/)
+    ) {
       return trimmed.length > maxLen ? trimmed.slice(0, maxLen) + '...' : trimmed;
     }
   }
+  return '';
+}
+
+/**
+ * Detect status badge color from a value string
+ */
+function getStatusColor(value: string): string {
+  const lower = value.toLowerCase();
+  if (/\b(active|current|approved|valid|complete|done|yes)\b/.test(lower)) return 'green';
+  if (/\b(pending|upcoming|attention|expires?|renew|conditional|soon|review)\b/.test(lower)) return 'amber';
+  if (/\b(expired|urgent|overdue|denied|failed|critical|no)\b/.test(lower)) return 'red';
   return '';
 }
 
@@ -309,7 +479,28 @@ const pageTitle = fileContent
   ? `${getPageDisplayName(filePath!)} -- ${wiki.slug}`
   : `${wiki.slug} -- Your Brain`;
 
-// Preload summaries for category cards (first page summary per category)
+// Category section order for the main page
+const SECTION_ORDER = [
+  { key: 'identity', label: 'Identity & Immigration', summary: 'Documents, legal status, immigration records' },
+  { key: 'work', label: 'Career & Work', summary: 'Current role, employment history, compensation' },
+  { key: 'business', label: 'Business & Companies', summary: 'Ventures, entities, business plans' },
+  { key: 'finances', label: 'Finances & Investments', summary: 'Accounts, budgets, financial planning' },
+  { key: 'investing', label: 'Investing', summary: 'Portfolio, strategy, market analysis' },
+  { key: 'people', label: 'People & Relationships', summary: 'Contacts, relationships, network' },
+  { key: 'family', label: 'Family', summary: 'Loved ones, family plans, memories' },
+  { key: 'personal', label: 'Personal Life', summary: 'Health, goals, habits, lifestyle' },
+  { key: 'projects', label: 'Projects & Technology', summary: 'What you are building, tech stack' },
+];
+
+// Build ordered sections matching available categories
+const orderedSections = SECTION_ORDER
+  .filter(s => categoryMap.has(s.key))
+  .map(s => ({
+    ...s,
+    category: categories.find(c => c.name === s.key)!,
+  }));
+
+// Preload summaries for section descriptions
 const categorySummaries = new Map<string, string>();
 for (const cat of categories) {
   if (cat.pages.length > 0) {
@@ -319,34 +510,62 @@ for (const cat of categories) {
     }
   }
 }
+
+// Extract headings for page TOC
+const pageHeadings = fileContent && fileLayer !== 'source'
+  ? extractHeadings(fileContent.content)
+  : [];
+
+// Extract quick facts for page view
+const quickFacts = fileContent && fileLayer !== 'source'
+  ? extractQuickFacts(fileContent.content)
+  : [];
 ---
 
 <Layout title={pageTitle}>
   <div class="wiki-shell">
-    {/* Minimal top bar -- just branding + search on page view */}
-    {fileContent ? (
-      <nav class="page-topbar">
-        <a href={`/wikis/${fullSlug}`} class="topbar-back" title="Back to dashboard">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
-          <span>Your Brain</span>
+
+    {/* ============================================= */}
+    {/* TOP NAVIGATION BAR                            */}
+    {/* ============================================= */}
+    <nav class="wiki-nav">
+      <div class="wiki-nav-left">
+        {fileContent || viewMode === 'graph' ? (
+          <a href={`/wikis/${fullSlug}`} class="nav-back" title="Back to wiki home">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+          </a>
+        ) : null}
+        <a href={`/wikis/${fullSlug}`} class="nav-title">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          <span>{wiki.slug.split('/').pop()}</span>
         </a>
-        <div class="topbar-search-mini" id="topbar-search-mini">
+        {fileContent && (
+          <span class="nav-breadcrumb">
+            <span class="nav-sep">/</span>
+            {getCategoryFromPath(filePath!) && (
+              <>
+                <span class="nav-crumb-cat" style={`color: ${(CATEGORY_STYLES[getCategoryFromPath(filePath!)] || DEFAULT_STYLE).color}`}>{getCategoryFromPath(filePath!)}</span>
+                <span class="nav-sep">/</span>
+              </>
+            )}
+            <span class="nav-crumb-page">{getPageDisplayName(filePath!)}</span>
+          </span>
+        )}
+      </div>
+      <div class="wiki-nav-right">
+        <div class="nav-search" id="nav-search">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
-          <input type="text" placeholder="Search..." id="mini-search-input" autocomplete="off" />
+          <input type="text" placeholder="Search pages..." id="nav-search-input" autocomplete="off" />
           <kbd>/</kbd>
-          <div class="mini-search-results" id="mini-search-results"></div>
+          <div class="nav-search-results" id="nav-search-results"></div>
         </div>
-        <div class="topbar-spacer"></div>
-      </nav>
-    ) : viewMode === 'graph' ? (
-      <nav class="page-topbar">
-        <a href={`/wikis/${fullSlug}`} class="topbar-back" title="Back to dashboard">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
-          <span>Your Brain</span>
-        </a>
-        <div class="topbar-spacer"></div>
-      </nav>
-    ) : null}
+        {!fileContent && viewMode !== 'graph' && (
+          <a href={`/wikis/${fullSlug}?view=graph`} class="nav-icon-btn" title="Knowledge graph">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="18" r="2"/><path d="M12 10V8"/><path d="M6.3 7.7l3.4 2.6"/><path d="M17.7 7.7l-3.4 2.6"/><path d="M6.3 16.3l3.4-2.6"/><path d="M17.7 16.3l-3.4-2.6"/></svg>
+          </a>
+        )}
+      </div>
+    </nav>
 
     {viewMode === 'graph' && !filePath ? (
       <!-- ============================================= -->
@@ -373,264 +592,406 @@ for (const cat of categories) {
 
     ) : fileContent ? (
       <!-- ============================================= -->
-      <!-- PAGE VIEW (Document reader)                   -->
+      <!-- PAGE VIEW -- Wikipedia-style article          -->
       <!-- ============================================= -->
-      <article class="doc-reader">
-        {/* Breadcrumb + meta */}
-        <header class="doc-header">
-          {getCategoryFromPath(filePath!) && (
-            <div class="doc-category-label" style={`--cat-color: ${(CATEGORY_STYLES[getCategoryFromPath(filePath!)] || DEFAULT_STYLE).color}`}>
-              <span class="doc-cat-icon" set:html={getCategoryIcon(getCategoryFromPath(filePath!))} />
-              <span>{getCategoryFromPath(filePath!)}</span>
+      <div class="page-layout">
+        {/* Sticky TOC sidebar (desktop) */}
+        {pageHeadings.length > 2 && (
+          <aside class="page-toc-sidebar">
+            <div class="page-toc-sticky">
+              <h4 class="toc-label">Contents</h4>
+              <nav class="toc-nav">
+                {pageHeadings.map((h, i) => (
+                  <a href={`#${h.id}`} class={`toc-link toc-level-${h.level}`} data-toc-id={h.id}>
+                    {h.text}
+                  </a>
+                ))}
+              </nav>
+            </div>
+          </aside>
+        )}
+
+        <article class="page-article">
+          {/* Page header */}
+          <header class="page-header">
+            {getCategoryFromPath(filePath!) && (
+              <a href={`/wikis/${fullSlug}`} class="page-cat-badge" style={`--cat-color: ${(CATEGORY_STYLES[getCategoryFromPath(filePath!)] || DEFAULT_STYLE).color}`}>
+                <span class="page-cat-icon" set:html={getCategoryIcon(getCategoryFromPath(filePath!))} />
+                <span>{getCategoryFromPath(filePath!)}</span>
+              </a>
+            )}
+            <h1 class="page-title">{getPageDisplayName(filePath!)}</h1>
+            <div class="page-meta">
+              {fileLayer === 'source' ? (
+                <span class="page-meta-tag source">Source file</span>
+              ) : (
+                <span class="page-meta-tag">v{fileContent.revision}</span>
+              )}
+              <span class="page-meta-text">Updated {timeAgo(fileContent.updated_at || fileContent.created_at)}</span>
+              {fileContent.wikilinks?.length > 0 && (
+                <span class="page-meta-text">{fileContent.wikilinks.length} link{fileContent.wikilinks.length !== 1 ? 's' : ''}</span>
+              )}
+              {currentBacklinks.length > 0 && (
+                <span class="page-meta-text">{currentBacklinks.length} backlink{currentBacklinks.length !== 1 ? 's' : ''}</span>
+              )}
+            </div>
+          </header>
+
+          {/* Quick Facts card -- only if kv pairs detected */}
+          {quickFacts.length > 0 && (
+            <div class="quick-facts-card">
+              <div class="quick-facts-header">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+                <span>Quick Facts</span>
+              </div>
+              <div class="quick-facts-grid">
+                {quickFacts.map(fact => {
+                  const statusColor = getStatusColor(fact.value);
+                  return (
+                    <div class="quick-fact-row">
+                      <span class="quick-fact-key">{fact.key}</span>
+                      <span class={`quick-fact-value${statusColor ? ` status-${statusColor}` : ''}`} set:html={processInline(fact.value)} />
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
-          <h1 class="doc-title">{getPageDisplayName(filePath!)}</h1>
-          <div class="doc-meta-row">
+
+          {/* Mobile TOC (below header) */}
+          {pageHeadings.length > 2 && (
+            <details class="page-toc-mobile">
+              <summary class="toc-mobile-toggle">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18"/><path d="M3 6h18"/><path d="M3 18h18"/></svg>
+                Table of Contents
+                <svg class="toc-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+              </summary>
+              <nav class="toc-mobile-nav">
+                {pageHeadings.map(h => (
+                  <a href={`#${h.id}`} class={`toc-link toc-level-${h.level}`}>{h.text}</a>
+                ))}
+              </nav>
+            </details>
+          )}
+
+          {/* Content body */}
+          <div class="page-body">
             {fileLayer === 'source' ? (
-              <span class="doc-meta-pill source">Source file</span>
+              <pre class="page-raw-source">{fileContent.content}</pre>
             ) : (
-              <span class="doc-meta-pill">Revision {fileContent.revision}</span>
-            )}
-            <span class="doc-meta-pill subtle">Updated {timeAgo(fileContent.updated_at || fileContent.created_at)}</span>
-            {fileContent.wikilinks?.length > 0 && (
-              <span class="doc-meta-pill subtle">{fileContent.wikilinks.length} link{fileContent.wikilinks.length !== 1 ? 's' : ''}</span>
+              <div class="page-content" set:html={renderContent(fileContent.content)} />
             )}
           </div>
-        </header>
 
-        {/* Content body */}
-        <div class="doc-body">
-          {fileLayer === 'source' ? (
-            <pre class="doc-raw">{fileContent.content}</pre>
-          ) : (
-            <div class="doc-content" set:html={renderContent(fileContent.content)} />
+          {/* Outgoing links (wikilinks in this page) */}
+          {fileContent.wikilinks?.length > 0 && fileLayer !== 'source' && (
+            <section class="page-section page-links">
+              <h3 class="page-section-heading">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                Links from this page
+              </h3>
+              <div class="link-chips">
+                {fileContent.wikilinks.map((link: string) => {
+                  const target = link.endsWith('.md') ? link : link + '.md';
+                  const exists = allPagePaths.has(target) || allPageNames.has(link);
+                  const cat = getCategoryFromPath(target);
+                  const catColor = (CATEGORY_STYLES[cat] || DEFAULT_STYLE).color;
+                  return (
+                    <a
+                      href={exists ? `/wikis/${fullSlug}?file=${encodeURIComponent(target)}` : '#'}
+                      class:list={['link-chip', { broken: !exists }]}
+                      style={`--chip-color: ${catColor}`}
+                    >
+                      <span class="chip-dot" style={`background: ${catColor}`}></span>
+                      {getPageDisplayName(target)}
+                      {!exists && <span class="chip-missing">missing</span>}
+                    </a>
+                  );
+                })}
+              </div>
+            </section>
           )}
-        </div>
 
-        {/* Outgoing links (wikilinks in this page) */}
-        {fileContent.wikilinks?.length > 0 && fileLayer !== 'source' && (
-          <div class="doc-links-section">
-            <h3 class="doc-section-heading">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-              Links from this page
-            </h3>
-            <div class="doc-link-chips">
-              {fileContent.wikilinks.map((link: string) => {
-                const target = link.endsWith('.md') ? link : link + '.md';
-                const exists = allPagePaths.has(target) || allPageNames.has(link);
-                const cat = getCategoryFromPath(target);
-                const catColor = (CATEGORY_STYLES[cat] || DEFAULT_STYLE).color;
-                return (
-                  <a
-                    href={exists ? `/wikis/${fullSlug}?file=${encodeURIComponent(target)}` : '#'}
-                    class:list={['doc-link-chip', { broken: !exists }]}
-                    style={`--chip-color: ${catColor}`}
-                  >
-                    <span class="chip-dot" style={`background: ${catColor}`}></span>
-                    {getPageDisplayName(target)}
-                    {!exists && <span class="chip-missing">missing</span>}
-                  </a>
-                );
-              })}
-            </div>
-          </div>
-        )}
+          {/* Backlinks */}
+          {currentBacklinks.length > 0 && (
+            <section class="page-section page-links">
+              <h3 class="page-section-heading">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 7h3a5 5 0 0 1 5 5 5 5 0 0 1-5 5h-3m-6 0H6a5 5 0 0 1-5-5 5 5 0 0 1 5-5h3"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+                Pages that link here
+              </h3>
+              <div class="link-chips">
+                {currentBacklinks.map(bl => {
+                  const cat = getCategoryFromPath(bl);
+                  const catColor = (CATEGORY_STYLES[cat] || DEFAULT_STYLE).color;
+                  return (
+                    <a href={`/wikis/${fullSlug}?file=${encodeURIComponent(bl)}`} class="link-chip" style={`--chip-color: ${catColor}`}>
+                      <span class="chip-dot" style={`background: ${catColor}`}></span>
+                      {getPageDisplayName(bl)}
+                    </a>
+                  );
+                })}
+              </div>
+            </section>
+          )}
 
-        {/* Backlinks */}
-        {currentBacklinks.length > 0 && (
-          <div class="doc-links-section">
-            <h3 class="doc-section-heading">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 7h3a5 5 0 0 1 5 5 5 5 0 0 1-5 5h-3m-6 0H6a5 5 0 0 1-5-5 5 5 0 0 1 5-5h3"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
-              Pages that link here
-            </h3>
-            <div class="doc-link-chips">
-              {currentBacklinks.map(bl => {
-                const cat = getCategoryFromPath(bl);
-                const catColor = (CATEGORY_STYLES[cat] || DEFAULT_STYLE).color;
-                return (
-                  <a href={`/wikis/${fullSlug}?file=${encodeURIComponent(bl)}`} class="doc-link-chip" style={`--chip-color: ${catColor}`}>
-                    <span class="chip-dot" style={`background: ${catColor}`}></span>
-                    {getPageDisplayName(bl)}
-                  </a>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Revision history */}
-        {fileRevisions.length > 1 && (
-          <div class="doc-revisions">
-            <h3 class="doc-section-heading">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-              Version history
-            </h3>
-            <div class="revision-timeline">
-              {fileRevisions.map((rev: any, i: number) => (
-                <div class:list={['rev-row', { current: i === 0 }]}>
-                  <div class="rev-marker">
-                    <div class="rev-dot"></div>
-                    {i < fileRevisions.length - 1 && <div class="rev-line"></div>}
-                  </div>
-                  <div class="rev-info">
-                    <div class="rev-top">
-                      <span class="rev-v">v{rev.revision}</span>
-                      <span class="rev-msg">{rev.message || 'Updated'}</span>
+          {/* Revision history */}
+          {fileRevisions.length > 1 && (
+            <section class="page-section page-revisions">
+              <h3 class="page-section-heading">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                Version history
+              </h3>
+              <div class="revision-timeline">
+                {fileRevisions.map((rev: any, i: number) => (
+                  <div class:list={['rev-row', { current: i === 0 }]}>
+                    <div class="rev-marker">
+                      <div class="rev-dot"></div>
+                      {i < fileRevisions.length - 1 && <div class="rev-line"></div>}
                     </div>
-                    <div class="rev-bottom">
-                      <span>by {rev.pushed_by}</span>
-                      <span>{timeAgo(rev.created_at)}</span>
+                    <div class="rev-info">
+                      <div class="rev-top">
+                        <span class="rev-v">v{rev.revision}</span>
+                        <span class="rev-msg">{rev.message || 'Updated'}</span>
+                      </div>
+                      <div class="rev-bottom">
+                        <span>by {rev.pushed_by}</span>
+                        <span>{timeAgo(rev.created_at)}</span>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </article>
+                ))}
+              </div>
+            </section>
+          )}
+        </article>
+      </div>
 
     ) : (
       <!-- ============================================= -->
-      <!-- DASHBOARD VIEW (The brain home)               -->
+      <!-- MAIN PAGE -- Wikipedia-style encyclopedia     -->
       <!-- ============================================= -->
-      <div class="brain-home">
+      <div class="wiki-home">
 
-        {/* Hero / Greeting */}
-        <section class="hero">
-          <div class="hero-text">
-            <h1 class="hero-greeting">{getGreeting()}</h1>
-            <p class="hero-summary">
-              Your brain holds <strong>{stats.page_count} pages</strong> across <strong>{categories.length} areas</strong>,
-              woven together by <strong>{totalLinks} connections</strong>.
-            </p>
-          </div>
-          <div class="hero-actions">
-            <a href={`/wikis/${fullSlug}?view=graph`} class="hero-graph-btn">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="18" r="2"/><path d="M12 10V8"/><path d="M6.3 7.7l3.4 2.6"/><path d="M17.7 7.7l-3.4 2.6"/><path d="M6.3 16.3l3.4-2.6"/><path d="M17.7 16.3l-3.4-2.6"/></svg>
-              <span>View graph</span>
-            </a>
-          </div>
-        </section>
+        {/* Wikipedia-style intro */}
+        <header class="wiki-intro">
+          <h1 class="wiki-main-title">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+            {wiki.slug.split('/').pop()}'s Wiki
+          </h1>
+          <p class="wiki-intro-text">
+            A personal knowledge base with <strong>{stats.page_count} pages</strong> across <strong>{categories.length} categories</strong>, connected by <strong>{totalLinks} wikilinks</strong>. Last updated {recentPages.length > 0 ? timeAgo(recentPages[0].updated_at) : 'recently'}.
+          </p>
+        </header>
 
         {/* Spotlight search */}
-        <section class="spotlight-wrap">
-          <div class="spotlight" id="spotlight">
-            <svg class="spotlight-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
-            <input type="text" class="spotlight-input" placeholder="Search your brain..." id="spotlight-input" autocomplete="off" />
-            <kbd class="spotlight-kbd">/</kbd>
-            <div class="spotlight-results" id="spotlight-results"></div>
-          </div>
-        </section>
+        <div class="wiki-search-bar" id="spotlight">
+          <svg class="search-bar-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+          <input type="text" class="search-bar-input" placeholder="Search your wiki..." id="spotlight-input" autocomplete="off" />
+          <kbd class="search-bar-kbd">/</kbd>
+          <div class="search-bar-results" id="spotlight-results"></div>
+        </div>
 
-        {/* Quick access - Recently updated */}
-        {recentPages.length > 0 && (
-          <section class="quick-access">
-            <h2 class="section-label">Recently updated</h2>
-            <div class="quick-grid">
-              {recentPages.map(p => {
-                const cat = getCategoryFromPath(p.path);
-                const catColor = (CATEGORY_STYLES[cat] || DEFAULT_STYLE).color;
-                return (
-                  <a href={`/wikis/${fullSlug}?file=${encodeURIComponent(p.path)}`} class="quick-card" style={`--cat-color: ${catColor}`}>
-                    <span class="quick-cat" style={`color: ${catColor}`}>{cat || 'root'}</span>
-                    <span class="quick-name">{getPageDisplayName(p.path)}</span>
-                    <span class="quick-time">{timeAgo(p.updated_at)}</span>
-                  </a>
-                );
-              })}
-            </div>
-          </section>
-        )}
+        <div class="wiki-main-layout">
+          {/* ── Main content column ── */}
+          <div class="wiki-main-col">
 
-        {/* Category cards -- the main navigation */}
-        <section class="categories-section">
-          <h2 class="section-label">Your knowledge</h2>
-          <div class="cat-grid">
-            {categories.map(cat => {
+            {/* Table of contents */}
+            <nav class="wiki-toc-card">
+              <h2 class="toc-card-title">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18"/><path d="M3 6h18"/><path d="M3 18h18"/></svg>
+                Contents
+              </h2>
+              <ol class="toc-card-list">
+                {orderedSections.map((section, i) => (
+                  <li>
+                    <a href={`#section-${section.key}`} class="toc-card-link">
+                      <span class="toc-num">{i + 1}</span>
+                      <span class="toc-text">{section.label}</span>
+                      <span class="toc-count">{section.category.pages.length}</span>
+                    </a>
+                  </li>
+                ))}
+                {rootPages.length > 0 && (
+                  <li>
+                    <a href="#section-other" class="toc-card-link">
+                      <span class="toc-num">{orderedSections.length + 1}</span>
+                      <span class="toc-text">Other Pages</span>
+                      <span class="toc-count">{rootPages.length}</span>
+                    </a>
+                  </li>
+                )}
+              </ol>
+            </nav>
+
+            {/* Content sections -- each category as a wiki section */}
+            {orderedSections.map((section, sectionIdx) => {
+              const cat = section.category;
               const summary = categorySummaries.get(cat.name) || '';
+              const catStyle = CATEGORY_STYLES[cat.name] || DEFAULT_STYLE;
               return (
-                <div class="cat-card" style={`--cat-color: ${cat.color}`}>
-                  <div class="cat-card-head">
-                    <div class="cat-icon-wrap" style={`background: ${cat.color}15; color: ${cat.color}`} set:html={getCategoryIcon(cat.name)} />
-                    <div class="cat-title-group">
-                      <h3 class="cat-name">{cat.name}</h3>
-                      <span class="cat-desc">{cat.description}</span>
+                <section class="wiki-section" id={`section-${section.key}`}>
+                  <div class="wiki-section-header" style={`--section-color: ${catStyle.color}`}>
+                    <div class="section-icon-wrap" style={`background: ${catStyle.color}12; color: ${catStyle.color}`} set:html={getCategoryIcon(cat.name)} />
+                    <div class="section-title-group">
+                      <h2 class="wiki-section-title">{section.label}</h2>
+                      <p class="wiki-section-desc">{section.summary}</p>
                     </div>
-                    <span class="cat-badge">{cat.pages.length}</span>
+                    <span class="section-page-count">{cat.pages.length} page{cat.pages.length !== 1 ? 's' : ''}</span>
                   </div>
-                  {summary && <p class="cat-summary">{summary}</p>}
-                  <div class="cat-pages">
-                    {cat.pages.slice(0, 5).map(p => (
-                      <a href={`/wikis/${fullSlug}?file=${encodeURIComponent(p.path)}`} class="cat-page-link">
-                        <span class="cat-page-name">{getPageDisplayName(p.path)}</span>
-                        <span class="cat-page-meta">{timeAgo(p.updated_at)}</span>
-                      </a>
-                    ))}
-                    {cat.pages.length > 5 && (
-                      <span class="cat-more">+{cat.pages.length - 5} more</span>
-                    )}
+
+                  {summary && <p class="wiki-section-summary">{summary}</p>}
+
+                  <div class="wiki-section-pages">
+                    {cat.pages.map(p => {
+                      const linkCount = (p.wikilinks?.length || 0) + (backlinksMap.get(p.path)?.length || 0);
+                      return (
+                        <a href={`/wikis/${fullSlug}?file=${encodeURIComponent(p.path)}`} class="wiki-page-row" style={`--row-color: ${catStyle.color}`}>
+                          <span class="page-row-dot" style={`background: ${catStyle.color}`}></span>
+                          <span class="page-row-name">{getPageDisplayName(p.path)}</span>
+                          {linkCount > 0 && (
+                            <span class="page-row-links" title={`${linkCount} connections`}>
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                              {linkCount}
+                            </span>
+                          )}
+                          <span class="page-row-time">{timeAgo(p.updated_at)}</span>
+                          <svg class="page-row-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+                        </a>
+                      );
+                    })}
                   </div>
-                </div>
+                </section>
               );
             })}
-          </div>
-        </section>
 
-        {/* Most connected pages */}
-        {mostConnected.length > 0 && (
-          <section class="connected-section">
-            <h2 class="section-label">Most connected</h2>
-            <div class="connected-list">
-              {mostConnected.map(p => {
-                const cat = getCategoryFromPath(p.path);
-                const catColor = (CATEGORY_STYLES[cat] || DEFAULT_STYLE).color;
-                const inbound = backlinksMap.get(p.path)?.length || 0;
-                const outbound = p.wikilinks?.length || 0;
-                return (
-                  <a href={`/wikis/${fullSlug}?file=${encodeURIComponent(p.path)}`} class="connected-item" style={`--cat-color: ${catColor}`}>
-                    <span class="connected-dot" style={`background: ${catColor}`}></span>
-                    <span class="connected-name">{getPageDisplayName(p.path)}</span>
-                    <span class="connected-stats">
-                      <span title="Pages linking to this">{inbound} in</span>
-                      <span title="Links from this page">{outbound} out</span>
-                    </span>
-                  </a>
-                );
-              })}
-            </div>
-          </section>
-        )}
-
-        {/* Recent activity */}
-        {recentLog.length > 0 && (
-          <section class="activity-section">
-            <h2 class="section-label">Activity</h2>
-            <div class="activity-list">
-              {recentLog.slice(0, 8).map(entry => (
-                <div class="activity-row">
-                  <span class:list={['activity-op', `op-${entry.operation}`]}>{entry.operation}</span>
-                  <span class="activity-summary">{entry.summary}</span>
-                  <span class="activity-time">{timeAgo(entry.created_at)}</span>
+            {/* Root-level pages */}
+            {rootPages.length > 0 && (
+              <section class="wiki-section" id="section-other">
+                <div class="wiki-section-header" style="--section-color: #a1a1aa">
+                  <div class="section-icon-wrap" style="background: rgba(161,161,170,0.08); color: #a1a1aa">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+                  </div>
+                  <div class="section-title-group">
+                    <h2 class="wiki-section-title">Other Pages</h2>
+                    <p class="wiki-section-desc">Uncategorized pages</p>
+                  </div>
+                  <span class="section-page-count">{rootPages.length} page{rootPages.length !== 1 ? 's' : ''}</span>
                 </div>
-              ))}
-            </div>
-          </section>
-        )}
+                <div class="wiki-section-pages">
+                  {rootPages.map(p => (
+                    <a href={`/wikis/${fullSlug}?file=${encodeURIComponent(p.path)}`} class="wiki-page-row" style="--row-color: #a1a1aa">
+                      <span class="page-row-dot" style="background: #a1a1aa"></span>
+                      <span class="page-row-name">{getPageDisplayName(p.path)}</span>
+                      <span class="page-row-time">{timeAgo(p.updated_at)}</span>
+                      <svg class="page-row-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+                    </a>
+                  ))}
+                </div>
+              </section>
+            )}
+          </div>
 
-        {/* Root-level pages */}
-        {rootPages.length > 0 && (
-          <section class="root-pages-section">
-            <h2 class="section-label">Other pages</h2>
-            <div class="root-page-list">
-              {rootPages.map(p => (
-                <a href={`/wikis/${fullSlug}?file=${encodeURIComponent(p.path)}`} class="root-page-link">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
-                  {getPageDisplayName(p.path)}
-                </a>
-              ))}
+          {/* ── Right sidebar (infobox) ── */}
+          <aside class="wiki-sidebar">
+            {/* Infobox */}
+            <div class="wiki-infobox">
+              <div class="infobox-photo">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+              </div>
+              <h3 class="infobox-name">{wiki.slug.split('/').pop()}</h3>
+              <div class="infobox-subtitle">Personal Encyclopedia</div>
+              <div class="infobox-stats">
+                <div class="infobox-stat">
+                  <span class="infobox-stat-num">{stats.page_count}</span>
+                  <span class="infobox-stat-label">Pages</span>
+                </div>
+                <div class="infobox-stat">
+                  <span class="infobox-stat-num">{categories.length}</span>
+                  <span class="infobox-stat-label">Categories</span>
+                </div>
+                <div class="infobox-stat">
+                  <span class="infobox-stat-num">{totalLinks}</span>
+                  <span class="infobox-stat-label">Links</span>
+                </div>
+              </div>
+              <div class="infobox-divider"></div>
+              <div class="infobox-facts">
+                {categories.map(cat => {
+                  const catStyle = CATEGORY_STYLES[cat.name] || DEFAULT_STYLE;
+                  return (
+                    <div class="infobox-fact-row">
+                      <span class="infobox-fact-dot" style={`background: ${catStyle.color}`}></span>
+                      <span class="infobox-fact-key">{cat.name}</span>
+                      <span class="infobox-fact-value">{cat.pages.length}</span>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-          </section>
-        )}
+
+            {/* Quick Links -- most connected */}
+            {mostConnected.length > 0 && (
+              <div class="sidebar-card">
+                <h4 class="sidebar-card-title">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                  Most Connected
+                </h4>
+                <div class="sidebar-list">
+                  {mostConnected.slice(0, 6).map(p => {
+                    const cat = getCategoryFromPath(p.path);
+                    const catColor = (CATEGORY_STYLES[cat] || DEFAULT_STYLE).color;
+                    return (
+                      <a href={`/wikis/${fullSlug}?file=${encodeURIComponent(p.path)}`} class="sidebar-link">
+                        <span class="sidebar-link-dot" style={`background: ${catColor}`}></span>
+                        <span class="sidebar-link-name">{getPageDisplayName(p.path)}</span>
+                        <span class="sidebar-link-count">{p.connectionCount}</span>
+                      </a>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Recently updated */}
+            <div class="sidebar-card">
+              <h4 class="sidebar-card-title">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                Recently Updated
+              </h4>
+              <div class="sidebar-list">
+                {recentPages.slice(0, 6).map(p => {
+                  const cat = getCategoryFromPath(p.path);
+                  const catColor = (CATEGORY_STYLES[cat] || DEFAULT_STYLE).color;
+                  return (
+                    <a href={`/wikis/${fullSlug}?file=${encodeURIComponent(p.path)}`} class="sidebar-link">
+                      <span class="sidebar-link-dot" style={`background: ${catColor}`}></span>
+                      <span class="sidebar-link-name">{getPageDisplayName(p.path)}</span>
+                      <span class="sidebar-link-time">{timeAgo(p.updated_at)}</span>
+                    </a>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Recent activity */}
+            {recentLog.length > 0 && (
+              <div class="sidebar-card">
+                <h4 class="sidebar-card-title">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                  Activity
+                </h4>
+                <div class="sidebar-activity">
+                  {recentLog.slice(0, 5).map(entry => (
+                    <div class="sidebar-activity-row">
+                      <span class:list={['sidebar-op', `op-${entry.operation}`]}>{entry.operation}</span>
+                      <span class="sidebar-activity-text">{entry.summary}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </aside>
+        </div>
       </div>
     )}
   </div>
@@ -639,7 +1000,7 @@ for (const cat of categories) {
 <script define:vars={{ pages: pages.map(p => ({ path: p.path, wikilinks: p.wikilinks })), fullSlug, categories: categories.map(c => ({ name: c.name, color: c.color, pages: c.pages.map(p => ({ path: p.path, wikilinks: p.wikilinks })) })) }}>
 document.addEventListener('DOMContentLoaded', () => {
 
-  // ── Spotlight Search (Dashboard) ──
+  // ── Search (shared between nav and spotlight) ──
   function setupSearch(inputId, resultsId) {
     const input = document.getElementById(inputId);
     const results = document.getElementById(resultsId);
@@ -708,9 +1069,8 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Initialize both search bars
   setupSearch('spotlight-input', 'spotlight-results');
-  setupSearch('mini-search-input', 'mini-search-results');
+  setupSearch('nav-search-input', 'nav-search-results');
 
   // Keyboard shortcut: / to focus search
   document.addEventListener('keydown', (e) => {
@@ -718,19 +1078,56 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.key === '/' && !anyInput) {
       e.preventDefault();
       const spotlight = document.getElementById('spotlight-input');
-      const mini = document.getElementById('mini-search-input');
+      const navSearch = document.getElementById('nav-search-input');
       if (spotlight) spotlight.focus();
-      else if (mini) mini.focus();
+      else if (navSearch) navSearch.focus();
     }
     if (e.key === 'Escape') {
-      const spotlight = document.getElementById('spotlight-input');
-      const mini = document.getElementById('mini-search-input');
-      if (document.activeElement === spotlight || document.activeElement === mini) {
+      if (document.activeElement?.tagName === 'INPUT') {
         document.activeElement.blur();
-        document.getElementById('spotlight-results')?.classList.remove('visible');
-        document.getElementById('mini-search-results')?.classList.remove('visible');
       }
+      document.querySelectorAll('.search-bar-results, .nav-search-results').forEach(el => el.classList.remove('visible'));
     }
+  });
+
+  // ── TOC active state tracking ──
+  const tocLinks = document.querySelectorAll('.toc-link[data-toc-id]');
+  if (tocLinks.length > 0) {
+    const headingEls = [];
+    tocLinks.forEach(link => {
+      const id = link.getAttribute('data-toc-id');
+      const el = document.getElementById(id);
+      if (el) headingEls.push({ el, link });
+    });
+
+    if (headingEls.length > 0) {
+      const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+          if (entry.isIntersecting) {
+            tocLinks.forEach(l => l.classList.remove('active'));
+            const match = headingEls.find(h => h.el === entry.target);
+            if (match) match.link.classList.add('active');
+          }
+        });
+      }, { rootMargin: '-80px 0px -70% 0px', threshold: 0 });
+
+      headingEls.forEach(({ el }) => observer.observe(el));
+    }
+  }
+
+  // ── Smooth scroll for TOC links ──
+  document.querySelectorAll('.toc-link, .toc-card-link').forEach(link => {
+    link.addEventListener('click', (e) => {
+      const href = link.getAttribute('href');
+      if (href && href.startsWith('#')) {
+        e.preventDefault();
+        const target = document.getElementById(href.slice(1));
+        if (target) {
+          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          history.replaceState(null, '', href);
+        }
+      }
+    });
   });
 
   // ── Graph View ──
@@ -1030,13 +1427,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
 <style>
   /* =============================================
-     YOUR BRAIN -- Redesigned Personal Wiki
-     Apple-inspired, warm, spacious
+     PERSONAL WIKI -- Wikipedia-inspired design
      ============================================= */
 
   /* -- Shell -- */
   .wiki-shell {
-    max-width: 1100px;
+    max-width: 1200px;
     margin: 0 auto;
     padding: 0 24px 80px;
     min-height: 100vh;
@@ -1044,59 +1440,138 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
   /* ===========================================
-     TOP BAR (Page view / Graph view only)
+     TOP NAVIGATION
      =========================================== */
-  .page-topbar {
+  .wiki-nav {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 16px;
-    padding: 16px 0;
-    margin-bottom: 8px;
-    border-bottom: 1px solid rgba(255,255,255,0.04);
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 24px;
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: var(--bg-primary);
   }
 
-  .topbar-back {
-    display: inline-flex;
+  .wiki-nav-left {
+    display: flex;
     align-items: center;
     gap: 8px;
+    min-width: 0;
+  }
+
+  .nav-back {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
     color: var(--text-muted);
     text-decoration: none;
-    font-size: 14px;
-    font-weight: 500;
-    transition: color var(--transition);
+    transition: all var(--transition);
     flex-shrink: 0;
   }
 
-  .topbar-back:hover {
+  .nav-back:hover {
+    background: var(--bg-hover);
     color: var(--text-primary);
   }
 
-  .topbar-spacer {
-    flex: 1;
+  .nav-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-primary);
+    text-decoration: none;
+    font-size: 15px;
+    font-weight: 600;
+    text-transform: capitalize;
+    flex-shrink: 0;
   }
 
-  /* Mini search (page topbar) */
-  .topbar-search-mini {
+  .nav-title svg {
+    color: var(--accent);
+  }
+
+  .nav-breadcrumb {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 14px;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .nav-sep {
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+
+  .nav-crumb-cat {
+    font-weight: 500;
+    text-transform: capitalize;
+    flex-shrink: 0;
+  }
+
+  .nav-crumb-page {
+    color: var(--text-muted);
+    text-transform: capitalize;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .wiki-nav-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+  .nav-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-muted);
+    text-decoration: none;
+    transition: all var(--transition);
+  }
+
+  .nav-icon-btn:hover {
+    background: var(--bg-hover);
+    border-color: var(--border-hover);
+    color: var(--text-primary);
+  }
+
+  /* Nav search */
+  .nav-search {
     position: relative;
     display: flex;
     align-items: center;
-    max-width: 280px;
-    flex: 1;
+    width: 240px;
   }
 
-  .topbar-search-mini svg {
+  .nav-search svg {
     position: absolute;
     left: 10px;
     color: var(--text-dim);
     pointer-events: none;
   }
 
-  .topbar-search-mini input {
+  .nav-search input {
     width: 100%;
-    padding: 6px 36px 6px 34px;
+    padding: 7px 36px 7px 34px;
     background: var(--bg-input);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 8px;
     color: var(--text-primary);
     font-size: 13px;
     font-family: var(--font-sans);
@@ -1104,16 +1579,17 @@ document.addEventListener('DOMContentLoaded', () => {
     transition: all var(--transition);
   }
 
-  .topbar-search-mini input::placeholder {
+  .nav-search input::placeholder {
     color: var(--text-dim);
   }
 
-  .topbar-search-mini input:focus {
+  .nav-search input:focus {
     border-color: var(--accent);
     box-shadow: 0 0 0 3px var(--accent-subtle);
+    width: 320px;
   }
 
-  .topbar-search-mini kbd {
+  .nav-search kbd {
     position: absolute;
     right: 8px;
     padding: 0 5px;
@@ -1127,15 +1603,16 @@ document.addEventListener('DOMContentLoaded', () => {
     line-height: 1.6;
   }
 
-  .topbar-search-mini input:focus ~ kbd {
+  .nav-search input:focus ~ kbd {
     display: none;
   }
 
-  .mini-search-results {
+  .nav-search-results {
     position: absolute;
     top: calc(100% + 6px);
     left: 0;
     right: 0;
+    min-width: 320px;
     background: var(--bg-secondary);
     border: 1px solid var(--border);
     border-radius: 10px;
@@ -1145,94 +1622,61 @@ document.addEventListener('DOMContentLoaded', () => {
     display: none;
   }
 
-  .mini-search-results.visible {
+  .nav-search-results.visible {
     display: block;
   }
 
 
   /* ===========================================
-     DASHBOARD -- HERO
+     MAIN PAGE -- WIKI HOME
      =========================================== */
-  .brain-home {
-    padding-top: 24px;
+  .wiki-home {
+    padding-top: 8px;
   }
 
-  .hero {
+  .wiki-intro {
+    margin-bottom: 24px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .wiki-main-title {
     display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    gap: 24px;
-    margin-bottom: 40px;
-  }
-
-  .hero-text {
-    max-width: 600px;
-  }
-
-  .hero-greeting {
-    font-size: 36px;
+    align-items: center;
+    gap: 12px;
+    font-size: 28px;
     font-weight: 700;
-    letter-spacing: -0.035em;
-    line-height: 1.15;
+    letter-spacing: -0.03em;
     color: var(--text-primary);
-    margin-bottom: 12px;
-    background: linear-gradient(135deg, #fafafa 0%, #a1a1aa 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
+    margin-bottom: 8px;
+    text-transform: capitalize;
   }
 
-  .hero-summary {
-    font-size: 16px;
-    line-height: 1.6;
+  .wiki-main-title svg {
+    color: var(--accent);
+    flex-shrink: 0;
+  }
+
+  .wiki-intro-text {
+    font-size: 15px;
     color: var(--text-muted);
+    line-height: 1.6;
+    max-width: 640px;
   }
 
-  .hero-summary strong {
+  .wiki-intro-text strong {
     color: var(--text-secondary);
     font-weight: 600;
   }
 
-  .hero-actions {
-    flex-shrink: 0;
-  }
-
-  .hero-graph-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 18px;
-    background: var(--bg-input);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    color: var(--text-muted);
-    text-decoration: none;
-    font-size: 13px;
-    font-weight: 500;
-    transition: all var(--transition);
-  }
-
-  .hero-graph-btn:hover {
-    background: var(--bg-hover);
-    border-color: var(--border-hover);
-    color: var(--text-primary);
-  }
-
-
-  /* ===========================================
-     SPOTLIGHT SEARCH
-     =========================================== */
-  .spotlight-wrap {
-    margin-bottom: 48px;
-  }
-
-  .spotlight {
+  /* Spotlight search on main page */
+  .wiki-search-bar {
     position: relative;
     max-width: 560px;
-    margin: 0 auto;
+    margin: 0 auto 32px;
   }
 
-  .spotlight-icon {
+  .search-bar-icon {
     position: absolute;
     left: 16px;
     top: 50%;
@@ -1241,30 +1685,29 @@ document.addEventListener('DOMContentLoaded', () => {
     pointer-events: none;
   }
 
-  .spotlight-input {
+  .search-bar-input {
     width: 100%;
-    padding: 14px 48px 14px 48px;
+    padding: 13px 48px 13px 48px;
     background: var(--bg-secondary);
     border: 1px solid var(--border);
-    border-radius: 14px;
+    border-radius: 12px;
     color: var(--text-primary);
-    font-size: 16px;
+    font-size: 15px;
     font-family: var(--font-sans);
     outline: none;
     transition: all 200ms ease;
   }
 
-  .spotlight-input::placeholder {
+  .search-bar-input::placeholder {
     color: var(--text-dim);
   }
 
-  .spotlight-input:focus {
+  .search-bar-input:focus {
     border-color: var(--accent);
-    background: var(--bg-card);
     box-shadow: 0 0 0 4px var(--accent-subtle), 0 8px 32px rgba(0,0,0,0.2);
   }
 
-  .spotlight-kbd {
+  .search-bar-kbd {
     position: absolute;
     right: 14px;
     top: 50%;
@@ -1279,25 +1722,25 @@ document.addEventListener('DOMContentLoaded', () => {
     pointer-events: none;
   }
 
-  .spotlight-input:focus ~ .spotlight-kbd {
+  .search-bar-input:focus ~ .search-bar-kbd {
     display: none;
   }
 
-  .spotlight-results {
+  .search-bar-results {
     position: absolute;
     top: calc(100% + 8px);
     left: 0;
     right: 0;
     background: var(--bg-card);
     border: 1px solid var(--border);
-    border-radius: 14px;
+    border-radius: 12px;
     box-shadow: 0 16px 48px rgba(0,0,0,0.4);
     overflow: hidden;
     z-index: 100;
     display: none;
   }
 
-  .spotlight-results.visible {
+  .search-bar-results.visible {
     display: block;
   }
 
@@ -1348,260 +1791,185 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
   /* ===========================================
-     SECTION LABELS
+     MAIN LAYOUT -- Two columns
      =========================================== */
-  .section-label {
+  .wiki-main-layout {
+    display: grid;
+    grid-template-columns: 1fr 280px;
+    gap: 32px;
+    align-items: start;
+  }
+
+  .wiki-main-col {
+    min-width: 0;
+  }
+
+
+  /* ===========================================
+     TABLE OF CONTENTS CARD (main page)
+     =========================================== */
+  .wiki-toc-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin-bottom: 24px;
+  }
+
+  .toc-card-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     font-size: 13px;
     font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.05em;
     color: var(--text-dim);
-    margin-bottom: 16px;
+    margin-bottom: 12px;
   }
 
-
-  /* ===========================================
-     QUICK ACCESS (Recently updated)
-     =========================================== */
-  .quick-access {
-    margin-bottom: 48px;
-  }
-
-  .quick-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 10px;
-  }
-
-  .quick-card {
+  .toc-card-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    padding: 14px 16px;
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
+    gap: 2px;
+  }
+
+  .toc-card-link {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    color: var(--text-secondary);
     text-decoration: none;
-    transition: all 200ms ease;
-    position: relative;
-    overflow: hidden;
+    font-size: 14px;
+    transition: all var(--transition);
   }
 
-  .quick-card::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 2px;
-    background: var(--cat-color);
-    opacity: 0.5;
-    transition: opacity 200ms ease;
-  }
-
-  .quick-card:hover {
-    border-color: var(--border-hover);
-    background: var(--bg-card-hover);
-    transform: translateY(-2px);
-    box-shadow: 0 8px 24px rgba(0,0,0,0.15);
-  }
-
-  .quick-card:hover::before {
-    opacity: 1;
-  }
-
-  .quick-cat {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: capitalize;
-    letter-spacing: 0.02em;
-  }
-
-  .quick-name {
-    font-size: 15px;
-    font-weight: 600;
+  .toc-card-link:hover {
+    background: var(--bg-hover);
     color: var(--text-primary);
-    text-transform: capitalize;
-    line-height: 1.3;
   }
 
-  .quick-time {
+  .toc-num {
+    font-family: var(--font-mono);
     font-size: 12px;
     color: var(--text-dim);
+    width: 20px;
+    flex-shrink: 0;
+  }
+
+  .toc-text {
+    flex: 1;
+    font-weight: 500;
+  }
+
+  .toc-count {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    background: var(--bg-input);
+    padding: 1px 6px;
+    border-radius: 4px;
   }
 
 
   /* ===========================================
-     CATEGORY CARDS
+     WIKI SECTIONS (main page)
      =========================================== */
-  .categories-section {
-    margin-bottom: 48px;
-  }
-
-  .cat-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-    gap: 16px;
-  }
-
-  .cat-card {
+  .wiki-section {
+    margin-bottom: 8px;
     background: var(--bg-card);
     border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 20px;
-    transition: all 250ms ease;
-    position: relative;
+    border-radius: 10px;
     overflow: hidden;
   }
 
-  /* Subtle gradient glow at top */
-  .cat-card::before {
-    content: '';
-    position: absolute;
-    top: -1px;
-    left: -1px;
-    right: -1px;
-    height: 80px;
-    background: linear-gradient(180deg, color-mix(in srgb, var(--cat-color) 6%, transparent) 0%, transparent 100%);
-    border-radius: 14px 14px 0 0;
-    pointer-events: none;
-  }
-
-  .cat-card:hover {
-    border-color: color-mix(in srgb, var(--cat-color) 30%, var(--border));
-    transform: translateY(-2px);
-    box-shadow: 0 8px 32px rgba(0,0,0,0.15), 0 0 0 1px color-mix(in srgb, var(--cat-color) 10%, transparent);
-  }
-
-  .cat-card-head {
+  .wiki-section-header {
     display: flex;
     align-items: center;
     gap: 12px;
-    margin-bottom: 10px;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
     position: relative;
   }
 
-  .cat-icon-wrap {
+  .wiki-section-header::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: var(--section-color);
+  }
+
+  .section-icon-wrap {
     width: 36px;
     height: 36px;
-    border-radius: 10px;
+    border-radius: 8px;
     display: flex;
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
   }
 
-  .cat-icon-wrap :global(svg) {
+  .section-icon-wrap :global(svg) {
     width: 18px;
     height: 18px;
   }
 
-  .cat-title-group {
+  .section-title-group {
     flex: 1;
     min-width: 0;
   }
 
-  .cat-name {
-    font-size: 16px;
+  .wiki-section-title {
+    font-size: 17px;
     font-weight: 600;
     color: var(--text-primary);
-    text-transform: capitalize;
     letter-spacing: -0.01em;
     line-height: 1.2;
   }
 
-  .cat-desc {
+  .wiki-section-desc {
     font-size: 12px;
     color: var(--text-dim);
     line-height: 1.3;
+    margin-top: 2px;
   }
 
-  .cat-badge {
+  .section-page-count {
     font-size: 12px;
-    font-weight: 600;
     color: var(--text-dim);
     background: var(--bg-input);
-    padding: 2px 9px;
+    padding: 3px 10px;
     border-radius: 99px;
     flex-shrink: 0;
-  }
-
-  .cat-summary {
-    font-size: 13px;
-    color: var(--text-muted);
-    line-height: 1.5;
-    margin-bottom: 14px;
-    position: relative;
-    padding-left: 10px;
-    border-left: 2px solid color-mix(in srgb, var(--cat-color) 30%, transparent);
-  }
-
-  .cat-pages {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    position: relative;
-  }
-
-  .cat-page-link {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 7px 10px;
-    border-radius: 8px;
-    color: var(--text-secondary);
-    text-decoration: none;
-    font-size: 14px;
-    transition: all var(--transition);
-  }
-
-  .cat-page-link:hover {
-    background: var(--bg-hover);
-    color: var(--text-primary);
-  }
-
-  .cat-page-name {
-    text-transform: capitalize;
     font-weight: 500;
   }
 
-  .cat-page-meta {
-    font-size: 11px;
-    color: var(--text-dim);
-    flex-shrink: 0;
+  .wiki-section-summary {
+    font-size: 13px;
+    color: var(--text-muted);
+    padding: 12px 20px;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+    line-height: 1.5;
   }
 
-  .cat-more {
-    display: block;
-    padding: 6px 10px;
-    font-size: 12px;
-    color: var(--text-dim);
-    font-style: italic;
-  }
-
-
-  /* ===========================================
-     MOST CONNECTED
-     =========================================== */
-  .connected-section {
-    margin-bottom: 48px;
-  }
-
-  .connected-list {
+  .wiki-section-pages {
     display: flex;
     flex-direction: column;
-    gap: 2px;
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    overflow: hidden;
   }
 
-  .connected-item {
+  .wiki-page-row {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 12px 16px;
+    gap: 10px;
+    padding: 10px 20px;
     color: var(--text-secondary);
     text-decoration: none;
     font-size: 14px;
@@ -1609,255 +1977,622 @@ document.addEventListener('DOMContentLoaded', () => {
     border-bottom: 1px solid rgba(255,255,255,0.03);
   }
 
-  .connected-item:last-child {
+  .wiki-page-row:last-child {
     border-bottom: none;
   }
 
-  .connected-item:hover {
+  .wiki-page-row:hover {
     background: var(--bg-hover);
     color: var(--text-primary);
   }
 
-  .connected-dot {
+  .page-row-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .page-row-name {
+    flex: 1;
+    font-weight: 500;
+    text-transform: capitalize;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .page-row-links {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 11px;
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+
+  .page-row-links svg {
+    opacity: 0.5;
+  }
+
+  .page-row-time {
+    font-size: 12px;
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+
+  .page-row-arrow {
+    color: var(--text-dim);
+    opacity: 0;
+    transition: opacity var(--transition);
+    flex-shrink: 0;
+  }
+
+  .wiki-page-row:hover .page-row-arrow {
+    opacity: 1;
+  }
+
+
+  /* ===========================================
+     SIDEBAR (right column on main page)
+     =========================================== */
+  .wiki-sidebar {
+    position: sticky;
+    top: 72px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  /* Infobox */
+  .wiki-infobox {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 24px 20px;
+    text-align: center;
+  }
+
+  .infobox-photo {
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    background: var(--bg-input);
+    border: 2px solid var(--border);
+    margin: 0 auto 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .infobox-name {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 2px;
+    text-transform: capitalize;
+  }
+
+  .infobox-subtitle {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 16px;
+  }
+
+  .infobox-stats {
+    display: flex;
+    justify-content: center;
+    gap: 20px;
+    margin-bottom: 16px;
+  }
+
+  .infobox-stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .infobox-stat-num {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+  }
+
+  .infobox-stat-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .infobox-divider {
+    height: 1px;
+    background: var(--border);
+    margin-bottom: 14px;
+  }
+
+  .infobox-facts {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    text-align: left;
+  }
+
+  .infobox-fact-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+  }
+
+  .infobox-fact-dot {
     width: 8px;
     height: 8px;
     border-radius: 50%;
     flex-shrink: 0;
   }
 
-  .connected-name {
+  .infobox-fact-key {
     flex: 1;
-    font-weight: 500;
+    color: var(--text-secondary);
     text-transform: capitalize;
+    font-weight: 500;
   }
 
-  .connected-stats {
-    display: flex;
-    gap: 12px;
+  .infobox-fact-value {
+    font-family: var(--font-mono);
     font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  /* Sidebar cards */
+  .sidebar-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+
+  .sidebar-card-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-dim);
+    margin-bottom: 10px;
+  }
+
+  .sidebar-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .sidebar-link {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 6px;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 13px;
+    transition: all var(--transition);
+  }
+
+  .sidebar-link:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .sidebar-link-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .sidebar-link-name {
+    flex: 1;
+    text-transform: capitalize;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  .sidebar-link-count {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  .sidebar-link-time {
+    font-size: 11px;
     color: var(--text-dim);
     flex-shrink: 0;
   }
 
-
-  /* ===========================================
-     ACTIVITY
-     =========================================== */
-  .activity-section {
-    margin-bottom: 48px;
-  }
-
-  .activity-list {
+  /* Sidebar activity */
+  .sidebar-activity {
     display: flex;
     flex-direction: column;
-    gap: 2px;
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    overflow: hidden;
+    gap: 6px;
   }
 
-  .activity-row {
+  .sidebar-activity-row {
     display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 10px 16px;
-    border-bottom: 1px solid rgba(255,255,255,0.03);
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 12px;
   }
 
-  .activity-row:last-child {
-    border-bottom: none;
-  }
-
-  .activity-op {
-    font-size: 11px;
+  .sidebar-op {
+    font-size: 10px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.03em;
+    padding: 1px 6px;
+    border-radius: 4px;
     flex-shrink: 0;
-    padding: 2px 8px;
-    border-radius: 6px;
-    min-width: 60px;
-    text-align: center;
   }
 
-  .activity-op.op-ingest {
+  .sidebar-op.op-ingest {
     color: var(--green);
     background: var(--green-bg);
   }
 
-  .activity-op.op-lint {
+  .sidebar-op.op-lint {
     color: var(--amber);
     background: var(--amber-bg);
   }
 
-  .activity-op.op-query {
+  .sidebar-op.op-query {
     color: var(--blue);
     background: var(--blue-bg);
   }
 
-  .activity-summary {
-    flex: 1;
-    font-size: 13px;
-    color: var(--text-secondary);
+  .sidebar-activity-text {
+    color: var(--text-muted);
+    line-height: 1.4;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .activity-time {
+
+  /* ===========================================
+     PAGE VIEW LAYOUT
+     =========================================== */
+  .page-layout {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    gap: 32px;
+    max-width: 1000px;
+    margin: 0 auto;
+  }
+
+  .page-article {
+    min-width: 0;
+    padding-bottom: 80px;
+  }
+
+  /* TOC Sidebar (desktop) */
+  .page-toc-sidebar {
+    position: relative;
+  }
+
+  .page-toc-sticky {
+    position: sticky;
+    top: 72px;
+  }
+
+  .toc-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+    margin-bottom: 10px;
+    padding-left: 12px;
+  }
+
+  .toc-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    border-left: 1px solid var(--border);
+    padding-left: 0;
+  }
+
+  .toc-link {
+    display: block;
+    padding: 4px 12px;
     font-size: 12px;
     color: var(--text-dim);
-    flex-shrink: 0;
+    text-decoration: none;
+    transition: all var(--transition);
+    border-left: 2px solid transparent;
+    margin-left: -1px;
+    line-height: 1.4;
   }
 
-
-  /* ===========================================
-     ROOT PAGES
-     =========================================== */
-  .root-pages-section {
-    margin-bottom: 48px;
+  .toc-link:hover {
+    color: var(--text-secondary);
   }
 
-  .root-page-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
+  .toc-link.active {
+    color: var(--accent);
+    border-left-color: var(--accent);
   }
 
-  .root-page-link {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 14px;
+  .toc-level-2 {
+    padding-left: 20px;
+    font-size: 11px;
+  }
+
+  .toc-level-3 {
+    padding-left: 28px;
+    font-size: 11px;
+  }
+
+  /* Mobile TOC */
+  .page-toc-mobile {
+    display: none;
     background: var(--bg-card);
     border: 1px solid var(--border);
-    border-radius: 10px;
-    color: var(--text-muted);
-    text-decoration: none;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    overflow: hidden;
+  }
+
+  .toc-mobile-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
     font-size: 13px;
     font-weight: 500;
-    text-transform: capitalize;
-    transition: all var(--transition);
+    color: var(--text-secondary);
+    cursor: pointer;
+    list-style: none;
   }
 
-  .root-page-link:hover {
-    background: var(--bg-hover);
-    border-color: var(--border-hover);
-    color: var(--text-primary);
+  .toc-mobile-toggle::-webkit-details-marker {
+    display: none;
   }
 
-  .root-page-link svg {
-    opacity: 0.5;
+  .toc-chevron {
+    margin-left: auto;
+    transition: transform 200ms ease;
+  }
+
+  details[open] .toc-chevron {
+    transform: rotate(180deg);
+  }
+
+  .toc-mobile-nav {
+    display: flex;
+    flex-direction: column;
+    padding: 0 14px 12px;
+    gap: 2px;
   }
 
 
   /* ===========================================
-     DOCUMENT READER (Page View)
+     PAGE HEADER
      =========================================== */
-  .doc-reader {
-    max-width: 720px;
-    margin: 0 auto;
-    padding: 20px 0 80px;
+  .page-header {
+    margin-bottom: 24px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border);
   }
 
-  .doc-header {
-    margin-bottom: 36px;
-    padding-bottom: 24px;
-    border-bottom: 1px solid rgba(255,255,255,0.06);
-  }
-
-  .doc-category-label {
+  .page-cat-badge {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 600;
     color: var(--cat-color);
     text-transform: capitalize;
+    text-decoration: none;
     margin-bottom: 8px;
-    letter-spacing: 0.01em;
+    padding: 3px 10px;
+    background: color-mix(in srgb, var(--cat-color) 8%, transparent);
+    border-radius: 6px;
+    transition: all var(--transition);
   }
 
-  .doc-cat-icon :global(svg) {
+  .page-cat-badge:hover {
+    background: color-mix(in srgb, var(--cat-color) 15%, transparent);
+  }
+
+  .page-cat-icon :global(svg) {
     width: 14px;
     height: 14px;
   }
 
-  .doc-title {
+  .page-title {
     font-size: 32px;
     font-weight: 700;
     color: var(--text-primary);
     letter-spacing: -0.03em;
     line-height: 1.15;
     text-transform: capitalize;
-    margin-bottom: 12px;
+    margin-bottom: 10px;
   }
 
-  .doc-meta-row {
+  .page-meta {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
     flex-wrap: wrap;
   }
 
-  .doc-meta-pill {
+  .page-meta-tag {
     font-size: 12px;
     font-weight: 500;
     color: var(--text-muted);
-    padding: 3px 10px;
+    padding: 2px 8px;
     background: var(--bg-input);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 6px;
+    font-family: var(--font-mono);
   }
 
-  .doc-meta-pill.source {
+  .page-meta-tag.source {
     background: var(--amber-bg);
     border-color: transparent;
     color: var(--amber);
   }
 
-  .doc-meta-pill.subtle {
-    border-color: transparent;
-    background: transparent;
+  .page-meta-text {
+    font-size: 13px;
     color: var(--text-dim);
-    padding-left: 0;
   }
 
 
   /* ===========================================
-     DOCUMENT CONTENT (Rendered markdown)
+     QUICK FACTS CARD (page view)
      =========================================== */
-  .doc-body {
-    margin-bottom: 40px;
+  .quick-facts-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 24px;
+    overflow: hidden;
   }
 
-  .doc-content {
+  .quick-facts-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    background: var(--bg-input);
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+  }
+
+  .quick-facts-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 0;
+  }
+
+  .quick-fact-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 8px 16px;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+    border-right: 1px solid rgba(255,255,255,0.03);
+  }
+
+  .quick-fact-row:last-child {
+    border-bottom: none;
+  }
+
+  .quick-fact-key {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    flex-shrink: 0;
+    min-width: 80px;
+  }
+
+  .quick-fact-value {
+    font-size: 13px;
+    color: var(--text-secondary);
+    font-weight: 500;
+  }
+
+  .quick-fact-value.status-green {
+    color: var(--green);
+  }
+
+  .quick-fact-value.status-amber {
+    color: var(--amber);
+  }
+
+  .quick-fact-value.status-red {
+    color: var(--red);
+  }
+
+  .quick-fact-value :global(.wikilink) {
+    font-size: 12px;
+    padding: 1px 6px;
+  }
+
+
+  /* ===========================================
+     PAGE CONTENT (Enhanced markdown rendering)
+     =========================================== */
+  .page-body {
+    margin-bottom: 32px;
+  }
+
+  .page-content {
     font-size: 15px;
-    line-height: 1.8;
+    line-height: 1.75;
     color: var(--text-secondary);
     font-family: var(--font-sans);
   }
 
-  .doc-content :global(.rendered-h1) {
+  /* Headings with anchor links */
+  .page-content :global(.wiki-heading) {
+    position: relative;
+    scroll-margin-top: 72px;
+  }
+
+  .page-content :global(.wiki-heading-anchor) {
+    position: absolute;
+    left: -20px;
+    color: var(--text-dim);
+    text-decoration: none;
+    opacity: 0;
+    transition: opacity var(--transition);
+    font-weight: 400;
+  }
+
+  .page-content :global(.wiki-heading:hover .wiki-heading-anchor) {
+    opacity: 1;
+  }
+
+  .page-content :global(.wiki-h1) {
     font-size: 24px;
     font-weight: 700;
     color: var(--text-primary);
     letter-spacing: -0.02em;
-    margin: 32px 0 16px;
+    margin: 40px 0 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
     line-height: 1.3;
   }
 
-  .doc-content :global(.rendered-h2) {
+  .page-content :global(.wiki-h2) {
     font-size: 20px;
     font-weight: 600;
     color: var(--text-primary);
     letter-spacing: -0.015em;
-    margin: 28px 0 12px;
+    margin: 32px 0 12px;
     line-height: 1.3;
   }
 
-  .doc-content :global(.rendered-h3) {
+  .page-content :global(.wiki-h3) {
     font-size: 16px;
     font-weight: 600;
     color: var(--text-primary);
@@ -1865,7 +2600,7 @@ document.addEventListener('DOMContentLoaded', () => {
     line-height: 1.4;
   }
 
-  .doc-content :global(.rendered-h4) {
+  .page-content :global(.wiki-h4) {
     font-size: 14px;
     font-weight: 600;
     color: var(--text-secondary);
@@ -1874,36 +2609,178 @@ document.addEventListener('DOMContentLoaded', () => {
     margin: 20px 0 8px;
   }
 
-  .doc-content :global(.rendered-p) {
+  .page-content :global(.wiki-p) {
     margin-bottom: 8px;
   }
 
-  .doc-content :global(.rendered-spacer) {
+  .page-content :global(.wiki-spacer) {
     height: 12px;
   }
 
-  .doc-content :global(.rendered-hr) {
+  .page-content :global(.wiki-hr) {
     border: none;
-    border-top: 1px solid rgba(255,255,255,0.06);
+    border-top: 1px solid var(--border);
     margin: 28px 0;
   }
 
-  .doc-content :global(.rendered-list) {
+  /* Lists */
+  .page-content :global(.wiki-list) {
     margin: 8px 0 8px 20px;
     padding: 0;
   }
 
-  .doc-content :global(.rendered-list li) {
+  .page-content :global(.wiki-list li) {
     margin-bottom: 4px;
     padding-left: 4px;
+    line-height: 1.6;
   }
 
-  .doc-content :global(.rendered-code) {
+  .page-content :global(.wiki-list li::marker) {
+    color: var(--text-dim);
+  }
+
+  /* Tables */
+  .page-content :global(.wiki-table-wrap) {
+    margin: 16px 0;
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+
+  .page-content :global(.wiki-table) {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  .page-content :global(.wiki-table th) {
+    background: var(--bg-input);
+    padding: 8px 14px;
+    text-align: left;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .page-content :global(.wiki-table td) {
+    padding: 8px 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+    color: var(--text-secondary);
+  }
+
+  .page-content :global(.wiki-table tr:last-child td) {
+    border-bottom: none;
+  }
+
+  .page-content :global(.wiki-table tr:hover td) {
+    background: var(--bg-hover);
+  }
+
+  /* Key-Value grid */
+  .page-content :global(.wiki-kv-grid) {
+    display: grid;
+    grid-template-columns: 1fr;
+    margin: 12px 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .page-content :global(.wiki-kv-item) {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding: 8px 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+  }
+
+  .page-content :global(.wiki-kv-item:last-child) {
+    border-bottom: none;
+  }
+
+  .page-content :global(.wiki-kv-key) {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    min-width: 120px;
+    flex-shrink: 0;
+  }
+
+  .page-content :global(.wiki-kv-value) {
+    font-size: 14px;
+    color: var(--text-secondary);
+    font-weight: 500;
+  }
+
+  .page-content :global(.kv-badge-green) {
+    color: var(--green);
+  }
+
+  .page-content :global(.kv-badge-amber) {
+    color: var(--amber);
+  }
+
+  .page-content :global(.kv-badge-red) {
+    color: var(--red);
+  }
+
+  /* Callout boxes */
+  .page-content :global(.wiki-callout) {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 16px;
+    border-radius: 8px;
+    margin: 16px 0;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  .page-content :global(.callout-icon) {
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+
+  .page-content :global(.callout-text) {
+    flex: 1;
+  }
+
+  .page-content :global(.callout-info) {
+    background: var(--blue-bg);
+    border-left: 3px solid var(--blue);
+    color: var(--blue);
+  }
+
+  .page-content :global(.callout-warning) {
+    background: var(--amber-bg);
+    border-left: 3px solid var(--amber);
+    color: var(--amber);
+  }
+
+  .page-content :global(.callout-danger) {
+    background: var(--red-bg);
+    border-left: 3px solid var(--red);
+    color: var(--red);
+  }
+
+  .page-content :global(.callout-success) {
+    background: var(--green-bg);
+    border-left: 3px solid var(--green);
+    color: var(--green);
+  }
+
+  /* Code blocks */
+  .page-content :global(.wiki-code-block) {
     display: block;
     background: var(--bg-input);
     border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 16px 20px;
+    border-radius: 8px;
+    padding: 14px 18px;
     margin: 16px 0;
     overflow-x: auto;
     font-family: var(--font-mono);
@@ -1912,7 +2789,7 @@ document.addEventListener('DOMContentLoaded', () => {
     color: var(--text-secondary);
   }
 
-  .doc-content :global(.rendered-inline-code) {
+  .page-content :global(.wiki-inline-code) {
     background: var(--bg-input);
     padding: 2px 6px;
     border-radius: 4px;
@@ -1921,24 +2798,24 @@ document.addEventListener('DOMContentLoaded', () => {
     color: var(--accent);
   }
 
-  .doc-content :global(strong) {
+  .page-content :global(strong) {
     color: var(--text-primary);
     font-weight: 600;
   }
 
-  .doc-content :global(em) {
+  .page-content :global(em) {
     color: var(--text-secondary);
     font-style: italic;
   }
 
-  .doc-raw {
+  .page-raw-source {
     font-family: var(--font-mono);
     font-size: 13px;
     line-height: 1.6;
     color: var(--text-secondary);
     background: var(--bg-input);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 8px;
     padding: 20px;
     overflow-x: auto;
     white-space: pre-wrap;
@@ -1975,14 +2852,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
   /* ===========================================
-     DOCUMENT LINKS / BACKLINKS
+     PAGE SECTIONS (links, backlinks, revisions)
      =========================================== */
-  .doc-links-section {
-    padding: 24px 0;
-    border-top: 1px solid rgba(255,255,255,0.06);
+  .page-section {
+    padding: 20px 0;
+    border-top: 1px solid var(--border);
   }
 
-  .doc-section-heading {
+  .page-section-heading {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -1992,24 +2869,24 @@ document.addEventListener('DOMContentLoaded', () => {
     margin-bottom: 14px;
   }
 
-  .doc-section-heading svg {
+  .page-section-heading svg {
     color: var(--text-dim);
   }
 
-  .doc-link-chips {
+  .link-chips {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
   }
 
-  .doc-link-chip {
+  .link-chip {
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    padding: 7px 14px;
+    padding: 6px 12px;
     background: var(--bg-card);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 8px;
     color: var(--text-secondary);
     text-decoration: none;
     font-size: 13px;
@@ -2018,13 +2895,13 @@ document.addEventListener('DOMContentLoaded', () => {
     transition: all var(--transition);
   }
 
-  .doc-link-chip:hover {
+  .link-chip:hover {
     background: var(--bg-hover);
     border-color: var(--border-hover);
     color: var(--text-primary);
   }
 
-  .doc-link-chip.broken {
+  .link-chip.broken {
     opacity: 0.6;
     border-style: dashed;
   }
@@ -2046,13 +2923,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
   /* ===========================================
-     DOCUMENT REVISIONS
+     REVISIONS TIMELINE
      =========================================== */
-  .doc-revisions {
-    padding: 24px 0;
-    border-top: 1px solid rgba(255,255,255,0.06);
-  }
-
   .revision-timeline {
     display: flex;
     flex-direction: column;
@@ -2138,7 +3010,7 @@ document.addEventListener('DOMContentLoaded', () => {
     width: 100%;
     height: calc(100vh - 100px);
     background: #08080b;
-    border-radius: 14px;
+    border-radius: 12px;
     overflow: hidden;
     border: 1px solid var(--border);
   }
@@ -2160,7 +3032,7 @@ document.addEventListener('DOMContentLoaded', () => {
     left: 16px;
     background: rgba(10, 10, 14, 0.88);
     border: 1px solid rgba(100, 110, 140, 0.2);
-    border-radius: 12px;
+    border-radius: 10px;
     padding: 14px 18px;
     backdrop-filter: blur(12px);
     z-index: 10;
@@ -2247,40 +3119,62 @@ document.addEventListener('DOMContentLoaded', () => {
   /* ===========================================
      RESPONSIVE
      =========================================== */
-  @media (max-width: 768px) {
+  @media (max-width: 900px) {
+    .wiki-main-layout {
+      grid-template-columns: 1fr;
+    }
+
+    .wiki-sidebar {
+      position: static;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 12px;
+    }
+
+    .page-layout {
+      grid-template-columns: 1fr;
+    }
+
+    .page-toc-sidebar {
+      display: none;
+    }
+
+    .page-toc-mobile {
+      display: block;
+    }
+  }
+
+  @media (max-width: 640px) {
     .wiki-shell {
       padding: 0 16px 60px;
     }
 
-    .hero {
-      flex-direction: column;
-      align-items: flex-start;
-      gap: 16px;
+    .wiki-main-title {
+      font-size: 22px;
     }
 
-    .hero-greeting {
-      font-size: 28px;
-    }
-
-    .hero-summary {
-      font-size: 14px;
-    }
-
-    .quick-grid {
-      grid-template-columns: 1fr;
-    }
-
-    .cat-grid {
-      grid-template-columns: 1fr;
-    }
-
-    .doc-title {
+    .page-title {
       font-size: 24px;
     }
 
-    .doc-reader {
-      max-width: none;
-      padding: 12px 0 60px;
+    .nav-search {
+      width: 160px;
+    }
+
+    .nav-search input:focus {
+      width: 200px;
+    }
+
+    .nav-breadcrumb {
+      display: none;
+    }
+
+    .wiki-sidebar {
+      grid-template-columns: 1fr;
+    }
+
+    .quick-facts-grid {
+      grid-template-columns: 1fr;
     }
 
     .graph-legend {
@@ -2289,13 +3183,13 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   @media (max-width: 480px) {
-    .hero-actions {
-      display: none;
+    .search-bar-input {
+      font-size: 14px;
+      padding: 11px 40px;
     }
 
-    .spotlight-input {
-      font-size: 14px;
-      padding: 12px 40px 12px 42px;
+    .wiki-intro-text {
+      font-size: 13px;
     }
   }
 </style>
