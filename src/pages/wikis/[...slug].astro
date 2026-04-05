@@ -314,16 +314,36 @@ function renderContent(content: string): string {
       continue;
     }
 
-    // Unordered list items
+    // Unordered list items — detect KV patterns inside lists
     const ulMatch = line.match(/^\s*[-*]\s+(.+)$/);
     if (ulMatch) {
+      const listContent = ulMatch[1];
+      // Check if this is a key-value pair:
+      // **Key:** Value, **Key** — Value, or plain Key: Value (where key is short)
+      const listKvMatch = listContent.match(/^\*\*(.+?)\*\*\s*[:：—–-]\s*(.+)$/)
+        || listContent.match(/^([A-Z][A-Za-z0-9 \/\-\(\)]{1,40}):\s+(.+)$/);
+      if (listKvMatch) {
+        // Close any open regular list
+        if (inList) { html += listType === 'ul' ? '</ul>' : '</ol>'; inList = false; }
+        // Start or continue KV block
+        inKvBlock = true;
+        const lowerVal = listKvMatch[2].toLowerCase();
+        let badgeClass = '';
+        if (/\b(active|current|approved|valid|yes|complete|done|fresh)\b/.test(lowerVal)) badgeClass = 'kv-badge-green';
+        else if (/\b(pending|upcoming|attention|expires?|renew|soon|conditional|aging)\b/.test(lowerVal)) badgeClass = 'kv-badge-amber';
+        else if (/\b(expired|urgent|overdue|denied|no|failed|critical|risk)\b/.test(lowerVal)) badgeClass = 'kv-badge-red';
+        kvPairs.push({ key: listKvMatch[1], value: listKvMatch[2] });
+        continue;
+      }
+      // Regular list item
+      if (inKvBlock) flushKv();
       if (!inList || listType !== 'ul') {
         if (inList) html += listType === 'ul' ? '</ul>' : '</ol>';
         html += '<ul class="wiki-list">';
         inList = true;
         listType = 'ul';
       }
-      html += `<li>${processInline(ulMatch[1])}</li>`;
+      html += `<li>${processInline(listContent)}</li>`;
       continue;
     }
 
@@ -1196,7 +1216,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const edges = [];
     const edgeSet = new Set();
     for (const n of nodes) {
-      for (const link of n.wikilinks) {
+      for (const link of n.wikilinks {
         const target = link.endsWith('.md') ? link : link + '.md';
         if (nodeMap[target]) {
           const key = [n.id, target].sort().join('::');
@@ -1769,7 +1789,7 @@ document.addEventListener('DOMContentLoaded', () => {
     font-size: 14px;
   }
 
-  :global(.search-result-item) {
+  .search-result-item) {
     display: flex;
     align-items: center;
     gap: 10px;
@@ -1781,16 +1801,16 @@ document.addEventListener('DOMContentLoaded', () => {
     border-bottom: 1px solid rgba(255,255,255,0.03);
   }
 
-  :global(.search-result-item:last-child) {
+  .search-result-item:last-child) {
     border-bottom: none;
   }
 
-  :global(.search-result-item:hover) {
+  .search-result-item:hover) {
     background: var(--bg-hover);
     color: var(--text-primary);
   }
 
-  :global(.sr-cat) {
+  .sr-cat) {
     font-size: 11px;
     color: var(--text-dim);
     text-transform: capitalize;
@@ -1801,7 +1821,7 @@ document.addEventListener('DOMContentLoaded', () => {
     border-radius: 6px;
   }
 
-  :global(.sr-name) {
+  .sr-name) {
     text-transform: capitalize;
     font-weight: 500;
   }
@@ -2549,7 +2569,7 @@ document.addEventListener('DOMContentLoaded', () => {
     color: var(--red);
   }
 
-  .quick-fact-value :global(.wikilink) {
+  .quick-fact-value .wikilink {
     font-size: 12px;
     padding: 1px 6px;
   }
@@ -2570,12 +2590,12 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   /* Headings with anchor links */
-  .page-content :global(.wiki-heading) {
+  .page-content .wiki-heading {
     position: relative;
     scroll-margin-top: 72px;
   }
 
-  .page-content :global(.wiki-heading-anchor) {
+  .page-content .wiki-heading-anchor {
     position: absolute;
     left: -20px;
     color: var(--text-dim);
@@ -2585,11 +2605,11 @@ document.addEventListener('DOMContentLoaded', () => {
     font-weight: 400;
   }
 
-  .page-content :global(.wiki-heading:hover .wiki-heading-anchor) {
+  .page-content .wiki-heading:hover .wiki-heading-anchor {
     opacity: 1;
   }
 
-  .page-content :global(.wiki-h1) {
+  .page-content .wiki-h1 {
     font-size: 24px;
     font-weight: 700;
     color: var(--text-primary);
@@ -2600,7 +2620,7 @@ document.addEventListener('DOMContentLoaded', () => {
     line-height: 1.3;
   }
 
-  .page-content :global(.wiki-h2) {
+  .page-content .wiki-h2 {
     font-size: 20px;
     font-weight: 600;
     color: var(--text-primary);
@@ -2609,7 +2629,7 @@ document.addEventListener('DOMContentLoaded', () => {
     line-height: 1.3;
   }
 
-  .page-content :global(.wiki-h3) {
+  .page-content .wiki-h3 {
     font-size: 16px;
     font-weight: 600;
     color: var(--text-primary);
@@ -2617,7 +2637,7 @@ document.addEventListener('DOMContentLoaded', () => {
     line-height: 1.4;
   }
 
-  .page-content :global(.wiki-h4) {
+  .page-content .wiki-h4 {
     font-size: 14px;
     font-weight: 600;
     color: var(--text-secondary);
@@ -2626,51 +2646,51 @@ document.addEventListener('DOMContentLoaded', () => {
     margin: 20px 0 8px;
   }
 
-  .page-content :global(.wiki-p) {
+  .page-content .wiki-p {
     margin-bottom: 8px;
   }
 
-  .page-content :global(.wiki-spacer) {
+  .page-content .wiki-spacer {
     height: 12px;
   }
 
-  .page-content :global(.wiki-hr) {
+  .page-content .wiki-hr {
     border: none;
     border-top: 1px solid var(--border);
     margin: 28px 0;
   }
 
   /* Lists */
-  .page-content :global(.wiki-list) {
+  .page-content .wiki-list {
     margin: 8px 0 8px 20px;
     padding: 0;
   }
 
-  .page-content :global(.wiki-list li) {
+  .page-content .wiki-list li) {
     margin-bottom: 4px;
     padding-left: 4px;
     line-height: 1.6;
   }
 
-  .page-content :global(.wiki-list li::marker) {
+  .page-content .wiki-list li::marker) {
     color: var(--text-dim);
   }
 
   /* Tables */
-  .page-content :global(.wiki-table-wrap) {
+  .page-content .wiki-table-wrap {
     margin: 16px 0;
     overflow-x: auto;
     border: 1px solid var(--border);
     border-radius: 8px;
   }
 
-  .page-content :global(.wiki-table) {
+  .page-content .wiki-table {
     width: 100%;
     border-collapse: collapse;
     font-size: 13px;
   }
 
-  .page-content :global(.wiki-table th) {
+  .page-content .wiki-table th) {
     background: var(--bg-input);
     padding: 8px 14px;
     text-align: left;
@@ -2682,22 +2702,22 @@ document.addEventListener('DOMContentLoaded', () => {
     border-bottom: 1px solid var(--border);
   }
 
-  .page-content :global(.wiki-table td) {
+  .page-content .wiki-table td) {
     padding: 8px 14px;
     border-bottom: 1px solid rgba(255,255,255,0.03);
     color: var(--text-secondary);
   }
 
-  .page-content :global(.wiki-table tr:last-child td) {
+  .page-content .wiki-table tr:last-child td) {
     border-bottom: none;
   }
 
-  .page-content :global(.wiki-table tr:hover td) {
+  .page-content .wiki-table tr:hover td) {
     background: var(--bg-hover);
   }
 
   /* Key-Value grid */
-  .page-content :global(.wiki-kv-grid) {
+  .page-content .wiki-kv-grid {
     display: grid;
     grid-template-columns: 1fr;
     margin: 12px 0;
@@ -2706,7 +2726,7 @@ document.addEventListener('DOMContentLoaded', () => {
     overflow: hidden;
   }
 
-  .page-content :global(.wiki-kv-item) {
+  .page-content .wiki-kv-item {
     display: flex;
     align-items: baseline;
     gap: 12px;
@@ -2714,11 +2734,11 @@ document.addEventListener('DOMContentLoaded', () => {
     border-bottom: 1px solid rgba(255,255,255,0.03);
   }
 
-  .page-content :global(.wiki-kv-item:last-child) {
+  .page-content .wiki-kv-item:last-child {
     border-bottom: none;
   }
 
-  .page-content :global(.wiki-kv-key) {
+  .page-content .wiki-kv-key {
     font-size: 12px;
     font-weight: 600;
     color: var(--text-dim);
@@ -2728,26 +2748,26 @@ document.addEventListener('DOMContentLoaded', () => {
     flex-shrink: 0;
   }
 
-  .page-content :global(.wiki-kv-value) {
+  .page-content .wiki-kv-value {
     font-size: 14px;
     color: var(--text-secondary);
     font-weight: 500;
   }
 
-  .page-content :global(.kv-badge-green) {
+  .page-content .kv-badge-green {
     color: var(--green);
   }
 
-  .page-content :global(.kv-badge-amber) {
+  .page-content .kv-badge-amber {
     color: var(--amber);
   }
 
-  .page-content :global(.kv-badge-red) {
+  .page-content .kv-badge-red {
     color: var(--red);
   }
 
   /* Callout boxes */
-  .page-content :global(.wiki-callout) {
+  .page-content .wiki-callout {
     display: flex;
     align-items: flex-start;
     gap: 10px;
@@ -2758,41 +2778,41 @@ document.addEventListener('DOMContentLoaded', () => {
     line-height: 1.5;
   }
 
-  .page-content :global(.callout-icon) {
+  .page-content .callout-icon {
     flex-shrink: 0;
     margin-top: 1px;
   }
 
-  .page-content :global(.callout-text) {
+  .page-content .callout-text {
     flex: 1;
   }
 
-  .page-content :global(.callout-info) {
+  .page-content .callout-info {
     background: var(--blue-bg);
     border-left: 3px solid var(--blue);
     color: var(--blue);
   }
 
-  .page-content :global(.callout-warning) {
+  .page-content .callout-warning {
     background: var(--amber-bg);
     border-left: 3px solid var(--amber);
     color: var(--amber);
   }
 
-  .page-content :global(.callout-danger) {
+  .page-content .callout-danger {
     background: var(--red-bg);
     border-left: 3px solid var(--red);
     color: var(--red);
   }
 
-  .page-content :global(.callout-success) {
+  .page-content .callout-success {
     background: var(--green-bg);
     border-left: 3px solid var(--green);
     color: var(--green);
   }
 
   /* Code blocks */
-  .page-content :global(.wiki-code-block) {
+  .page-content .wiki-code-block {
     display: block;
     background: var(--bg-input);
     border: 1px solid var(--border);
@@ -2806,7 +2826,7 @@ document.addEventListener('DOMContentLoaded', () => {
     color: var(--text-secondary);
   }
 
-  .page-content :global(.wiki-inline-code) {
+  .page-content .wiki-inline-code {
     background: var(--bg-input);
     padding: 2px 6px;
     border-radius: 4px;
@@ -2841,7 +2861,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
   /* -- Wikilinks -- */
-  :global(.wikilink) {
+  .wikilink {
     color: var(--accent);
     text-decoration: none;
     padding: 2px 8px;
@@ -2852,17 +2872,17 @@ document.addEventListener('DOMContentLoaded', () => {
     font-weight: 500;
   }
 
-  :global(.wikilink:hover) {
+  .wikilink:hover) {
     background: rgba(129,140,248,0.2);
     color: #c7d2fe;
   }
 
-  :global(.wikilink-broken) {
+  .wikilink-broken {
     color: var(--amber);
     background: var(--amber-bg);
   }
 
-  :global(.wikilink-broken:hover) {
+  .wikilink-broken:hover) {
     background: rgba(251,191,36,0.15);
     color: #fcd34d;
   }
