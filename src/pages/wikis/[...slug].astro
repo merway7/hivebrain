@@ -19,14 +19,73 @@ if (!wiki) {
 const pages = await listPages(wiki.id);
 const sources = await listSources(wiki.id);
 const stats = await getWikiStats(wiki.id);
-const recentLog = await getLog(wiki.id, 10);
+const recentLog = await getLog(wiki.id, 20);
+
+// Build category groups from page paths
+interface CategoryGroup {
+  name: string;
+  pages: typeof pages;
+  color: string;
+  icon: string;
+}
+
+const CATEGORY_STYLES: Record<string, { color: string; icon: string }> = {
+  identity:   { color: '#818cf8', icon: 'fingerprint' },
+  finances:   { color: '#34d399', icon: 'wallet' },
+  investing:  { color: '#fbbf24', icon: 'trending-up' },
+  business:   { color: '#60a5fa', icon: 'briefcase' },
+  personal:   { color: '#c084fc', icon: 'heart' },
+  family:     { color: '#f472b6', icon: 'users' },
+  people:     { color: '#22d3ee', icon: 'user-group' },
+  projects:   { color: '#fb923c', icon: 'rocket' },
+  work:       { color: '#f87171', icon: 'building' },
+};
+
+const DEFAULT_STYLE = { color: '#a1a1aa', icon: 'file' };
+
+const categoryMap = new Map<string, typeof pages>();
+const rootPages: typeof pages = [];
+
+for (const p of pages) {
+  const pathParts = p.path.split('/');
+  if (pathParts.length > 1) {
+    const cat = pathParts[0];
+    if (!categoryMap.has(cat)) categoryMap.set(cat, []);
+    categoryMap.get(cat)!.push(p);
+  } else {
+    rootPages.push(p);
+  }
+}
+
+const categories: CategoryGroup[] = [...categoryMap.entries()]
+  .sort(([a], [b]) => a.localeCompare(b))
+  .map(([name, catPages]) => ({
+    name,
+    pages: catPages,
+    ...(CATEGORY_STYLES[name] || DEFAULT_STYLE),
+  }));
+
+// Total wikilink count
+const totalLinks = pages.reduce((sum, p) => sum + (p.wikilinks?.length || 0), 0);
+
+// Build backlinks map: for each page, which pages link to it
+const backlinksMap = new Map<string, string[]>();
+for (const p of pages) {
+  for (const link of (p.wikilinks || [])) {
+    const target = link.endsWith('.md') ? link : link + '.md';
+    if (!backlinksMap.has(target)) backlinksMap.set(target, []);
+    backlinksMap.get(target)!.push(p.path);
+  }
+}
 
 // File viewing mode
 const url = Astro.url;
 const filePath = url.searchParams.get('file');
 const fileLayer = url.searchParams.get('layer') || 'page';
+const viewMode = url.searchParams.get('view') || 'dashboard';
 let fileContent: any = null;
 let fileRevisions: any[] = [];
+let currentBacklinks: string[] = [];
 
 if (filePath) {
   if (fileLayer === 'source') {
@@ -35,181 +94,1931 @@ if (filePath) {
     fileContent = await getPage(wiki.id, filePath);
     if (fileContent) {
       fileRevisions = await getPageRevisions(fileContent.id, 10);
+      currentBacklinks = backlinksMap.get(filePath) || [];
     }
   }
 }
+
+// Get the page set for broken-link detection
+const allPagePaths = new Set(pages.map(p => p.path));
+const allPageNames = new Set(pages.map(p => p.path.replace(/\.md$/, '')));
 
 function timeAgo(dateStr: string): string {
   try {
     const d = new Date(dateStr);
     const diff = Date.now() - d.getTime();
-    const hours = Math.floor(diff / 3600000);
-    if (hours < 1) return 'just now';
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
     if (hours < 24) return `${hours}h ago`;
     const days = Math.floor(hours / 24);
     if (days < 7) return `${days}d ago`;
+    if (days < 30) return `${Math.floor(days / 7)}w ago`;
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   } catch { return dateStr; }
 }
 
+function escapeHtml(str: string): string {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 function renderWikilinks(content: string): string {
-  return content.replace(/\[\[(.+?)\]\]/g, (match, inner) => {
+  // First escape the content to prevent XSS, then process wikilinks
+  const escaped = escapeHtml(content);
+  return escaped.replace(/\[\[(.+?)\]\]/g, (match, inner) => {
     const [target, display] = inner.split('|');
     const label = (display || target).trim();
-    const href = `/wikis/${fullSlug}?file=${encodeURIComponent(target.trim().endsWith('.md') ? target.trim() : target.trim() + '.md')}`;
-    return `<a href="${href}" class="wikilink">${label}</a>`;
+    const normalizedTarget = target.trim().endsWith('.md') ? target.trim() : target.trim() + '.md';
+    const href = `/wikis/${fullSlug}?file=${encodeURIComponent(normalizedTarget)}`;
+    const exists = allPagePaths.has(normalizedTarget) || allPageNames.has(target.trim());
+    const cls = exists ? 'wikilink' : 'wikilink wikilink-broken';
+    return `<a href="${escapeHtml(href)}" class="${cls}">${escapeHtml(label)}</a>`;
   });
 }
 
+function getPageDisplayName(path: string): string {
+  const name = path.split('/').pop() || path;
+  return name.replace(/\.md$/, '').replace(/-/g, ' ');
+}
+
+function getCategoryFromPath(path: string): string {
+  const parts = path.split('/');
+  return parts.length > 1 ? parts[0] : '';
+}
+
 const pageTitle = fileContent
-  ? `${filePath} — ${fullSlug}`
-  : `${fullSlug} — Wikis`;
+  ? `${getPageDisplayName(filePath!)} — ${wiki.slug}`
+  : `${wiki.slug} — Your Brain`;
 ---
 
 <Layout title={pageTitle}>
-  <div class="app">
+  <div class="wiki-app">
     <Header />
-    <main class="comb-view">
-      <div class="comb-header">
-        <a href="/wikis" class="back-link">&larr; Wikis</a>
-        <div class="comb-title-row">
-          <h1 class="comb-title">
-            <span class="comb-owner">{wiki.owner}</span>
-            <span class="comb-sep">/</span>
-            <span class="comb-name">{wiki.slug}</span>
-          </h1>
-          {!wiki.is_public && <span class="private-badge">private</span>}
+
+    <!-- Brain Bar -->
+    <div class="brain-bar">
+      <div class="brain-bar-left">
+        <a href="/wikis" class="brain-back">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+        </a>
+        <div class="brain-identity">
+          <span class="brain-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2a7 7 0 0 1 7 7c0 2.38-1.19 4.47-3 5.74V17a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2v-2.26C6.19 13.47 5 11.38 5 9a7 7 0 0 1 7-7z"/>
+              <path d="M9 21h6"/>
+              <path d="M10 17v4"/>
+              <path d="M14 17v4"/>
+              <path d="M9 9h.01"/>
+              <path d="M15 9h.01"/>
+            </svg>
+          </span>
+          <div class="brain-title-group">
+            <h1 class="brain-name">{wiki.slug}</h1>
+            {wiki.description && <span class="brain-desc">{wiki.description}</span>}
+          </div>
         </div>
-        {wiki.description && <p class="comb-desc">{wiki.description}</p>}
-        <div class="comb-info">
-          <span>{stats.page_count} page{stats.page_count !== 1 ? 's' : ''}</span>
-          <span>{stats.source_count} source{stats.source_count !== 1 ? 's' : ''}</span>
-          <span>{stats.log_count} operation{stats.log_count !== 1 ? 's' : ''}</span>
+      </div>
+
+      <div class="brain-bar-center">
+        <div class="brain-search" id="brain-search">
+          <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+          <input type="text" class="search-input" placeholder="Search your brain..." id="wiki-search-input" autocomplete="off" />
+          <kbd class="search-kbd">/</kbd>
+          <div class="search-results" id="search-results"></div>
         </div>
-        {wiki.tags.length > 0 && (
-          <div class="comb-tags">
-            {wiki.tags.map((t: string) => <span class="tag">{t}</span>)}
+      </div>
+
+      <div class="brain-bar-right">
+        <div class="brain-stats-pills">
+          <span class="stat-pill">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+            {stats.page_count} pages
+          </span>
+          <span class="stat-pill">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            {totalLinks} links
+          </span>
+          <span class="stat-pill">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            {categories.length} categories
+          </span>
+        </div>
+        <div class="view-toggle">
+          <a href={`/wikis/${fullSlug}`} class:list={['view-btn', { active: !filePath && viewMode !== 'graph' }]} title="Dashboard">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+          </a>
+          <a href={`/wikis/${fullSlug}?view=graph`} class:list={['view-btn', { active: viewMode === 'graph' }]} title="Graph View">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="18" r="2"/><path d="M12 10V8"/><path d="M6.3 7.7l3.4 2.6"/><path d="M17.7 7.7l-3.4 2.6"/><path d="M6.3 16.3l3.4-2.6"/><path d="M17.7 16.3l-3.4-2.6"/></svg>
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main content area -->
+    <div class="brain-layout">
+      <!-- Sidebar -->
+      <aside class="brain-sidebar" id="brain-sidebar">
+        <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18"/><path d="M3 6h18"/><path d="M3 18h18"/></svg>
+        </button>
+
+        <nav class="category-tree">
+          {rootPages.length > 0 && (
+            <div class="tree-section">
+              {rootPages.map(p => (
+                <a
+                  href={`/wikis/${fullSlug}?file=${encodeURIComponent(p.path)}`}
+                  class:list={['tree-leaf', { active: filePath === p.path }]}
+                >
+                  <svg class="leaf-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+                  <span class="leaf-name">{getPageDisplayName(p.path)}</span>
+                </a>
+              ))}
+            </div>
+          )}
+
+          {categories.map(cat => {
+            const isActive = filePath && getCategoryFromPath(filePath) === cat.name;
+            return (
+              <div class:list={['tree-section', { 'section-active': isActive }]} data-category={cat.name}>
+                <button
+                  class="tree-branch"
+                  data-expanded={isActive ? 'true' : 'false'}
+                  style={`--cat-color: ${cat.color}`}
+                >
+                  <span class="branch-indicator">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 18l6-6-6-6"/></svg>
+                  </span>
+                  <span class="branch-dot" style={`background: ${cat.color}`}></span>
+                  <span class="branch-name">{cat.name}</span>
+                  <span class="branch-count">{cat.pages.length}</span>
+                </button>
+                <div class="tree-leaves" data-collapsed={isActive ? 'false' : 'true'}>
+                  {cat.pages.map(p => (
+                    <a
+                      href={`/wikis/${fullSlug}?file=${encodeURIComponent(p.path)}`}
+                      class:list={['tree-leaf', { active: filePath === p.path }]}
+                    >
+                      <span class="leaf-name">{getPageDisplayName(p.path)}</span>
+                      {(p.wikilinks?.length || 0) > 0 && (
+                        <span class="leaf-links" title={`${p.wikilinks.length} outgoing links`}>
+                          {p.wikilinks.length}
+                        </span>
+                      )}
+                    </a>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </nav>
+
+        {sources.length > 0 && (
+          <div class="sidebar-section-divider">
+            <span class="divider-label">Sources</span>
+          </div>
+        )}
+        {sources.length > 0 && (
+          <nav class="source-list">
+            {sources.map(s => (
+              <a
+                href={`/wikis/${fullSlug}?file=${encodeURIComponent(s.path)}&layer=source`}
+                class:list={['tree-leaf source-leaf', { active: filePath === s.path && fileLayer === 'source' }]}
+              >
+                <svg class="leaf-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+                <span class="leaf-name">{s.path}</span>
+              </a>
+            ))}
+          </nav>
+        )}
+      </aside>
+
+      <!-- Main Panel -->
+      <div class="brain-main">
+        {viewMode === 'graph' && !filePath ? (
+          <!-- Graph View -->
+          <div class="wiki-graph" id="wiki-graph">
+            <canvas id="wiki-graph-canvas"></canvas>
+            <div class="graph-legend" id="wiki-graph-legend">
+              <h4 class="legend-title">Categories</h4>
+              {categories.map(cat => (
+                <div class="legend-row">
+                  <span class="legend-dot" style={`background: ${cat.color}; box-shadow: 0 0 6px ${cat.color}88`}></span>
+                  <span class="legend-name">{cat.name}</span>
+                  <span class="legend-count">{cat.pages.length}</span>
+                </div>
+              ))}
+            </div>
+            <div class="graph-controls">
+              <button class="graph-ctrl-btn" id="wiki-graph-reset">Reset</button>
+              <button class="graph-ctrl-btn" id="wiki-graph-labels">Labels</button>
+            </div>
+            <div class="graph-info" id="wiki-graph-info"></div>
+          </div>
+        ) : fileContent ? (
+          <!-- Page View -->
+          <article class="page-view">
+            <div class="page-header">
+              <div class="page-breadcrumb">
+                {getCategoryFromPath(filePath!) && (
+                  <span class="breadcrumb-cat" style={`color: ${(CATEGORY_STYLES[getCategoryFromPath(filePath!)] || DEFAULT_STYLE).color}`}>
+                    {getCategoryFromPath(filePath!)}
+                  </span>
+                )}
+                {getCategoryFromPath(filePath!) && <span class="breadcrumb-sep">/</span>}
+                <span class="breadcrumb-page">{getPageDisplayName(filePath!)}</span>
+              </div>
+              <div class="page-meta">
+                {fileLayer === 'source' ? (
+                  <span class="meta-badge source-badge">Raw Source</span>
+                ) : (
+                  <span class="meta-badge">v{fileContent.revision}</span>
+                )}
+                <span class="meta-time">{timeAgo(fileContent.updated_at || fileContent.created_at)}</span>
+                {fileContent.wikilinks?.length > 0 && (
+                  <span class="meta-links">{fileContent.wikilinks.length} outgoing links</span>
+                )}
+              </div>
+            </div>
+
+            <div class="page-body">
+              {fileLayer === 'source' ? (
+                <pre class="page-content-raw">{fileContent.content}</pre>
+              ) : (
+                <div class="page-content" set:html={renderWikilinks(fileContent.content)} />
+              )}
+            </div>
+
+            <!-- Backlinks -->
+            {currentBacklinks.length > 0 && (
+              <div class="backlinks-section">
+                <h3 class="backlinks-title">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 7h3a5 5 0 0 1 5 5 5 5 0 0 1-5 5h-3m-6 0H6a5 5 0 0 1-5-5 5 5 0 0 1 5-5h3"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+                  Linked from
+                </h3>
+                <div class="backlinks-list">
+                  {currentBacklinks.map(bl => (
+                    <a href={`/wikis/${fullSlug}?file=${encodeURIComponent(bl)}`} class="backlink-item">
+                      <span class="backlink-cat" style={`color: ${(CATEGORY_STYLES[getCategoryFromPath(bl)] || DEFAULT_STYLE).color}`}>
+                        {getCategoryFromPath(bl) || 'root'}
+                      </span>
+                      <span class="backlink-name">{getPageDisplayName(bl)}</span>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <!-- Revisions -->
+            {fileRevisions.length > 1 && (
+              <div class="revisions-section">
+                <h3 class="revisions-title">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                  History
+                </h3>
+                <div class="revision-list">
+                  {fileRevisions.map((rev, i) => (
+                    <div class:list={['revision-entry', { 'revision-current': i === 0 }]}>
+                      <span class="rev-version">v{rev.revision}</span>
+                      <span class="rev-message">{rev.message || 'No message'}</span>
+                      <span class="rev-author">@{rev.pushed_by}</span>
+                      <span class="rev-time">{timeAgo(rev.created_at)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </article>
+        ) : (
+          <!-- Dashboard View -->
+          <div class="brain-dashboard">
+            <!-- Welcome section -->
+            <div class="dashboard-hero">
+              <div class="hero-greeting">
+                <h2 class="hero-title">Your Brain</h2>
+                <p class="hero-subtitle">{stats.page_count} pages across {categories.length} categories, connected by {totalLinks} links</p>
+              </div>
+            </div>
+
+            <!-- Category cards grid -->
+            <div class="category-grid">
+              {categories.map(cat => (
+                <div class="category-card" style={`--cat-color: ${cat.color}`}>
+                  <div class="card-header-row">
+                    <span class="card-dot" style={`background: ${cat.color}`}></span>
+                    <h3 class="card-name">{cat.name}</h3>
+                    <span class="card-count">{cat.pages.length}</span>
+                  </div>
+                  <div class="card-pages">
+                    {cat.pages.map(p => (
+                      <a href={`/wikis/${fullSlug}?file=${encodeURIComponent(p.path)}`} class="card-page-link">
+                        {getPageDisplayName(p.path)}
+                        {(p.wikilinks?.length || 0) > 0 && (
+                          <span class="card-page-links">{p.wikilinks.length}</span>
+                        )}
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <!-- Recent Activity -->
+            {recentLog.length > 0 && (
+              <div class="activity-section">
+                <h3 class="section-title">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                  Recent Activity
+                </h3>
+                <div class="activity-timeline">
+                  {recentLog.slice(0, 10).map(entry => (
+                    <div class="timeline-entry">
+                      <div class="timeline-dot-container">
+                        <span class:list={['timeline-dot', `op-${entry.operation}`]}></span>
+                        <span class="timeline-line"></span>
+                      </div>
+                      <div class="timeline-content">
+                        <span class:list={['timeline-op', `op-${entry.operation}`]}>{entry.operation}</span>
+                        <span class="timeline-summary">{entry.summary}</span>
+                        <span class="timeline-meta">@{entry.performed_by} &middot; {timeAgo(entry.created_at)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
-
-      <div class="comb-content">
-        <aside class="file-sidebar">
-          {pages.length > 0 && (
-            <div>
-              <h3 class="sidebar-title">Pages</h3>
-              <nav class="file-tree">
-                {pages.map(p => (
-                  <a
-                    href={`/wikis/${fullSlug}?file=${encodeURIComponent(p.path)}`}
-                    class:list={['tree-file', { active: filePath === p.path && fileLayer !== 'source' }]}
-                  >
-                    {p.path}
-                    <span class="file-rev">v{p.revision}</span>
-                  </a>
-                ))}
-              </nav>
-            </div>
-          )}
-          {sources.length > 0 && (
-            <div style="margin-top: 16px;">
-              <h3 class="sidebar-title">Sources</h3>
-              <nav class="file-tree">
-                {sources.map(s => (
-                  <a
-                    href={`/wikis/${fullSlug}?file=${encodeURIComponent(s.path)}&layer=source`}
-                    class:list={['tree-file source-file', { active: filePath === s.path && fileLayer === 'source' }]}
-                  >
-                    {s.path}
-                  </a>
-                ))}
-              </nav>
-            </div>
-          )}
-          {pages.length === 0 && sources.length === 0 && (
-            <p class="empty-hint">No files yet</p>
-          )}
-        </aside>
-
-        <div class="main-panel">
-          {fileContent ? (
-            <div class="file-view">
-              <div class="file-header">
-                <span class="file-path">{fileContent.path}</span>
-                <span class="file-meta">
-                  {fileLayer === 'source' ? 'Raw Source' : `Page v${fileContent.revision}`}
-                  &middot; {timeAgo(fileContent.updated_at || fileContent.created_at)}
-                </span>
-              </div>
-              <div class="file-body">
-                {fileLayer === 'source' ? (
-                  <pre class="file-content">{fileContent.content}</pre>
-                ) : (
-                  <pre class="file-content" set:html={renderWikilinks(fileContent.content)} />
-                )}
-              </div>
-              {fileRevisions.length > 1 && (
-                <div class="file-revisions">
-                  <h4 class="revisions-title">History</h4>
-                  {fileRevisions.map(rev => (
-                    <div class="revision-row">
-                      <span class="rev-num">v{rev.revision}</span>
-                      <span class="rev-msg">{rev.message || 'No message'}</span>
-                      <span class="rev-by">@{rev.pushed_by}</span>
-                      <span class="rev-date">{timeAgo(rev.created_at)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ) : (
-            <div class="comb-overview">
-              {recentLog.length > 0 ? (
-                <div class="activity-feed">
-                  <h3 class="feed-title">Operation Log</h3>
-                  {recentLog.map(entry => (
-                    <div class="activity-row">
-                      <span class="activity-action" style={`color: var(--${entry.operation === 'ingest' ? 'green' : entry.operation === 'lint' ? 'amber' : 'blue'})`}>
-                        {entry.operation}
-                      </span>
-                      <span class="activity-path">{entry.summary}</span>
-                      <span class="activity-meta">@{entry.performed_by} &middot; {timeAgo(entry.created_at)}</span>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div class="empty-state">
-                  <h3>Empty wiki</h3>
-                  <p>Ingest sources with <code>hivebrain_wiki_ingest</code>:</p>
-                  <pre class="code-example">{`hivebrain_wiki_ingest({
-  wiki: "${fullSlug}",
-  sources: [{ path: "raw/article.md", content: "..." }],
-  pages: [{ path: "concepts/topic.md", content: "# Topic\\n..." }],
-  log_summary: "ingested article about topic"
-})`}</pre>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-    </main>
+    </div>
   </div>
 </Layout>
 
+<script define:vars={{ pages: pages.map(p => ({ path: p.path, wikilinks: p.wikilinks })), fullSlug, categories: categories.map(c => ({ name: c.name, color: c.color, pages: c.pages.map(p => ({ path: p.path, wikilinks: p.wikilinks })) })) }}>
+  // ── Sidebar toggle ──
+  document.addEventListener('DOMContentLoaded', () => {
+    // Branch expand/collapse
+    document.querySelectorAll('.tree-branch').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const expanded = btn.getAttribute('data-expanded') === 'true';
+        btn.setAttribute('data-expanded', String(!expanded));
+        const leaves = btn.nextElementSibling;
+        if (leaves) leaves.setAttribute('data-collapsed', String(expanded));
+      });
+    });
+
+    // Mobile sidebar toggle
+    const sidebar = document.getElementById('brain-sidebar');
+    const toggle = document.getElementById('sidebar-toggle');
+    if (toggle && sidebar) {
+      toggle.addEventListener('click', () => {
+        sidebar.classList.toggle('sidebar-open');
+      });
+    }
+
+    // ── Search ──
+    const searchInput = document.getElementById('wiki-search-input');
+    const searchResults = document.getElementById('search-results');
+
+    if (searchInput && searchResults) {
+      let debounceTimer;
+
+      searchInput.addEventListener('input', (e) => {
+        clearTimeout(debounceTimer);
+        const query = e.target.value.trim().toLowerCase();
+
+        if (query.length < 2) {
+          searchResults.classList.remove('visible');
+          return;
+        }
+
+        debounceTimer = setTimeout(() => {
+          // Client-side search across page paths
+          const matches = pages.filter(p => {
+            const name = p.path.toLowerCase().replace(/[\/\-_\.]/g, ' ');
+            return name.includes(query) || p.path.toLowerCase().includes(query);
+          }).slice(0, 8);
+
+          if (matches.length === 0) {
+            searchResults.textContent = '';
+            const empty = document.createElement('div');
+            empty.className = 'search-empty';
+            empty.textContent = 'No pages match';
+            searchResults.appendChild(empty);
+          } else {
+            searchResults.textContent = '';
+            matches.forEach(p => {
+              const displayName = p.path.split('/').pop().replace(/\.md$/, '').replace(/-/g, ' ');
+              const cat = p.path.includes('/') ? p.path.split('/')[0] : '';
+
+              const link = document.createElement('a');
+              link.href = '/wikis/' + fullSlug + '?file=' + encodeURIComponent(p.path);
+              link.className = 'search-result-item';
+
+              if (cat) {
+                const catSpan = document.createElement('span');
+                catSpan.className = 'sr-cat';
+                catSpan.textContent = cat;
+                link.appendChild(catSpan);
+              }
+
+              const nameSpan = document.createElement('span');
+              nameSpan.className = 'sr-name';
+              nameSpan.textContent = displayName;
+              link.appendChild(nameSpan);
+
+              searchResults.appendChild(link);
+            });
+          }
+          searchResults.classList.add('visible');
+        }, 150);
+      });
+
+      searchInput.addEventListener('blur', () => {
+        setTimeout(() => searchResults.classList.remove('visible'), 200);
+      });
+
+      searchInput.addEventListener('focus', () => {
+        if (searchInput.value.trim().length >= 2) {
+          searchResults.classList.add('visible');
+        }
+      });
+
+      // Keyboard shortcut: / to focus search
+      document.addEventListener('keydown', (e) => {
+        if (e.key === '/' && document.activeElement !== searchInput && document.activeElement.tagName !== 'INPUT') {
+          e.preventDefault();
+          searchInput.focus();
+        }
+        if (e.key === 'Escape' && document.activeElement === searchInput) {
+          searchInput.blur();
+          searchResults.classList.remove('visible');
+        }
+      });
+    }
+
+    // ── Graph View ──
+    const graphContainer = document.getElementById('wiki-graph');
+    if (graphContainer) {
+      const canvas = document.getElementById('wiki-graph-canvas');
+      const ctx = canvas.getContext('2d');
+      const infoEl = document.getElementById('wiki-graph-info');
+
+      let W = 0, H = 0;
+      let showLabels = true;
+      let hoveredNode = null;
+      let selectedNode = null;
+      let dragNode = null;
+      let isDragging = false;
+      let isPanning = false;
+      let panStart = { x: 0, y: 0, camX: 0, camY: 0 };
+      let cam = { x: 0, y: 0, zoom: 1 };
+      let animId;
+
+      // Build nodes from pages
+      const catColorMap = {};
+      categories.forEach(c => { catColorMap[c.name] = c.color; });
+
+      const allPages = [];
+      categories.forEach(c => c.pages.forEach(p => allPages.push(p)));
+
+      const nodeMap = {};
+      const spread = 300;
+
+      const nodes = allPages.map((p, i) => {
+        const cat = p.path.includes('/') ? p.path.split('/')[0] : '';
+        const angle = (i / allPages.length) * Math.PI * 2;
+        const linkCount = (p.wikilinks || []).length;
+        const node = {
+          id: p.path,
+          label: p.path.split('/').pop().replace(/\.md$/, '').replace(/-/g, ' '),
+          category: cat,
+          color: catColorMap[cat] || '#a1a1aa',
+          radius: Math.max(6, Math.min(16, 6 + linkCount * 1.5)),
+          x: 500 + Math.cos(angle) * spread + (Math.random() - 0.5) * 100,
+          y: 400 + Math.sin(angle) * spread + (Math.random() - 0.5) * 100,
+          vx: 0, vy: 0,
+          wikilinks: p.wikilinks || [],
+        };
+        nodeMap[p.path] = node;
+        return node;
+      });
+
+      // Build edges from wikilinks
+      const edges = [];
+      const edgeSet = new Set();
+      for (const n of nodes) {
+        for (const link of n.wikilinks) {
+          const target = link.endsWith('.md') ? link : link + '.md';
+          if (nodeMap[target]) {
+            const key = [n.id, target].sort().join('::');
+            if (!edgeSet.has(key)) {
+              edgeSet.add(key);
+              edges.push({ source: n.id, target: target });
+            }
+          }
+        }
+      }
+
+      function resize() {
+        W = graphContainer.clientWidth;
+        H = graphContainer.clientHeight;
+        canvas.width = W * devicePixelRatio;
+        canvas.height = H * devicePixelRatio;
+        canvas.style.width = W + 'px';
+        canvas.style.height = H + 'px';
+        ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+      }
+
+      function screenToWorld(sx, sy) {
+        const rect = canvas.getBoundingClientRect();
+        const cx = sx - rect.left, cy = sy - rect.top;
+        return {
+          x: (cx - W / 2) / cam.zoom + W / 2 - cam.x,
+          y: (cy - H / 2) / cam.zoom + H / 2 - cam.y,
+        };
+      }
+
+      const SPRING_LENGTH = 140, SPRING_STRENGTH = 0.005, REPULSION = 4000, DAMPING = 0.86, CENTER_GRAVITY = 0.0004;
+
+      function simulate() {
+        for (let i = 0; i < nodes.length; i++) {
+          for (let j = i + 1; j < nodes.length; j++) {
+            const a = nodes[i], b = nodes[j];
+            const dx = b.x - a.x, dy = b.y - a.y;
+            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+            const force = REPULSION / (dist * dist);
+            const fx = (dx / dist) * force, fy = (dy / dist) * force;
+            a.vx -= fx; a.vy -= fy;
+            b.vx += fx; b.vy += fy;
+          }
+        }
+
+        for (const e of edges) {
+          const a = nodeMap[e.source], b = nodeMap[e.target];
+          if (!a || !b) continue;
+          const dx = b.x - a.x, dy = b.y - a.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+          const displacement = dist - SPRING_LENGTH;
+          const force = displacement * SPRING_STRENGTH;
+          const fx = (dx / dist) * force, fy = (dy / dist) * force;
+          a.vx += fx; a.vy += fy;
+          b.vx -= fx; b.vy -= fy;
+        }
+
+        const cx = W / 2, cy = H / 2;
+        for (const n of nodes) {
+          n.vx += (cx - n.x) * CENTER_GRAVITY;
+          n.vy += (cy - n.y) * CENTER_GRAVITY;
+        }
+
+        for (const n of nodes) {
+          if (n === dragNode) continue;
+          n.vx *= DAMPING; n.vy *= DAMPING;
+          n.x += n.vx; n.y += n.vy;
+        }
+      }
+
+      function hexAlpha(hex, alpha) {
+        const a = Math.round(alpha * 255).toString(16).padStart(2, '0');
+        return hex + a;
+      }
+
+      function getConnected(nodeId) {
+        const ids = {};
+        for (const e of edges) {
+          if (e.source === nodeId) ids[e.target] = true;
+          if (e.target === nodeId) ids[e.source] = true;
+        }
+        return ids;
+      }
+
+      function draw() {
+        ctx.clearRect(0, 0, W, H);
+
+        // Background
+        const bg = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.max(W, H) * 0.6);
+        bg.addColorStop(0, '#0e0e12');
+        bg.addColorStop(1, '#08080b');
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, W, H);
+
+        ctx.save();
+        ctx.translate(W / 2, H / 2);
+        ctx.scale(cam.zoom, cam.zoom);
+        ctx.translate(-W / 2 + cam.x, -H / 2 + cam.y);
+
+        const activeId = selectedNode ? selectedNode.id : (hoveredNode ? hoveredNode.id : null);
+        const connectedIds = activeId ? getConnected(activeId) : null;
+
+        // Draw edges
+        for (const e of edges) {
+          const a = nodeMap[e.source], b = nodeMap[e.target];
+          if (!a || !b) continue;
+          const isHighlighted = activeId && (e.source === activeId || e.target === activeId);
+          const isDimmed = activeId && !isHighlighted;
+
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+
+          if (isHighlighted) {
+            ctx.strokeStyle = 'rgba(160,170,200,0.5)';
+            ctx.lineWidth = 2;
+          } else if (isDimmed) {
+            ctx.strokeStyle = 'rgba(60,60,80,0.08)';
+            ctx.lineWidth = 0.5;
+          } else {
+            ctx.strokeStyle = 'rgba(100,110,140,0.15)';
+            ctx.lineWidth = 1;
+          }
+          ctx.stroke();
+        }
+
+        // Draw nodes
+        for (const n of nodes) {
+          const isActive = activeId === n.id;
+          const isConnected = connectedIds && connectedIds[n.id];
+          const isDimmed = activeId && !isActive && !isConnected;
+          const r = n.radius;
+
+          // Glow
+          if (!isDimmed) {
+            const glowSize = isActive ? r * 4 : (isConnected ? r * 3 : r * 2.2);
+            const glowAlpha = isActive ? 0.3 : (isConnected ? 0.15 : 0.07);
+            const grad = ctx.createRadialGradient(n.x, n.y, r * 0.3, n.x, n.y, glowSize);
+            grad.addColorStop(0, hexAlpha(n.color, glowAlpha));
+            grad.addColorStop(1, hexAlpha(n.color, 0));
+            ctx.beginPath();
+            ctx.arc(n.x, n.y, glowSize, 0, Math.PI * 2);
+            ctx.fillStyle = grad;
+            ctx.fill();
+          }
+
+          // Node circle
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+          if (isDimmed) {
+            ctx.fillStyle = hexAlpha(n.color, 0.15);
+          } else if (isActive) {
+            ctx.fillStyle = hexAlpha(n.color, 0.9);
+          } else {
+            ctx.fillStyle = hexAlpha(n.color, 0.6);
+          }
+          ctx.fill();
+
+          if (!isDimmed) {
+            ctx.strokeStyle = hexAlpha(n.color, isActive ? 0.9 : 0.3);
+            ctx.lineWidth = isActive ? 2.5 : 1;
+            ctx.stroke();
+          }
+
+          // Labels
+          if (showLabels && !isDimmed) {
+            ctx.font = '10px Inter, -apple-system, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillStyle = isActive ? 'rgba(250,250,250,0.95)' : 'rgba(200,200,220,0.5)';
+            const label = n.label.length > 20 ? n.label.slice(0, 18) + '..' : n.label;
+            ctx.fillText(label, n.x, n.y + r + 14);
+          }
+        }
+
+        ctx.restore();
+      }
+
+      function tick() {
+        simulate();
+        draw();
+        infoEl.textContent = nodes.length + ' pages  |  ' + edges.length + ' connections';
+        animId = requestAnimationFrame(tick);
+      }
+
+      function hitTest(mx, my) {
+        const world = screenToWorld(mx, my);
+        for (let i = nodes.length - 1; i >= 0; i--) {
+          const n = nodes[i];
+          const dx = world.x - n.x, dy = world.y - n.y;
+          if (dx * dx + dy * dy < (n.radius + 4) * (n.radius + 4)) return n;
+        }
+        return null;
+      }
+
+      canvas.addEventListener('mousemove', (e) => {
+        if (isPanning) {
+          cam.x = panStart.camX + (e.clientX - panStart.x) / cam.zoom;
+          cam.y = panStart.camY + (e.clientY - panStart.y) / cam.zoom;
+          return;
+        }
+        if (dragNode) {
+          isDragging = true;
+          const world = screenToWorld(e.clientX, e.clientY);
+          dragNode.x = world.x; dragNode.y = world.y;
+          dragNode.vx = 0; dragNode.vy = 0;
+          return;
+        }
+        hoveredNode = hitTest(e.clientX, e.clientY);
+        canvas.style.cursor = hoveredNode ? 'pointer' : 'grab';
+      });
+
+      canvas.addEventListener('mousedown', (e) => {
+        const hit = hitTest(e.clientX, e.clientY);
+        if (hit) {
+          dragNode = hit;
+          isDragging = false;
+          selectedNode = (selectedNode === hit) ? null : hit;
+        } else {
+          selectedNode = null;
+          isPanning = true;
+          panStart = { x: e.clientX, y: e.clientY, camX: cam.x, camY: cam.y };
+          canvas.style.cursor = 'grabbing';
+        }
+      });
+
+      canvas.addEventListener('mouseup', () => {
+        // Navigate on click (not drag)
+        if (dragNode && !isDragging) {
+          window.location.href = '/wikis/' + fullSlug + '?file=' + encodeURIComponent(dragNode.id);
+        }
+        dragNode = null;
+        isDragging = false;
+        isPanning = false;
+        canvas.style.cursor = hoveredNode ? 'pointer' : 'grab';
+      });
+
+      canvas.addEventListener('mouseleave', () => {
+        hoveredNode = null; dragNode = null; isDragging = false; isPanning = false;
+      });
+
+      canvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? 0.92 : 1.08;
+        const newZoom = Math.max(0.3, Math.min(4, cam.zoom * delta));
+        const before = screenToWorld(e.clientX, e.clientY);
+        cam.zoom = newZoom;
+        const after = screenToWorld(e.clientX, e.clientY);
+        cam.x += after.x - before.x;
+        cam.y += after.y - before.y;
+      }, { passive: false });
+
+      document.getElementById('wiki-graph-reset')?.addEventListener('click', () => {
+        cam = { x: 0, y: 0, zoom: 1 };
+        selectedNode = null;
+      });
+
+      document.getElementById('wiki-graph-labels')?.addEventListener('click', () => {
+        showLabels = !showLabels;
+      });
+
+      resize();
+      window.addEventListener('resize', resize);
+      tick();
+    }
+  });
+</script>
+
 <style>
-  .source-file {
-    opacity: 0.7;
-    font-style: italic;
+  /* =============================================
+     WIKI BRAIN -- Complete Styles
+     ============================================= */
+
+  .wiki-app {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 20px 24px;
+    min-height: 100vh;
   }
-  .wikilink {
+
+  /* -- Brain Bar -- */
+  .brain-bar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 0;
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .brain-bar-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+
+  .brain-back {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-md);
+    color: var(--text-muted);
+    transition: all var(--transition);
+  }
+
+  .brain-back:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .brain-identity {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .brain-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-lg);
+    background: linear-gradient(135deg, rgba(129,140,248,0.15) 0%, rgba(192,132,252,0.1) 100%);
     color: var(--accent);
-    text-decoration: underline;
-    text-decoration-style: dotted;
-    text-underline-offset: 2px;
+    flex-shrink: 0;
   }
-  .wikilink:hover {
-    text-decoration-style: solid;
-    color: var(--accent-hover);
+
+  .brain-title-group {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .brain-name {
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--text-primary);
+    line-height: 1.2;
+  }
+
+  .brain-desc {
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.3;
+  }
+
+  .brain-bar-center {
+    flex: 1;
+    max-width: 400px;
+    margin: 0 auto;
+  }
+
+  .brain-search {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .search-icon {
+    position: absolute;
+    left: 10px;
+    color: var(--text-dim);
+    pointer-events: none;
+  }
+
+  .search-input {
+    width: 100%;
+    padding: 7px 40px 7px 32px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    color: var(--text-primary);
+    font-size: 13px;
+    font-family: var(--font-sans);
+    transition: all var(--transition);
+    outline: none;
+  }
+
+  .search-input::placeholder {
+    color: var(--text-dim);
+  }
+
+  .search-input:focus {
+    border-color: var(--accent);
+    background: var(--bg-secondary);
+    box-shadow: 0 0 0 3px var(--accent-subtle);
+  }
+
+  .search-kbd {
+    position: absolute;
+    right: 8px;
+    padding: 1px 6px;
+    background: var(--bg-overlay);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    pointer-events: none;
+  }
+
+  .search-input:focus ~ .search-kbd {
+    display: none;
+  }
+
+  .search-results {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    right: 0;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+    overflow: hidden;
+    z-index: 100;
+    display: none;
+  }
+
+  .search-results.visible {
+    display: block;
+  }
+
+  .search-empty {
+    padding: 16px;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 12px;
+  }
+
+  :global(.search-result-item) {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 13px;
+    transition: background var(--transition);
+    border-bottom: 1px solid rgba(39, 39, 42, 0.5);
+  }
+
+  :global(.search-result-item:last-child) {
+    border-bottom: none;
+  }
+
+  :global(.search-result-item:hover) {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  :global(.sr-cat) {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
+  }
+
+  :global(.sr-name) {
+    text-transform: capitalize;
+  }
+
+  .brain-bar-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+
+  .brain-stats-pills {
+    display: flex;
+    gap: 8px;
+  }
+
+  .stat-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 99px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+
+  .stat-pill svg {
+    opacity: 0.6;
+  }
+
+  .view-toggle {
+    display: flex;
+    gap: 2px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 2px;
+  }
+
+  .view-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 28px;
+    border-radius: var(--radius-sm);
+    color: var(--text-dim);
+    transition: all var(--transition);
+  }
+
+  .view-btn:hover {
+    color: var(--text-secondary);
+    background: var(--bg-hover);
+  }
+
+  .view-btn.active {
+    color: var(--accent);
+    background: var(--accent-subtle);
+  }
+
+  /* -- Layout -- */
+  .brain-layout {
+    display: flex;
+    gap: 0;
+    min-height: calc(100vh - 150px);
+  }
+
+  /* -- Sidebar -- */
+  .brain-sidebar {
+    width: 240px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--border);
+    padding: 16px 0 16px 0;
+    overflow-y: auto;
+    position: sticky;
+    top: 0;
+    max-height: calc(100vh - 150px);
+  }
+
+  .brain-sidebar::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  .brain-sidebar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .brain-sidebar::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 4px;
+  }
+
+  .sidebar-toggle {
+    display: none;
+    position: fixed;
+    bottom: 20px;
+    left: 20px;
+    z-index: 200;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: none;
+    color: white;
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+    box-shadow: var(--shadow-lg);
+  }
+
+  .category-tree {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .tree-section {
+    margin-bottom: 2px;
+  }
+
+  .tree-branch {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 6px 16px;
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 500;
+    font-family: var(--font-sans);
+    cursor: pointer;
+    transition: all var(--transition);
+    text-align: left;
+  }
+
+  .tree-branch:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .branch-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    color: var(--text-dim);
+    transition: transform 200ms ease;
+    flex-shrink: 0;
+  }
+
+  .tree-branch[data-expanded="true"] .branch-indicator {
+    transform: rotate(90deg);
+  }
+
+  .branch-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .branch-name {
+    flex: 1;
+    text-transform: capitalize;
+  }
+
+  .branch-count {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    background: var(--bg-input);
+    padding: 1px 6px;
+    border-radius: 99px;
+  }
+
+  .tree-leaves {
+    overflow: hidden;
+    transition: max-height 200ms ease;
+  }
+
+  .tree-leaves[data-collapsed="true"] {
+    max-height: 0 !important;
+    overflow: hidden;
+  }
+
+  .tree-leaves[data-collapsed="false"] {
+    max-height: 1000px;
+  }
+
+  .tree-leaf {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 16px 5px 44px;
+    color: var(--text-muted);
+    font-size: 13px;
+    text-decoration: none;
+    transition: all var(--transition);
+    border-left: 2px solid transparent;
+    text-transform: capitalize;
+  }
+
+  .tree-leaf:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
+
+  .tree-leaf.active {
+    color: var(--accent);
+    background: var(--accent-subtle);
+    border-left-color: var(--accent);
+  }
+
+  .leaf-icon {
+    flex-shrink: 0;
+    opacity: 0.5;
+  }
+
+  .leaf-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .leaf-links {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    color: var(--text-dim);
+    background: var(--bg-input);
+    padding: 0 4px;
+    border-radius: 3px;
+    min-width: 16px;
+    text-align: center;
+  }
+
+  .source-leaf {
+    opacity: 0.6;
+    font-style: italic;
+    padding-left: 16px;
+  }
+
+  .sidebar-section-divider {
+    margin: 16px 16px 8px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+
+  .divider-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+  }
+
+  /* -- Main Panel -- */
+  .brain-main {
+    flex: 1;
+    min-width: 0;
+    padding: 20px 32px;
+  }
+
+  /* -- Dashboard -- */
+  .brain-dashboard {
+    max-width: 900px;
+  }
+
+  .dashboard-hero {
+    margin-bottom: 32px;
+  }
+
+  .hero-greeting {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .hero-title {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    color: var(--text-primary);
+    background: linear-gradient(135deg, var(--text-primary) 0%, var(--accent) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .hero-subtitle {
+    font-size: 14px;
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
+
+  .category-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 12px;
+    margin-bottom: 40px;
+  }
+
+  .category-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 16px 18px;
+    transition: all 200ms ease;
+    border-top: 2px solid var(--cat-color);
+  }
+
+  .category-card:hover {
+    border-color: var(--border-hover);
+    background: var(--bg-card-hover);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+  }
+
+  .card-header-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .card-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .card-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    text-transform: capitalize;
+    flex: 1;
+  }
+
+  .card-count {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    background: var(--bg-input);
+    padding: 1px 7px;
+    border-radius: 99px;
+  }
+
+  .card-pages {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .card-page-link {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 5px 8px;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: 13px;
+    text-transform: capitalize;
+    transition: all var(--transition);
+  }
+
+  .card-page-link:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .card-page-links {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    color: var(--text-dim);
+    opacity: 0.6;
+  }
+
+  /* -- Activity Timeline -- */
+  .activity-section {
+    margin-top: 8px;
+  }
+
+  .section-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 16px;
+  }
+
+  .section-title svg {
+    color: var(--text-dim);
+  }
+
+  .activity-timeline {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .timeline-entry {
+    display: flex;
+    gap: 12px;
+    padding: 0;
+  }
+
+  .timeline-dot-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 12px;
+    flex-shrink: 0;
+    padding-top: 6px;
+  }
+
+  .timeline-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .timeline-dot.op-ingest {
+    background: var(--green);
+    box-shadow: 0 0 6px rgba(52,211,153,0.3);
+  }
+
+  .timeline-dot.op-lint {
+    background: var(--amber);
+    box-shadow: 0 0 6px rgba(251,191,36,0.3);
+  }
+
+  .timeline-dot.op-query {
+    background: var(--blue);
+    box-shadow: 0 0 6px rgba(96,165,250,0.3);
+  }
+
+  .timeline-line {
+    width: 1px;
+    flex: 1;
+    background: var(--border);
+    margin: 4px 0;
+  }
+
+  .timeline-content {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px 0 16px;
+    min-width: 0;
+  }
+
+  .timeline-op {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .timeline-op.op-ingest { color: var(--green); }
+  .timeline-op.op-lint { color: var(--amber); }
+  .timeline-op.op-query { color: var(--blue); }
+
+  .timeline-summary {
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+
+  .timeline-meta {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  /* -- Page View -- */
+  .page-view {
+    max-width: 720px;
+  }
+
+  .page-header {
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .page-breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+
+  .breadcrumb-cat {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .breadcrumb-sep {
+    color: var(--text-dim);
+    font-size: 14px;
+  }
+
+  .breadcrumb-page {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text-primary);
+    letter-spacing: -0.02em;
+    text-transform: capitalize;
+  }
+
+  .page-meta {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .meta-badge {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    padding: 2px 8px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 99px;
+    color: var(--text-muted);
+  }
+
+  .source-badge {
+    background: var(--amber-bg);
+    border-color: transparent;
+    color: var(--amber);
+  }
+
+  .meta-time {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  .meta-links {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  /* -- Page Content -- */
+  .page-body {
+    margin-bottom: 32px;
+  }
+
+  .page-content {
+    font-size: 14px;
+    line-height: 1.75;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-family: var(--font-sans);
+  }
+
+  .page-content-raw {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 16px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+
+  /* -- Wikilinks -- */
+  :global(.wikilink) {
+    color: var(--accent);
+    text-decoration: none;
+    padding: 1px 6px;
+    margin: 0 1px;
+    background: var(--accent-subtle);
+    border-radius: 4px;
+    border-bottom: 1px dotted var(--accent);
+    transition: all var(--transition);
+    font-weight: 500;
+  }
+
+  :global(.wikilink:hover) {
+    background: rgba(129,140,248,0.2);
+    border-bottom-style: solid;
+    color: #a5b4fc;
+  }
+
+  :global(.wikilink-broken) {
+    color: var(--amber);
+    background: var(--amber-bg);
+    border-bottom-color: var(--amber);
+    border-bottom-style: dashed;
+  }
+
+  :global(.wikilink-broken:hover) {
+    background: rgba(251,191,36,0.15);
+    color: #fcd34d;
+  }
+
+  /* -- Backlinks -- */
+  .backlinks-section {
+    padding: 20px 0;
+    border-top: 1px solid var(--border);
+    margin-top: 8px;
+  }
+
+  .backlinks-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+  }
+
+  .backlinks-title svg {
+    color: var(--text-dim);
+  }
+
+  .backlinks-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .backlink-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 13px;
+    transition: all var(--transition);
+  }
+
+  .backlink-item:hover {
+    background: var(--bg-hover);
+    border-color: var(--border-hover);
+    color: var(--text-primary);
+  }
+
+  .backlink-cat {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.8;
+  }
+
+  .backlink-name {
+    text-transform: capitalize;
+  }
+
+  /* -- Revisions -- */
+  .revisions-section {
+    padding: 20px 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .revisions-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+  }
+
+  .revisions-title svg {
+    color: var(--text-dim);
+  }
+
+  .revision-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .revision-entry {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 10px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+  }
+
+  .revision-entry:hover {
+    background: var(--bg-hover);
+  }
+
+  .revision-current {
+    background: var(--accent-subtle);
+  }
+
+  .rev-version {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    min-width: 28px;
+  }
+
+  .rev-message {
+    flex: 1;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .rev-author {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+
+  .rev-time {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+
+  /* -- Graph View -- */
+  .wiki-graph {
+    position: relative;
+    width: 100%;
+    height: calc(100vh - 170px);
+    background: #08080b;
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+
+  #wiki-graph-canvas {
+    display: block;
+    cursor: grab;
+    width: 100%;
+    height: 100%;
+  }
+
+  #wiki-graph-canvas:active {
+    cursor: grabbing;
+  }
+
+  .graph-legend {
+    position: absolute;
+    bottom: 16px;
+    left: 16px;
+    background: rgba(10, 10, 14, 0.88);
+    border: 1px solid rgba(100, 110, 140, 0.2);
+    border-radius: var(--radius-lg);
+    padding: 12px 16px;
+    backdrop-filter: blur(12px);
+    z-index: 10;
+  }
+
+  .legend-title {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+
+  .legend-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+    font-size: 12px;
+  }
+
+  .legend-row:last-child {
+    margin-bottom: 0;
+  }
+
+  .legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .legend-name {
+    color: var(--text-muted);
+    text-transform: capitalize;
+    flex: 1;
+  }
+
+  .legend-count {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+
+  .graph-controls {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    display: flex;
+    gap: 6px;
+    z-index: 10;
+  }
+
+  .graph-ctrl-btn {
+    background: rgba(10, 10, 14, 0.88);
+    border: 1px solid rgba(100, 110, 140, 0.2);
+    border-radius: var(--radius-md);
+    color: var(--text-muted);
+    padding: 5px 12px;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    backdrop-filter: blur(12px);
+    transition: all var(--transition);
+  }
+
+  .graph-ctrl-btn:hover {
+    border-color: rgba(100, 110, 140, 0.4);
+    color: var(--text-primary);
+  }
+
+  .graph-info {
+    position: absolute;
+    bottom: 16px;
+    right: 16px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    z-index: 10;
+  }
+
+  /* -- Mobile -- */
+  @media (max-width: 900px) {
+    .brain-stats-pills {
+      display: none;
+    }
+
+    .brain-bar-center {
+      max-width: 260px;
+    }
+  }
+
+  @media (max-width: 768px) {
+    .wiki-app {
+      padding: 12px 16px;
+    }
+
+    .brain-bar {
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .brain-bar-center {
+      order: 3;
+      flex: 1 1 100%;
+      max-width: none;
+    }
+
+    .brain-sidebar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      width: 280px;
+      background: var(--bg-primary);
+      z-index: 300;
+      transform: translateX(-100%);
+      transition: transform 250ms ease;
+      border-right: 1px solid var(--border);
+      padding-top: 60px;
+    }
+
+    .brain-sidebar.sidebar-open {
+      transform: translateX(0);
+      box-shadow: 4px 0 32px rgba(0,0,0,0.5);
+    }
+
+    .sidebar-toggle {
+      display: flex;
+    }
+
+    .brain-main {
+      padding: 16px 0;
+    }
+
+    .category-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .page-view {
+      max-width: none;
+    }
+
+    .breadcrumb-page {
+      font-size: 18px;
+    }
+
+    .graph-legend {
+      display: none;
+    }
+  }
+
+  @media (max-width: 480px) {
+    .brain-desc {
+      display: none;
+    }
+
+    .view-toggle {
+      display: none;
+    }
   }
 </style>
