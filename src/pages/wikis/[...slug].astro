@@ -1425,7 +1425,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 </script>
 
-<style>
+<style is:global>
   /* =============================================
      PERSONAL WIKI -- Wikipedia-inspired design
      ============================================= */
@@ -2406,13 +2406,13 @@ document.addEventListener('DOMContentLoaded', () => {
     text-decoration: none;
     margin-bottom: 8px;
     padding: 3px 10px;
-    background: color-mix(in srgb, var(--cat-color) 8%, transparent);
+    background: rgba(129, 140, 248, 0.08);
     border-radius: 6px;
     transition: all var(--transition);
   }
 
   .page-cat-badge:hover {
-    background: color-mix(in srgb, var(--cat-color) 15%, transparent);
+    background: rgba(129, 140, 248, 0.15);
   }
 
   .page-cat-icon :global(svg) {
