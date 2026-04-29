@@ -1,8 +1,8 @@
 import type { Client, Row } from '@libsql/client';
 import { createClient as createHttpClient } from '@libsql/client/http';
-import { readFileSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { join } from 'path';
+// @ts-expect-error - Vite ?raw import returns the file contents as a string
+import schemaSQL from '../../db/schema.sql?raw';
 
 let readClient: Client | null = null;
 let writeClient: Client | null = null;
@@ -132,14 +132,9 @@ export async function initDb(): Promise<void> {
   // Use read client for schema init (it's the primary DB)
   const db = rdb;
 
-  // Run schema
-  // Try multiple paths for schema.sql (cwd for local dev, __dirname-relative for Vercel)
-  let schemaPath = join(process.cwd(), 'db', 'schema.sql');
-  try { readFileSync(schemaPath); } catch {
-    const dir = dirname(fileURLToPath(import.meta.url));
-    schemaPath = join(dir, '..', '..', 'db', 'schema.sql');
-  }
-  const schema = readFileSync(schemaPath, 'utf-8');
+  // Schema is bundled as a string at build time (Vite ?raw import) so production
+  // function bundles don't have to ship the db/ directory.
+  const schema: string = schemaSQL;
   // libsql client.execute() can only run one statement at a time.
   // Split schema into individual statements, respecting BEGIN...END blocks (triggers).
   const stmts: string[] = [];
@@ -1478,13 +1473,16 @@ export async function getStats() {
     count: Number(r.count),
   }));
 
-  const allTagsResult = await db.execute('SELECT tags FROM entries');
+  const tagsResult = await db.execute(
+    `SELECT t.value as tag, COUNT(*) as count
+     FROM entries, json_each(entries.tags) AS t
+     GROUP BY t.value
+     ORDER BY count DESC
+     LIMIT 100`
+  );
   const tagCounts: Record<string, number> = {};
-  for (const row of allTagsResult.rows) {
-    const tags = JSON.parse(String(row.tags)) as string[];
-    for (const tag of tags) {
-      tagCounts[tag] = (tagCounts[tag] || 0) + 1;
-    }
+  for (const row of tagsResult.rows) {
+    tagCounts[String(row.tag)] = Number(row.count);
   }
 
   const languageResult = await db.execute(
@@ -1511,13 +1509,16 @@ export async function getStats() {
     severityCounts[String(row.severity)] = Number(row.count);
   }
 
-  const allEnvironmentsResult = await db.execute('SELECT environment FROM entries');
+  const envResult = await db.execute(
+    `SELECT e.value as env, COUNT(*) as count
+     FROM entries, json_each(entries.environment) AS e
+     GROUP BY e.value
+     ORDER BY count DESC
+     LIMIT 50`
+  );
   const environmentCounts: Record<string, number> = {};
-  for (const row of allEnvironmentsResult.rows) {
-    const envs = JSON.parse(String(row.environment || '[]')) as string[];
-    for (const env of envs) {
-      environmentCounts[env] = (environmentCounts[env] || 0) + 1;
-    }
+  for (const row of envResult.rows) {
+    environmentCounts[String(row.env)] = Number(row.count);
   }
 
   return { total, byCategory, tagCounts, languageCounts, frameworkCounts, severityCounts, environmentCounts };
