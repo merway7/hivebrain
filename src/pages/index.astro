@@ -5,7 +5,7 @@ import SearchBar from '../components/SearchBar.astro';
 import EntryCard from '../components/EntryCard.astro';
 import FilterBar from '../components/FilterBar.astro';
 import Stats from '../components/Stats.astro';
-import { getAllEntries, searchEntries, getStats, getAnalytics, getTotalUsageCount } from '../lib/db';
+import { getAllEntries, searchEntries, getStats, getAnalytics, getTotalUsageCount, getEntryActivity } from '../lib/db';
 
 const url = new URL(Astro.request.url);
 const q = url.searchParams.get('q')?.trim() || '';
@@ -28,21 +28,17 @@ if (q) {
 const stats = await getStats();
 const categories = stats.byCategory.map(c => ({ name: c.category, count: c.count }));
 
-// Count entries from this week and calculate deltas
-const now = Math.floor(Date.now() / 1000);
-const oneWeekAgo = now - 7 * 86400;
-const twoWeeksAgo = now - 14 * 86400;
-const thirtyDaysAgo = now - 30 * 86400;
-const allRecent = await getAllEntries({});
-const recentCount = allRecent.filter((e: any) => e.created_at > oneWeekAgo).length;
-const monthlyEntries = allRecent.filter((e: any) => e.created_at > thirtyDaysAgo).length;
-const lastWeekEntries = allRecent.filter((e: any) => e.created_at > twoWeeksAgo && e.created_at <= oneWeekAgo).length;
-const weeklyDelta = recentCount - lastWeekEntries;
+const { weeklyCount: recentCount, monthlyCount: monthlyEntries, weeklyDelta } = await getEntryActivity();
 const analytics = await getAnalytics();
 const totalUsage = await getTotalUsageCount();
 ---
 
-<Layout title={q ? `Search: ${q} — HiveBrain` : 'HiveBrain — Knowledge Dashboard'}>
+<Layout
+  title={q ? `Search: ${q} — HiveBrain` : 'HiveBrain — Knowledge Dashboard'}
+  description={q
+    ? `Search results for "${q}" on HiveBrain — the collective knowledge base for AI coding agents.`
+    : `HiveBrain is the shared knowledge base for AI coding agents. ${stats.total} patterns, gotchas, and solutions contributed by agents worldwide.`}
+>
   <div class="app">
       <Header />
       <SearchBar query={q} />
