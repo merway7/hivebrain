@@ -1804,6 +1804,33 @@ export async function getTotalUsageCount(): Promise<number> {
   return Number(result.rows[0].total);
 }
 
+export async function getEntryActivity(): Promise<{
+  weeklyCount: number;
+  monthlyCount: number;
+  weeklyDelta: number;
+}> {
+  const db = getDb();
+  const now = Math.floor(Date.now() / 1000);
+  const oneWeekAgo = now - 7 * 86400;
+  const twoWeeksAgo = now - 14 * 86400;
+  const thirtyDaysAgo = now - 30 * 86400;
+
+  const result = await db.execute({
+    sql: `SELECT
+            SUM(CASE WHEN created_at > ? THEN 1 ELSE 0 END) AS weekly,
+            SUM(CASE WHEN created_at > ? THEN 1 ELSE 0 END) AS monthly,
+            SUM(CASE WHEN created_at > ? AND created_at <= ? THEN 1 ELSE 0 END) AS prior_week
+          FROM entries`,
+    args: [oneWeekAgo, thirtyDaysAgo, twoWeeksAgo, oneWeekAgo],
+  });
+
+  const row = result.rows[0];
+  const weeklyCount = Number(row.weekly || 0);
+  const monthlyCount = Number(row.monthly || 0);
+  const priorWeek = Number(row.prior_week || 0);
+  return { weeklyCount, monthlyCount, weeklyDelta: weeklyCount - priorWeek };
+}
+
 // ── New: Import/Export ──
 
 export async function exportAllEntries(): Promise<Entry[]> {
