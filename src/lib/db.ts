@@ -1,7 +1,7 @@
 import type { Client, Row } from '@libsql/client';
 import { createClient as createHttpClient } from '@libsql/client/http';
 import { join } from 'path';
-// @ts-expect-error - Vite ?raw import returns the file contents as a string
+// @ts-ignore - Vite ?raw import returns the file contents as a string
 import schemaSQL from '../../db/schema.sql?raw';
 
 let readClient: Client | null = null;
@@ -1459,7 +1459,26 @@ export async function insertEntry(entry: {
 
 // ── Stats ──
 
+const STATS_TTL_MS = 60 * 60 * 1000; // 1 hour
+const ACTIVITY_TTL_MS = 30 * 60 * 1000; // 30 min
+const ANALYTICS_TTL_MS = 5 * 60 * 1000; // 5 min
+const COUNT_TTL_MS = 5 * 60 * 1000; // 5 min
+
+export async function getEntriesCount(): Promise<number> {
+  const { cached } = await import('./cache');
+  return cached('entries:count', COUNT_TTL_MS, async () => {
+    const db = getDb();
+    const r = await db.execute('SELECT COUNT(*) as count FROM entries');
+    return Number(r.rows[0].count);
+  });
+}
+
 export async function getStats() {
+  const { cached } = await import('./cache');
+  return cached('stats', STATS_TTL_MS, () => computeStats());
+}
+
+async function computeStats() {
   const db = getDb();
 
   const totalResult = await db.execute('SELECT COUNT(*) as count FROM entries');
@@ -1553,6 +1572,19 @@ export async function trackSearch(query: string, resultCount: number, source: st
 }
 
 export async function getAnalytics(): Promise<{
+  totalViews: number;
+  totalSearches: number;
+  viewsBySource: Record<string, number>;
+  searchesBySource: Record<string, number>;
+  recentSearches: { query: string; result_count: number; source: string; created_at: number }[];
+  topViewed: { id: number; title: string; view_count: number }[];
+  dailyActivity: { date: string; views: number; searches: number }[];
+}> {
+  const { cached } = await import('./cache');
+  return cached('analytics', ANALYTICS_TTL_MS, () => computeAnalytics());
+}
+
+async function computeAnalytics(): Promise<{
   totalViews: number;
   totalSearches: number;
   viewsBySource: Record<string, number>;
@@ -1800,12 +1832,24 @@ export async function getEntriesByCategory(): Promise<Record<string, number>> {
 }
 
 export async function getTotalUsageCount(): Promise<number> {
-  const db = getDb();
-  const result = await db.execute('SELECT COALESCE(SUM(usage_count), 0) as total FROM entries');
-  return Number(result.rows[0].total);
+  const { cached } = await import('./cache');
+  return cached('total_usage', STATS_TTL_MS, async () => {
+    const db = getDb();
+    const result = await db.execute('SELECT COALESCE(SUM(usage_count), 0) as total FROM entries');
+    return Number(result.rows[0].total);
+  });
 }
 
 export async function getEntryActivity(): Promise<{
+  weeklyCount: number;
+  monthlyCount: number;
+  weeklyDelta: number;
+}> {
+  const { cached } = await import('./cache');
+  return cached('entry_activity', ACTIVITY_TTL_MS, () => computeEntryActivity());
+}
+
+async function computeEntryActivity(): Promise<{
   weeklyCount: number;
   monthlyCount: number;
   weeklyDelta: number;
