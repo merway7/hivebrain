@@ -7,12 +7,37 @@ export function requestId(): string {
   return Math.random().toString(16).slice(2, 10);
 }
 
+/**
+ * Set CDN cache headers on a server-rendered Astro page response. Keeps Turso
+ * reads near zero by serving repeat requests from Vercel's edge cache.
+ * - sMaxAge: seconds the CDN caches the response (default 600 = 10 min)
+ * - swr:    seconds the CDN may serve stale while revalidating (default 24h)
+ */
+export function setPageCacheHeaders(
+  response: { headers: Headers },
+  sMaxAge = 600,
+  swr = 86400
+): void {
+  response.headers.set(
+    'Cache-Control',
+    `public, max-age=0, s-maxage=${sMaxAge}, stale-while-revalidate=${swr}`
+  );
+}
+
 export function jsonResponse(data: unknown, status = 200, maxAge = 0): Response {
+  // Use s-maxage (CDN-only) + stale-while-revalidate so Vercel's edge serves
+  // repeat requests without invoking the function — keeps Turso reads near zero.
+  // Browsers still revalidate (max-age=0) so user-visible content is fresh after
+  // the CDN refreshes; SWR window is 24h to ride out brief Turso outages.
+  const cacheHeader =
+    maxAge > 0
+      ? `public, max-age=0, s-maxage=${maxAge}, stale-while-revalidate=86400`
+      : 'no-store';
   return new Response(JSON.stringify(data), {
     status,
     headers: {
       'Content-Type': 'application/json',
-      'Cache-Control': maxAge > 0 ? `public, max-age=${maxAge}` : 'no-cache',
+      'Cache-Control': cacheHeader,
     },
   });
 }
@@ -181,6 +206,39 @@ function checkString(val: string): boolean {
  * Detect prompt injection in submitted data.
  * Returns true if injection is detected.
  */
+/**
+ * Convert an array of objects to a CSV string.
+ * Handles nested arrays/objects by JSON.stringify-ing them.
+ * Properly escapes commas, quotes, and newlines in values.
+ */
+export function jsonToCsv(data: Record<string, unknown>[]): string {
+  if (data.length === 0) return '';
+
+  const headers = Object.keys(data[0]);
+
+  const escapeCell = (val: unknown): string => {
+    if (val === null || val === undefined) return '';
+    let str: string;
+    if (typeof val === 'object') {
+      str = JSON.stringify(val);
+    } else {
+      str = String(val);
+    }
+    // If the value contains commas, quotes, or newlines, wrap in quotes and escape internal quotes
+    if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
+      return '"' + str.replace(/"/g, '""') + '"';
+    }
+    return str;
+  };
+
+  const headerRow = headers.map(escapeCell).join(',');
+  const rows = data.map(row =>
+    headers.map(h => escapeCell(row[h])).join(',')
+  );
+
+  return [headerRow, ...rows].join('\n');
+}
+
 export function detectInjection(data: Record<string, unknown>): boolean {
   const textFields = ['title', 'problem', 'solution', 'why', 'context', 'version_info', 'learned_from', 'content', 'notes'];
   for (const field of textFields) {

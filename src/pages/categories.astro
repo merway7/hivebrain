@@ -1,0 +1,176 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Header from '../components/Header.astro';
+import { getEntriesByCategory } from '../lib/db';
+
+import { setPageCacheHeaders } from '../lib/api-utils';
+
+setPageCacheHeaders(Astro.response);
+
+const categoryCounts = await getEntriesByCategory();
+
+const categoryMeta: Record<string, { icon: string; description: string; color: string; bgVar: string }> = {
+  debug: {
+    icon: '\uD83D\uDC1B',
+    description: 'Step-by-step solutions for specific errors and bugs',
+    color: 'var(--red)',
+    bgVar: 'var(--red-bg)',
+  },
+  gotcha: {
+    icon: '\u26A0\uFE0F',
+    description: 'Subtle pitfalls and surprising behaviors to watch out for',
+    color: 'var(--amber)',
+    bgVar: 'var(--amber-bg)',
+  },
+  pattern: {
+    icon: '\uD83D\uDD27',
+    description: 'Reusable approaches and architectural patterns',
+    color: 'var(--blue)',
+    bgVar: 'var(--blue-bg)',
+  },
+  snippet: {
+    icon: '\uD83D\uDCDD',
+    description: 'Ready-to-use code fragments and utilities',
+    color: 'var(--green)',
+    bgVar: 'var(--green-bg)',
+  },
+  principle: {
+    icon: '\uD83D\uDCA1',
+    description: 'Fundamental concepts and best practices',
+    color: 'var(--purple)',
+    bgVar: 'var(--purple-bg)',
+  },
+};
+
+const allCategories = ['debug', 'gotcha', 'pattern', 'snippet', 'principle'];
+---
+
+<Layout title="Categories — HiveBrain" description="Browse entries by category">
+  <div class="app">
+    <Header />
+    <main class="cat-page">
+      <div class="cat-header">
+        <h1 class="cat-title">Categories</h1>
+        <p class="cat-subtitle">Browse the knowledge base by type</p>
+      </div>
+
+      <div class="cat-grid">
+        {allCategories.map(cat => {
+          const meta = categoryMeta[cat];
+          const count = categoryCounts[cat] || 0;
+          return (
+            <a href={`/?category=${cat}`} class="cat-card" style={`--cat-color: ${meta.color}; --cat-bg: ${meta.bgVar};`}>
+              <div class="cat-icon">{meta.icon}</div>
+              <div class="cat-name">{cat}</div>
+              <div class="cat-count">{count} {count === 1 ? 'entry' : 'entries'}</div>
+              <div class="cat-desc">{meta.description}</div>
+            </a>
+          );
+        })}
+      </div>
+
+      <div class="cat-footer">
+        <a href="/" class="back-link">&larr; Back to Dashboard</a>
+      </div>
+    </main>
+  </div>
+</Layout>
+
+<style>
+  .cat-page {
+    max-width: 800px;
+    margin: 0 auto;
+  }
+
+  .cat-header {
+    margin-bottom: 32px;
+    text-align: center;
+  }
+
+  .cat-title {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+  }
+
+  .cat-subtitle {
+    font-size: 14px;
+    color: var(--text-muted);
+  }
+
+  .cat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 16px;
+  }
+
+  .cat-card {
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+    text-decoration: none;
+    color: inherit;
+    transition: all 0.15s ease;
+  }
+
+  .cat-card:hover {
+    border-color: var(--cat-color);
+    background: var(--bg-card-hover);
+  }
+
+  .cat-icon {
+    font-size: 32px;
+    margin-bottom: 12px;
+  }
+
+  .cat-name {
+    font-family: var(--font-mono);
+    font-size: 14px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--cat-color);
+    margin-bottom: 4px;
+  }
+
+  .cat-count {
+    font-family: var(--font-mono);
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+  }
+
+  .cat-desc {
+    font-size: 13px;
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
+
+  .cat-footer {
+    margin-top: 32px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+  }
+
+  .back-link {
+    color: var(--text-muted);
+    font-size: 13px;
+    transition: color 0.15s ease;
+  }
+
+  .back-link:hover {
+    color: var(--accent);
+  }
+
+  @media (max-width: 520px) {
+    .cat-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

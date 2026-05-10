@@ -1,0 +1,229 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Header from '../components/Header.astro';
+import { getTopEntries } from '../lib/db';
+
+import { setPageCacheHeaders } from '../lib/api-utils';
+
+setPageCacheHeaders(Astro.response);
+
+const entries = await getTopEntries(10);
+---
+
+<Layout title="Hall of Fame — HiveBrain" description="The entries that have saved developers the most time">
+  <div class="app">
+    <Header />
+    <main class="hof-page">
+      <div class="hof-header">
+        <h1 class="hof-title">Hall of Fame</h1>
+        <p class="hof-subtitle">The entries that have saved developers the most time</p>
+      </div>
+
+      {entries.length === 0 ? (
+        <div class="hof-empty">
+          <p>No entries yet. Start contributing to see the best ones here.</p>
+          <a href="/" class="back-link">Back to Dashboard</a>
+        </div>
+      ) : (
+        <ol class="hof-list">
+          {entries.map((entry, i) => {
+            const netScore = (entry.upvotes || 0) - (entry.downvotes || 0);
+            const qualityStatus = entry.quality_status || 'unverified';
+            return (
+              <li class="hof-card">
+                <div class="hof-rank">#{i + 1}</div>
+                <a href={`/entry/${entry.id}`} class="hof-card-link">
+                  <div class="hof-card-top">
+                    <span class={`category-badge ${entry.category}`}>{entry.category}</span>
+                    {qualityStatus === 'verified' && (
+                      <span class="quality-badge quality-verified">verified</span>
+                    )}
+                  </div>
+                  <div class="hof-card-title">{entry.title}</div>
+                  <div class="hof-card-stats">
+                    <span class="hof-stat">
+                      <span class="hof-stat-icon">{netScore >= 0 ? '\u25B2' : '\u25BC'}</span>
+                      <span class={netScore >= 0 ? 'stat-positive' : 'stat-negative'}>{netScore}</span>
+                      <span class="stat-label">votes</span>
+                    </span>
+                    <span class="hof-stat">
+                      <span class="stat-value">{entry.usage_count || 0}</span>
+                      <span class="stat-label">uses by agents</span>
+                    </span>
+                  </div>
+                </a>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+
+      <div class="hof-footer">
+        <a href="/" class="back-link">&larr; Back to Dashboard</a>
+      </div>
+    </main>
+  </div>
+</Layout>
+
+<style>
+  .hof-page {
+    max-width: 720px;
+    margin: 0 auto;
+  }
+
+  .hof-header {
+    margin-bottom: 32px;
+    text-align: center;
+  }
+
+  .hof-title {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+  }
+
+  .hof-subtitle {
+    font-size: 14px;
+    color: var(--text-muted);
+  }
+
+  .hof-empty {
+    text-align: center;
+    padding: 48px 0;
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+
+  .hof-list {
+    list-style: none;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .hof-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 20px;
+    transition: border-color 0.15s ease;
+  }
+
+  .hof-card:hover {
+    border-color: var(--border-hover);
+  }
+
+  .hof-rank {
+    font-family: var(--font-mono);
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--accent);
+    min-width: 36px;
+    opacity: 0.6;
+  }
+
+  .hof-card:first-child .hof-rank {
+    color: var(--amber);
+    opacity: 1;
+  }
+
+  .hof-card:nth-child(2) .hof-rank {
+    color: var(--text-secondary);
+    opacity: 0.8;
+  }
+
+  .hof-card:nth-child(3) .hof-rank {
+    color: #cd7f32;
+    opacity: 0.8;
+  }
+
+  .hof-card-link {
+    text-decoration: none;
+    color: inherit;
+    flex: 1;
+  }
+
+  .hof-card-top {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+
+  .hof-card-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+    line-height: 1.4;
+    margin-bottom: 10px;
+  }
+
+  .hof-card-stats {
+    display: flex;
+    gap: 20px;
+  }
+
+  .hof-stat {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .hof-stat-icon {
+    font-size: 10px;
+  }
+
+  .stat-positive {
+    color: var(--green);
+    font-weight: 600;
+  }
+
+  .stat-negative {
+    color: var(--red);
+    font-weight: 600;
+  }
+
+  .stat-value {
+    color: var(--text-secondary);
+    font-weight: 600;
+  }
+
+  .stat-label {
+    color: var(--text-dim);
+  }
+
+  .hof-footer {
+    margin-top: 32px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+  }
+
+  .back-link {
+    color: var(--text-muted);
+    font-size: 13px;
+    transition: color 0.15s ease;
+  }
+
+  .back-link:hover {
+    color: var(--accent);
+  }
+
+  @media (max-width: 520px) {
+    .hof-card {
+      padding: 14px;
+      gap: 10px;
+    }
+    .hof-rank {
+      font-size: 16px;
+      min-width: 28px;
+    }
+  }
+</style>
