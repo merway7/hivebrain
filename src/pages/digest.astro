@@ -1,0 +1,323 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Header from '../components/Header.astro';
+import EntryCard from '../components/EntryCard.astro';
+import { getWeeklyDigest } from '../lib/db';
+
+import { setPageCacheHeaders } from '../lib/api-utils';
+
+setPageCacheHeaders(Astro.response);
+
+const digest = await getWeeklyDigest();
+const hasActivity = digest.newEntries.length > 0 || digest.searchCount > 0;
+
+const netScore = (e: any) => (e.upvotes || 0) - (e.downvotes || 0);
+---
+
+<Layout title="Weekly Digest — HiveBrain">
+  <div class="app">
+    <Header />
+
+    <div class="digest-header">
+      <h1 class="digest-title">Weekly Digest</h1>
+      <p class="digest-subtitle">What happened in HiveBrain this week</p>
+    </div>
+
+    {!hasActivity ? (
+      <div class="empty-state-large">
+        <div class="empty-icon">...</div>
+        <p>No new activity this week. Check back soon!</p>
+      </div>
+    ) : (
+      <div class="digest-content">
+
+        <!-- This Week's Numbers -->
+        <section class="digest-section">
+          <h2 class="section-title">This Week's Numbers</h2>
+          <div class="numbers-row">
+            <div class="stat-card">
+              <div class="stat-label">New Entries</div>
+              <div class="stat-value">{digest.newEntries.length}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Searches</div>
+              <div class="stat-value">{digest.searchCount}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Trending Tags</div>
+              <div class="stat-value">{digest.trendingTags.length}</div>
+            </div>
+          </div>
+          {digest.trendingTags.length > 0 && (
+            <div class="trending-tags">
+              {digest.trendingTags.map(({ tag, count }) => (
+                <a href={`/?tag=${encodeURIComponent(tag)}`} class="trending-tag">
+                  {tag} <span class="tag-count">{count}</span>
+                </a>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <!-- Top Entries This Week -->
+        {digest.topEntries.length > 0 && (
+          <section class="digest-section">
+            <h2 class="section-title">Top Entries This Week</h2>
+            <div class="top-entries-grid">
+              {digest.topEntries.map((entry) => {
+                const tags: string[] = (() => { try { return JSON.parse(entry.tags); } catch { return []; } })();
+                const score = netScore(entry);
+                return (
+                  <a href={`/entry/${entry.id}`} class="featured-card">
+                    <div class="featured-top">
+                      <span class={`entry-category cat-${entry.category}`}>{entry.category}</span>
+                      {score !== 0 && (
+                        <span class="featured-score">{score > 0 ? '\u25B2' : '\u25BC'} {score}</span>
+                      )}
+                    </div>
+                    <div class="featured-title">{entry.title}</div>
+                    <div class="featured-problem">{entry.problem}</div>
+                    {tags.length > 0 && (
+                      <div class="featured-tags">
+                        {tags.slice(0, 4).map((t) => <span class="entry-tag">{t}</span>)}
+                      </div>
+                    )}
+                  </a>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        <!-- New Entries -->
+        {digest.newEntries.length > 0 && (
+          <section class="digest-section">
+            <h2 class="section-title">New Entries</h2>
+            <div class="panel">
+              <div class="panel-header">
+                <span class="panel-title">All new this week</span>
+                <span class="panel-badge">{digest.newEntries.length}</span>
+              </div>
+              <ul class="entry-list">
+                {digest.newEntries.map((entry) => <EntryCard entry={entry} />)}
+              </ul>
+            </div>
+          </section>
+        )}
+
+        <!-- Trending Tags -->
+        {digest.trendingTags.length > 0 && (
+          <section class="digest-section">
+            <h2 class="section-title">Trending Tags</h2>
+            <div class="tag-cloud">
+              {digest.trendingTags.map(({ tag, count }, i) => (
+                <a
+                  href={`/?tag=${encodeURIComponent(tag)}`}
+                  class="cloud-tag"
+                  style={`font-size: ${Math.max(12, 22 - i * 2)}px; opacity: ${Math.max(0.5, 1 - i * 0.05)};`}
+                >
+                  {tag}
+                  <span class="cloud-count">{count}</span>
+                </a>
+              ))}
+            </div>
+          </section>
+        )}
+
+      </div>
+    )}
+
+    <footer class="footer">
+      <div><a href="/" class="footer-link">Back to Dashboard</a></div>
+      <div>
+        <a href="/api/feed" class="footer-link">JSON Feed</a>
+      </div>
+    </footer>
+  </div>
+</Layout>
+
+<style is:global>
+  .digest-header {
+    margin-bottom: 32px;
+  }
+
+  .digest-title {
+    font-size: 24px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+  }
+
+  .digest-subtitle {
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+
+  .empty-state-large {
+    padding: 80px 24px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 14px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+  }
+
+  .empty-icon {
+    font-size: 32px;
+    margin-bottom: 12px;
+    color: var(--text-dim);
+    letter-spacing: 4px;
+  }
+
+  .digest-content {
+    display: flex;
+    flex-direction: column;
+    gap: 32px;
+  }
+
+  .digest-section {}
+
+  .section-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 14px;
+  }
+
+  .numbers-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .trending-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .trending-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    background: var(--tag-bg);
+    color: var(--tag-text);
+    border-radius: 99px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    text-decoration: none;
+    transition: all var(--transition);
+  }
+
+  .trending-tag:hover {
+    background: var(--accent-glow);
+    color: var(--accent);
+  }
+
+  .tag-count {
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+
+  /* Top entries featured cards */
+  .top-entries-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+  }
+
+  .featured-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 18px 20px;
+    text-decoration: none;
+    color: inherit;
+    transition: all var(--transition);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .featured-card:hover {
+    border-color: var(--border-hover);
+    background: var(--bg-card-hover);
+  }
+
+  .featured-top {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .featured-score {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    margin-left: auto;
+  }
+
+  .featured-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+    line-height: 1.4;
+  }
+
+  .featured-problem {
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.45;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .featured-tags {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+    margin-top: auto;
+  }
+
+  /* Tag cloud */
+  .tag-cloud {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 12px;
+    padding: 20px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+  }
+
+  .cloud-tag {
+    font-family: var(--font-mono);
+    color: var(--tag-text);
+    text-decoration: none;
+    transition: color var(--transition);
+  }
+
+  .cloud-tag:hover {
+    color: var(--accent);
+  }
+
+  .cloud-count {
+    font-size: 10px;
+    color: var(--text-dim);
+    vertical-align: super;
+  }
+
+  @media (max-width: 900px) {
+    .numbers-row { grid-template-columns: 1fr; }
+    .top-entries-grid { grid-template-columns: 1fr; }
+  }
+</style>

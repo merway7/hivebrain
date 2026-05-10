@@ -2,6 +2,9 @@
 import Layout from '../../layouts/Layout.astro';
 import Header from '../../components/Header.astro';
 import { getEntry, getRevisions, getUsageContexts, getVerifications, computeFreshness, getLatestVerification, getReputation } from '../../lib/db';
+import { setPageCacheHeaders } from '../../lib/api-utils';
+
+setPageCacheHeaders(Astro.response, 3600);
 
 const { id } = Astro.params;
 const entry = await getEntry(Number(id));
@@ -123,7 +126,34 @@ function mdToHtml(text: string): string {
 }
 ---
 
-<Layout title={`${entry.title} — HiveBrain`} description={entry.problem}>
+{/* JSON-LD Structured Data */}
+<Layout
+  title={`${entry.title} — HiveBrain`}
+  description={entry.problem?.slice(0, 160) || entry.title}
+  ogType="article"
+  canonicalUrl={`https://hivebrain.dev/entry/${entry.id}`}
+>
+  <script type="application/ld+json" set:html={JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": entry.title,
+    "description": entry.problem?.slice(0, 300) || entry.title,
+    "author": {
+      "@type": "Person",
+      "name": entry.submitted_by || "anonymous",
+    },
+    "dateCreated": new Date(entry.created_at * 1000).toISOString(),
+    "datePublished": new Date(entry.created_at * 1000).toISOString(),
+    "keywords": [...tags, ...(entry.category ? [entry.category] : []), ...(entry.language ? [entry.language] : [])].join(", "),
+    "url": `https://hivebrain.dev/entry/${entry.id}`,
+    "publisher": {
+      "@type": "Organization",
+      "name": "HiveBrain",
+      "url": "https://hivebrain.dev",
+    },
+    ...(entry.language ? { "programmingLanguage": entry.language } : {}),
+    ...(entry.framework ? { "dependencies": entry.framework } : {}),
+  })} />
   <Header />
   <main class="container">
     <a href="/" class="back-link">&larr; Back to all entries</a>

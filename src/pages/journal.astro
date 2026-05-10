@@ -4,6 +4,10 @@ import Header from '../components/Header.astro';
 import { getJournalEntries, getJournalEntry, getJournalStats, getJournalAuthors } from '../lib/journal';
 import { isJournalEnabled } from '../lib/db';
 
+import { setPageCacheHeaders } from '../lib/api-utils';
+
+setPageCacheHeaders(Astro.response);
+
 const journalEnabled = await isJournalEnabled();
 const url = Astro.url;
 const entryId = url.searchParams.get('id');

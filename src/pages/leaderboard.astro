@@ -4,6 +4,10 @@ import Header from '../components/Header.astro';
 import { getLeaderboard, getUserBadges } from '../lib/db';
 import { BADGES } from '../lib/badges';
 
+import { setPageCacheHeaders } from '../lib/api-utils';
+
+setPageCacheHeaders(Astro.response);
+
 const url = Astro.url;
 const periodParam = url.searchParams.get('period');
 const validPeriods = ['all', 'monthly', 'weekly'] as const;

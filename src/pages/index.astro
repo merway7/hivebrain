@@ -7,6 +7,14 @@ import FilterBar from '../components/FilterBar.astro';
 import Stats from '../components/Stats.astro';
 import { getAllEntries, searchEntries, getStats, getAnalytics, getTotalUsageCount, getEntryActivity } from '../lib/db';
 
+// Cache the rendered HTML at Vercel's edge for 10 min, serve stale up to 24h
+// while revalidating. Keeps Turso reads near zero under normal traffic and
+// keeps the site up if Turso is briefly throttled.
+Astro.response.headers.set(
+  'Cache-Control',
+  'public, max-age=0, s-maxage=600, stale-while-revalidate=86400'
+);
+
 const url = new URL(Astro.request.url);
 const q = url.searchParams.get('q')?.trim() || '';
 const category = url.searchParams.get('category') || '';

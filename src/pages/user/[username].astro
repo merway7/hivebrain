@@ -1,8 +1,11 @@
 ---
 import Layout from '../../layouts/Layout.astro';
 import Header from '../../components/Header.astro';
-import { getReputation, getUserBadges, getUserEntries } from '../../lib/db';
+import { getReputation, getUserBadges, getUserEntries, getUserEntriesRecent, getUserActivity, getUserTotalViews, getUserFirstEntry, getAccountByUsername } from '../../lib/db';
 import { BADGES } from '../../lib/badges';
+import { setPageCacheHeaders } from '../../lib/api-utils';
+
+setPageCacheHeaders(Astro.response, 600);
 
 const { username } = Astro.params;
 
@@ -10,10 +13,22 @@ if (!username || username.length < 3 || !/^[a-zA-Z0-9_-]+$/.test(username)) {
   return Astro.redirect('/404');
 }
 
-const rep = await getReputation(username);
-const badges = await getUserBadges(username);
-const recentEntries = await getUserEntries(username, 10);
+// Fetch all data in parallel
+const [rep, badges, topEntries, recentEntries, activity, totalViews, firstEntryAt, account] = await Promise.all([
+  getReputation(username),
+  getUserBadges(username),
+  getUserEntries(username, 20),
+  getUserEntriesRecent(username, 20),
+  getUserActivity(username, 30),
+  getUserTotalViews(username),
+  getUserFirstEntry(username),
+  getAccountByUsername(username),
+]);
 
+// Determine if user exists at all (has rep, entries, or an account)
+const userExists = rep !== null || topEntries.length > 0 || account !== null;
+
+// Enrich badge data with definitions
 const enrichedBadges = badges.map(b => {
   const def = BADGES.find(d => d.id === b.badge_id);
   return {
@@ -24,98 +39,314 @@ const enrichedBadges = badges.map(b => {
     earned_at: b.earned_at,
   };
 });
+
+// Rank badge based on reputation
+function getRankInfo(totalRep: number): { label: string; color: string; cssClass: string } {
+  if (totalRep >= 500) return { label: 'Elite', color: 'var(--amber)', cssClass: 'rank-gold' };
+  if (totalRep >= 100) return { label: 'Top Contributor', color: '#c0c0c0', cssClass: 'rank-silver' };
+  if (totalRep >= 25) return { label: 'Contributor', color: '#cd7f32', cssClass: 'rank-bronze' };
+  return { label: 'Newcomer', color: 'var(--text-muted)', cssClass: 'rank-newcomer' };
+}
+
+const rank = rep ? getRankInfo(rep.total_rep) : getRankInfo(0);
+
+// Member since date
+const memberSince = account?.created_at
+  ? new Date(account.created_at * 1000)
+  : firstEntryAt
+    ? new Date(firstEntryAt * 1000)
+    : null;
+
+function formatDate(ts: number): string {
+  return new Date(ts * 1000).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+function formatMemberSince(date: Date): string {
+  return date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+}
+
+function timeAgo(ts: number): string {
+  const now = Math.floor(Date.now() / 1000);
+  const diff = now - ts;
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
+  return formatDate(ts);
+}
+
+// Event type labels and icons
+function getEventInfo(eventType: string): { icon: string; label: string; colorClass: string } {
+  switch (eventType) {
+    case 'submit': return { icon: '+', label: 'Submitted an entry', colorClass: 'event-submit' };
+    case 'upvote_received': return { icon: '\u2191', label: 'Received an upvote', colorClass: 'event-upvote' };
+    case 'downvote_received': return { icon: '\u2193', label: 'Received a downvote', colorClass: 'event-downvote' };
+    case 'usage_received': return { icon: '\u2192', label: 'Entry was used', colorClass: 'event-usage' };
+    case 'verification_received': return { icon: '\u2713', label: 'Entry was verified', colorClass: 'event-verify' };
+    case 'entry_outdated': return { icon: '!', label: 'Entry marked outdated', colorClass: 'event-outdated' };
+    default: return { icon: '\u00B7', label: eventType, colorClass: 'event-default' };
+  }
+}
+
+// Count verified entries
+const verifiedCount = topEntries.filter(e => e.quality_status === 'verified').length;
+
+// Tab state from URL
+const activeTab = Astro.url.searchParams.get('tab') || 'top';
 ---
 
-<Layout title={`${username} — HiveBrain`} description={`Profile for ${username}`}>
+<Layout title={`${username} — HiveBrain`} description={`Profile for ${username} on HiveBrain`}>
   <div class="app">
     <Header />
     <main class="profile-page">
-      <div class="profile-header">
-        <h1 class="profile-username">{username}</h1>
-        {rep ? (
-          <div class="profile-rep">{rep.total_rep} reputation</div>
-        ) : (
-          <div class="profile-rep">New contributor</div>
-        )}
-      </div>
-
-      {rep && (
-        <div class="stats-grid">
-          <div class="stat-card">
-            <div class="stat-number">{rep.entries_count}</div>
-            <div class="stat-label">Entries</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-number">{rep.upvotes_received}</div>
-            <div class="stat-label">Upvotes</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-number">{rep.usages_received}</div>
-            <div class="stat-label">Usages</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-number">{rep.verifications_received}</div>
-            <div class="stat-label">Verifications</div>
+      {!userExists ? (
+        <div class="not-found">
+          <div class="not-found-icon">?</div>
+          <h1 class="not-found-title">User not found</h1>
+          <p class="not-found-text">No contributor with the username <strong>{username}</strong> exists yet.</p>
+          <div class="not-found-links">
+            <a href="/leaderboard" class="back-link">&larr; Leaderboard</a>
+            <a href="/" class="back-link">&larr; Dashboard</a>
           </div>
         </div>
-      )}
+      ) : (
+        <Fragment>
+          {/* ── Profile Header ── */}
+          <div class="profile-header">
+            <div class="avatar">
+              <span class="avatar-letter">{username[0].toUpperCase()}</span>
+            </div>
+            <h1 class="profile-username">{username}</h1>
+            <div class="profile-meta">
+              <span class={`rank-badge ${rank.cssClass}`}>{rank.label}</span>
+              {rep ? (
+                <span class="rep-score">{rep.total_rep} rep</span>
+              ) : (
+                <span class="rep-score">0 rep</span>
+              )}
+            </div>
+            {memberSince && (
+              <div class="member-since">Member since {formatMemberSince(memberSince)}</div>
+            )}
+          </div>
 
-      {enrichedBadges.length > 0 && (
-        <section class="profile-section">
-          <h2 class="section-title">Badges</h2>
-          <div class="badges-grid">
-            {enrichedBadges.map(badge => (
-              <div class="badge-card">
-                <span class="badge-icon">{badge.icon}</span>
-                <div class="badge-info">
-                  <div class="badge-name">{badge.name}</div>
-                  <div class="badge-desc">{badge.description}</div>
-                </div>
+          {/* ── Stats Bar ── */}
+          <div class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-number">{rep?.entries_count ?? 0}</div>
+              <div class="stat-label">Entries</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-number">{rep?.upvotes_received ?? 0}</div>
+              <div class="stat-label">Upvotes</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-number">{totalViews}</div>
+              <div class="stat-label">Views</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-number">{verifiedCount}</div>
+              <div class="stat-label">Verified</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-number">{rep?.usages_received ?? 0}</div>
+              <div class="stat-label">Usages</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-number">{rep?.verifications_received ?? 0}</div>
+              <div class="stat-label">Verifications</div>
+            </div>
+          </div>
+
+          {/* ── Badges Section ── */}
+          <section class="profile-section">
+            <h2 class="section-title">Badges</h2>
+            {enrichedBadges.length > 0 ? (
+              <div class="badges-grid">
+                {enrichedBadges.map(badge => (
+                  <div class="badge-card">
+                    <span class="badge-icon">{badge.icon}</span>
+                    <div class="badge-info">
+                      <div class="badge-name">{badge.name}</div>
+                      <div class="badge-desc">{badge.description}</div>
+                    </div>
+                    <div class="badge-date">{formatDate(badge.earned_at)}</div>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        </section>
-      )}
+            ) : (
+              <div class="empty-state">
+                <span class="empty-icon">--</span>
+                <span class="empty-text">No badges earned yet. Keep contributing!</span>
+              </div>
+            )}
+          </section>
 
-      {recentEntries.length > 0 && (
-        <section class="profile-section">
-          <h2 class="section-title">Top Entries</h2>
-          <div class="entries-list">
-            {recentEntries.map(entry => {
-              const netScore = (entry.upvotes || 0) - (entry.downvotes || 0);
-              return (
-                <a href={`/entry/${entry.id}`} class="entry-row">
-                  <span class={`category-badge ${entry.category}`}>{entry.category}</span>
-                  <span class="entry-title">{entry.title}</span>
-                  <span class="entry-stats">
-                    <span class={netScore >= 0 ? 'stat-positive' : 'stat-negative'}>{netScore}</span>
-                    <span class="stat-sep">/</span>
-                    <span class="stat-uses">{entry.usage_count || 0} uses</span>
-                  </span>
-                </a>
+          {/* ── Entries Section with Tabs ── */}
+          <section class="profile-section">
+            <div class="section-header">
+              <h2 class="section-title">Entries</h2>
+              <div class="tab-bar">
+                <a href={`?tab=top`} class={`tab-btn ${activeTab === 'top' ? 'active' : ''}`}>Top</a>
+                <a href={`?tab=recent`} class={`tab-btn ${activeTab === 'recent' ? 'active' : ''}`}>Recent</a>
+              </div>
+            </div>
+            {(() => {
+              const entries = activeTab === 'recent' ? recentEntries : topEntries;
+              return entries.length > 0 ? (
+                <div class="entries-list">
+                  {entries.map(entry => {
+                    const netScore = (entry.upvotes || 0) - (entry.downvotes || 0);
+                    return (
+                      <a href={`/entry/${entry.id}`} class="entry-row">
+                        <span class={`category-badge ${entry.category}`}>{entry.category}</span>
+                        <span class="entry-title">{entry.title}</span>
+                        <div class="entry-meta-right">
+                          {entry.quality_status === 'verified' && (
+                            <span class="entry-quality-badge quality-verified">verified</span>
+                          )}
+                          <span class="entry-stats">
+                            <span class={netScore >= 0 ? 'stat-positive' : 'stat-negative'}>
+                              {netScore >= 0 ? '+' : ''}{netScore}
+                            </span>
+                            <span class="stat-sep">/</span>
+                            <span class="stat-uses">{entry.usage_count || 0} uses</span>
+                          </span>
+                          <span class="entry-date">{formatDate(entry.created_at)}</span>
+                        </div>
+                      </a>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div class="empty-state">
+                  <span class="empty-icon">--</span>
+                  <span class="empty-text">No entries yet. Submit your first piece of knowledge!</span>
+                </div>
               );
-            })}
-          </div>
-        </section>
-      )}
+            })()}
+          </section>
 
-      <div class="profile-footer">
-        <a href="/leaderboard" class="back-link">&larr; Leaderboard</a>
-        <a href="/" class="back-link">&larr; Dashboard</a>
-      </div>
+          {/* ── Activity Timeline ── */}
+          <section class="profile-section">
+            <h2 class="section-title">Recent Activity</h2>
+            {activity.length > 0 ? (
+              <div class="activity-timeline">
+                {activity.map(event => {
+                  const info = getEventInfo(event.event_type);
+                  return (
+                    <div class="activity-item">
+                      <div class={`activity-icon ${info.colorClass}`}>{info.icon}</div>
+                      <div class="activity-content">
+                        <span class="activity-label">{info.label}</span>
+                        {event.entry_title && event.entry_id && (
+                          <a href={`/entry/${event.entry_id}`} class="activity-entry-link">{event.entry_title}</a>
+                        )}
+                      </div>
+                      <div class="activity-meta">
+                        <span class={`activity-points ${event.points >= 0 ? 'points-positive' : 'points-negative'}`}>
+                          {event.points >= 0 ? '+' : ''}{event.points}
+                        </span>
+                        <span class="activity-time">{timeAgo(event.created_at)}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div class="empty-state">
+                <span class="empty-icon">--</span>
+                <span class="empty-text">No activity recorded yet.</span>
+              </div>
+            )}
+          </section>
+
+          {/* ── Footer ── */}
+          <div class="profile-footer">
+            <a href="/leaderboard" class="back-link">&larr; Leaderboard</a>
+            <a href="/" class="back-link">&larr; Dashboard</a>
+          </div>
+        </Fragment>
+      )}
     </main>
   </div>
 </Layout>
 
 <style>
   .profile-page {
-    max-width: 720px;
+    max-width: 760px;
     margin: 0 auto;
+    padding: 0 20px;
   }
 
-  .profile-header {
-    margin-bottom: 24px;
+  /* ── Not Found ── */
+  .not-found {
     text-align: center;
+    padding: 80px 0;
+  }
+
+  .not-found-icon {
+    font-size: 48px;
+    font-weight: 700;
+    color: var(--text-dim);
+    margin-bottom: 16px;
+    font-family: var(--font-mono);
+  }
+
+  .not-found-title {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+  }
+
+  .not-found-text {
+    font-size: 14px;
+    color: var(--text-muted);
+    margin-bottom: 24px;
+  }
+
+  .not-found-text strong {
+    color: var(--text-secondary);
+  }
+
+  .not-found-links {
+    display: flex;
+    justify-content: center;
+    gap: 20px;
+  }
+
+  /* ── Profile Header ── */
+  .profile-header {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin-bottom: 28px;
+    padding-top: 8px;
+  }
+
+  .avatar {
+    width: 72px;
+    height: 72px;
+    border-radius: 50%;
+    background: var(--accent-subtle);
+    border: 2px solid var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 14px;
+  }
+
+  .avatar-letter {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--accent);
+    font-family: var(--font-mono);
+    line-height: 1;
   }
 
   .profile-username {
@@ -123,19 +354,68 @@ const enrichedBadges = badges.map(b => {
     font-weight: 700;
     letter-spacing: -0.02em;
     color: var(--text-primary);
-    margin-bottom: 4px;
+    margin-bottom: 8px;
   }
 
-  .profile-rep {
+  .profile-meta {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 6px;
+  }
+
+  .rank-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-family: var(--font-mono);
+  }
+
+  .rank-gold {
+    background: rgba(251, 191, 36, 0.15);
+    color: var(--amber);
+    border: 1px solid rgba(251, 191, 36, 0.3);
+  }
+
+  .rank-silver {
+    background: rgba(192, 192, 192, 0.12);
+    color: #c0c0c0;
+    border: 1px solid rgba(192, 192, 192, 0.25);
+  }
+
+  .rank-bronze {
+    background: rgba(205, 127, 50, 0.12);
+    color: #cd7f32;
+    border: 1px solid rgba(205, 127, 50, 0.25);
+  }
+
+  .rank-newcomer {
+    background: var(--bg-overlay);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+  }
+
+  .rep-score {
     font-family: var(--font-mono);
     font-size: 14px;
+    font-weight: 600;
     color: var(--accent);
   }
 
+  .member-since {
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  /* ── Stats Grid ── */
   .stats-grid {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 12px;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 10px;
     margin-bottom: 32px;
   }
 
@@ -143,27 +423,39 @@ const enrichedBadges = badges.map(b => {
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
-    padding: 16px;
+    padding: 14px 8px;
     text-align: center;
   }
 
   .stat-number {
     font-family: var(--font-mono);
-    font-size: 24px;
+    font-size: 22px;
     font-weight: 700;
     color: var(--text-primary);
-    margin-bottom: 4px;
+    margin-bottom: 3px;
   }
 
   .stat-label {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
 
+  /* ── Sections ── */
   .profile-section {
     margin-bottom: 32px;
+  }
+
+  .section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+
+  .section-header .section-title {
+    margin-bottom: 0;
   }
 
   .section-title {
@@ -173,9 +465,35 @@ const enrichedBadges = badges.map(b => {
     margin-bottom: 12px;
   }
 
+  /* ── Tab Bar ── */
+  .tab-bar {
+    display: flex;
+    gap: 4px;
+  }
+
+  .tab-btn {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    padding: 4px 12px;
+    border-radius: var(--radius-md);
+    text-decoration: none;
+    transition: all 0.15s ease;
+    background: var(--bg-overlay);
+    border: 1px solid var(--border);
+  }
+
+  .tab-btn:hover,
+  .tab-btn.active {
+    color: var(--text-primary);
+    border-color: var(--accent);
+    background: var(--accent-subtle);
+  }
+
+  /* ── Badges Grid ── */
   .badges-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
     gap: 8px;
   }
 
@@ -190,7 +508,13 @@ const enrichedBadges = badges.map(b => {
   }
 
   .badge-icon {
-    font-size: 20px;
+    font-size: 22px;
+    flex-shrink: 0;
+  }
+
+  .badge-info {
+    flex: 1;
+    min-width: 0;
   }
 
   .badge-name {
@@ -204,6 +528,33 @@ const enrichedBadges = badges.map(b => {
     color: var(--text-muted);
   }
 
+  .badge-date {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+
+  /* ── Empty State ── */
+  .empty-state {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 20px 16px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+
+  .empty-icon {
+    font-family: var(--font-mono);
+    color: var(--text-dim);
+    font-weight: 600;
+  }
+
+  /* ── Entries List ── */
   .entries-list {
     display: flex;
     flex-direction: column;
@@ -234,6 +585,14 @@ const enrichedBadges = badges.map(b => {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    min-width: 0;
+  }
+
+  .entry-meta-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
   }
 
   .entry-stats {
@@ -249,6 +608,138 @@ const enrichedBadges = badges.map(b => {
   .stat-sep { color: var(--text-dim); }
   .stat-uses { color: var(--text-muted); }
 
+  .entry-date {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+
+  /* ── Activity Timeline ── */
+  .activity-timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .activity-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    transition: border-color 0.15s ease;
+  }
+
+  .activity-item:hover {
+    border-color: var(--border-hover);
+  }
+
+  .activity-icon {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  .event-submit {
+    background: var(--blue-bg);
+    color: var(--blue);
+  }
+
+  .event-upvote {
+    background: var(--green-bg);
+    color: var(--green);
+  }
+
+  .event-downvote {
+    background: var(--red-bg);
+    color: var(--red);
+  }
+
+  .event-usage {
+    background: var(--purple-bg);
+    color: var(--purple);
+  }
+
+  .event-verify {
+    background: var(--green-bg);
+    color: var(--green);
+  }
+
+  .event-outdated {
+    background: var(--amber-bg);
+    color: var(--amber);
+  }
+
+  .event-default {
+    background: var(--bg-overlay);
+    color: var(--text-dim);
+  }
+
+  .activity-content {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .activity-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  .activity-entry-link {
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: color 0.15s ease;
+  }
+
+  .activity-entry-link:hover {
+    color: var(--accent);
+  }
+
+  .activity-meta {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 2px;
+    flex-shrink: 0;
+  }
+
+  .activity-points {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .points-positive {
+    color: var(--green);
+  }
+
+  .points-negative {
+    color: var(--red);
+  }
+
+  .activity-time {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+
+  /* ── Footer ── */
   .profile-footer {
     margin-top: 32px;
     padding-top: 20px;
@@ -267,12 +758,43 @@ const enrichedBadges = badges.map(b => {
     color: var(--accent);
   }
 
+  /* ── Responsive ── */
+  @media (max-width: 640px) {
+    .stats-grid {
+      grid-template-columns: repeat(3, 1fr);
+    }
+  }
+
   @media (max-width: 520px) {
     .stats-grid {
       grid-template-columns: repeat(2, 1fr);
     }
+
     .badges-grid {
       grid-template-columns: 1fr;
+    }
+
+    .entry-meta-right {
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 4px;
+    }
+
+    .entry-date {
+      display: none;
+    }
+
+    .profile-username {
+      font-size: 24px;
+    }
+
+    .avatar {
+      width: 56px;
+      height: 56px;
+    }
+
+    .avatar-letter {
+      font-size: 22px;
     }
   }
 </style>
