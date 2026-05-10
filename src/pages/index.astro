@@ -24,12 +24,35 @@ const severity = url.searchParams.get('severity') || '';
 
 const FALLBACK_ANALYTICS = { totalViews: 0, totalSearches: 0, viewsBySource: {}, searchesBySource: {}, recentSearches: [], topViewed: [], dailyActivity: [] };
 
-async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
-  try { return await fn(); } catch (e) { console.error('[index.astro fallback]', (e as Error).message); return fallback; }
+// Turso on free tier has 100s+ cold-start latency for full-table-scan queries.
+// We CANNOT block the function on that. safe() falls back to the build-time
+// snapshot if (a) the query throws, or (b) it exceeds the timeout. The Turso
+// request itself keeps running and will warm the per-instance cache for the
+// next request, so subsequent hits are fast.
+async function safe<T>(fn: () => Promise<T>, fallback: T, timeoutMs = 4000): Promise<T> {
+  let to: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((resolve) => {
+    to = setTimeout(() => resolve(fallback), timeoutMs);
+  });
+  try {
+    const result = await Promise.race([
+      fn().then(v => { clearTimeout(to); return v; }).catch(e => {
+        console.error('[index.astro fallback]', (e as Error).message);
+        clearTimeout(to);
+        return fallback;
+      }),
+      timeout,
+    ]);
+    return result;
+  } catch {
+    return fallback;
+  }
 }
 
+// Light queries get a generous timeout. Stats queries get a short one because
+// they're scanned full-table and slow on cold Turso; snapshot fallback is fine.
 const entries = q
-  ? await safe(() => searchEntries(q), [])
+  ? await safe(() => searchEntries(q), [], 5000)
   : await safe(
       () => getAllEntries({
         category: category || undefined,
@@ -37,17 +60,17 @@ const entries = q
         severity: severity || undefined,
         limit: 10,
       }),
-      // If filters are applied we don't have a snapshot for them — return empty.
-      (category || tag || severity) ? [] : snapshot.recentEntries as any[]
+      (category || tag || severity) ? [] : snapshot.recentEntries as any[],
+      5000
     );
 
-const stats = await safe(() => getStats(), snapshot.stats);
+const stats = await safe(() => getStats(), snapshot.stats, 3000);
 const categories = stats.byCategory.map((c: any) => ({ name: c.category, count: c.count }));
 
 const { weeklyCount: recentCount, monthlyCount: monthlyEntries, weeklyDelta } =
-  await safe(() => getEntryActivity(), snapshot.entryActivity);
-const analytics = await safe(() => getAnalytics(), FALLBACK_ANALYTICS);
-const totalUsage = await safe(() => getTotalUsageCount(), snapshot.totalUsage);
+  await safe(() => getEntryActivity(), snapshot.entryActivity, 3000);
+const analytics = await safe(() => getAnalytics(), FALLBACK_ANALYTICS, 3000);
+const totalUsage = await safe(() => getTotalUsageCount(), snapshot.totalUsage, 3000);
 ---
 
 <Layout
