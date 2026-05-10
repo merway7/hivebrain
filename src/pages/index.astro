@@ -6,6 +6,7 @@ import EntryCard from '../components/EntryCard.astro';
 import FilterBar from '../components/FilterBar.astro';
 import Stats from '../components/Stats.astro';
 import { getAllEntries, searchEntries, getStats, getAnalytics, getTotalUsageCount, getEntryActivity } from '../lib/db';
+import snapshot from '../data/build-snapshot.json';
 
 // Cache the rendered HTML at Vercel's edge for 10 min, serve stale up to 24h
 // while revalidating. Keeps Turso reads near zero under normal traffic and
@@ -21,24 +22,32 @@ const category = url.searchParams.get('category') || '';
 const tag = url.searchParams.get('tag') || '';
 const severity = url.searchParams.get('severity') || '';
 
-let entries;
-if (q) {
-  entries = await searchEntries(q);
-} else {
-  entries = await getAllEntries({
-    category: category || undefined,
-    tag: tag || undefined,
-    severity: severity || undefined,
-    limit: 10,
-  });
+const FALLBACK_ANALYTICS = { totalViews: 0, totalSearches: 0, viewsBySource: {}, searchesBySource: {}, recentSearches: [], topViewed: [], dailyActivity: [] };
+
+async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
+  try { return await fn(); } catch (e) { console.error('[index.astro fallback]', (e as Error).message); return fallback; }
 }
 
-const stats = await getStats();
-const categories = stats.byCategory.map(c => ({ name: c.category, count: c.count }));
+const entries = q
+  ? await safe(() => searchEntries(q), [])
+  : await safe(
+      () => getAllEntries({
+        category: category || undefined,
+        tag: tag || undefined,
+        severity: severity || undefined,
+        limit: 10,
+      }),
+      // If filters are applied we don't have a snapshot for them — return empty.
+      (category || tag || severity) ? [] : snapshot.recentEntries as any[]
+    );
 
-const { weeklyCount: recentCount, monthlyCount: monthlyEntries, weeklyDelta } = await getEntryActivity();
-const analytics = await getAnalytics();
-const totalUsage = await getTotalUsageCount();
+const stats = await safe(() => getStats(), snapshot.stats);
+const categories = stats.byCategory.map((c: any) => ({ name: c.category, count: c.count }));
+
+const { weeklyCount: recentCount, monthlyCount: monthlyEntries, weeklyDelta } =
+  await safe(() => getEntryActivity(), snapshot.entryActivity);
+const analytics = await safe(() => getAnalytics(), FALLBACK_ANALYTICS);
+const totalUsage = await safe(() => getTotalUsageCount(), snapshot.totalUsage);
 ---
 
 <Layout
